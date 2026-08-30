@@ -517,14 +517,16 @@ const memoryCache: {
   chapters?: { data: Chapter[]; expires: number };
   classes?: { data: ClassRoom[]; expires: number };
   quizzesMeta?: { data: Quiz[]; expires: number };
+  bankQuestions?: { data: Question[]; expires: number };
 } = {};
 
-export const invalidateMemoryCache = (key?: 'teachers' | 'chapters' | 'classes' | 'quizzes') => {
+export const invalidateMemoryCache = (key?: 'teachers' | 'chapters' | 'classes' | 'quizzes' | 'bank') => {
   if (!key) {
     delete memoryCache.teachers;
     delete memoryCache.chapters;
     delete memoryCache.classes;
     delete memoryCache.quizzesMeta;
+    delete memoryCache.bankQuestions;
   } else if (key === 'teachers') {
     delete memoryCache.teachers;
   } else if (key === 'chapters') {
@@ -533,6 +535,8 @@ export const invalidateMemoryCache = (key?: 'teachers' | 'chapters' | 'classes' 
     delete memoryCache.classes;
   } else if (key === 'quizzes') {
     delete memoryCache.quizzesMeta;
+  } else if (key === 'bank') {
+    delete memoryCache.bankQuestions;
   }
 };
 
@@ -1018,7 +1022,7 @@ export const assignQuizToClasses = async (
   quizId: string, 
   assignedClassIds: string[], 
   teacherManagedClassIds?: string[]
-): Promise<void> => {
+): Promise<{ finalClassIds: string[]; targetType: string }> => {
   if (!db) throw new Error("Mất kết nối Database Cloud Firestore");
   const quizRef = doc(db, 'quizzes', quizId);
   const docSnap = await getDoc(quizRef);
@@ -1050,8 +1054,19 @@ export const assignQuizToClasses = async (
     assignedClassIds: finalClassIds,
     data: cleanUndefined(updatedQuiz)
   }, { merge: true });
-  invalidateMemoryCache('quizzes');
+
+  // Update in memory cache and local storage in-place instead of invalidating and refetching all
+  if (memoryCache.quizzesMeta?.data) {
+    memoryCache.quizzesMeta.data = memoryCache.quizzesMeta.data.map(q => 
+      q.id === quizId ? { ...q, targetType: targetType as any, assignedClassIds: finalClassIds } : q
+    );
+    try {
+      localStorage.setItem('eduquiz_quizzes_meta_cache', JSON.stringify(memoryCache.quizzesMeta.data));
+    } catch {}
+  }
+  
   trackFirestoreWrite('quizzes', 1);
+  return { finalClassIds, targetType };
 };
 
 export const deleteQuiz = async (id: string): Promise<void> => {
@@ -1341,18 +1356,43 @@ export const getQuestionFingerprint = (q: Partial<Question>): string => {
   return `${normSubject}__${normGrade}__${type}__${normText}__${optionsSig}`;
 };
 
-export const getBankQuestions = async (): Promise<Question[]> => {
-  if (!db) return [];
+export const getBankQuestions = async (forceRefresh: boolean = false): Promise<Question[]> => {
+  const now = Date.now();
+  if (!forceRefresh && memoryCache.bankQuestions && memoryCache.bankQuestions.expires > now) {
+    return memoryCache.bankQuestions.data;
+  }
+
+  if (!db) {
+    try {
+      const local = localStorage.getItem('eduquiz_bank_questions_cache');
+      if (local) {
+        return JSON.parse(local);
+      }
+    } catch {}
+    return [];
+  }
+
   try {
     const snapshot = await getDocs(collection(db, 'bank_questions'));
     trackFirestoreRead('bank_questions', snapshot.docs.length);
-    return snapshot.docs.map(d => {
+    const questions = snapshot.docs.map(d => {
       const row = d.data();
       return (row.data as Question) || (row as Question);
     });
+
+    memoryCache.bankQuestions = { data: questions, expires: now + 5 * 60 * 1000 };
+    try {
+      localStorage.setItem('eduquiz_bank_questions_cache', JSON.stringify(questions));
+    } catch {}
+
+    return questions;
   } catch (e) {
     console.error("Lỗi lấy ngân hàng câu hỏi:", e);
-    return [];
+    try {
+      const local = localStorage.getItem('eduquiz_bank_questions_cache');
+      if (local) return JSON.parse(local);
+    } catch {}
+    return memoryCache.bankQuestions?.data || [];
   }
 };
 
@@ -1608,6 +1648,7 @@ export const saveBankQuestion = async (q: Question): Promise<void> => {
       createdBy: q.createdBy || '',
       data: cleanUndefined(q)
     }));
+    invalidateMemoryCache('bank');
     trackFirestoreWrite('bank_questions', 1);
   }
 };
@@ -1616,6 +1657,7 @@ export const deleteBankQuestion = async (id: string): Promise<void> => {
   if (!id) return;
   if (db) {
     await deleteDoc(doc(db, 'bank_questions', id));
+    invalidateMemoryCache('bank');
     trackFirestoreDelete('bank_questions', 1);
   }
 };
@@ -1636,6 +1678,7 @@ export const deleteBatchBankQuestions = async (ids: string[]): Promise<number> =
     deletedCount += chunk.length;
     trackFirestoreDelete('bank_questions', chunk.length);
   }
+  invalidateMemoryCache('bank');
   return deletedCount;
 };
 
