@@ -20,7 +20,7 @@ import { isSameSubject, STANDARD_SUBJECTS } from '../../services/subjectUtils';
 import { getCurrentAcademicYear, getQuizAcademicYear } from '../../services/academicUtils';
 import { Quiz, User, Result, Chapter, Question, QuestionType, Grade, QuizType, Role, ClassRoom } from '../../types';
 import { v4 as uuidv4 } from 'uuid';
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import Papa from 'papaparse';
 import { 
   LayoutDashboard, Users, BarChart3, ShieldAlert, Sparkles, FolderTree, 
@@ -71,47 +71,58 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
   const [chapters, setChapters] = useState<Chapter[]>([]);
   const [bankQuestions, setBankQuestions] = useState<Question[]>([]);
 
-  // Lazy loading data with memory caching to protect Firebase Quota
-  const loadTabData = useCallback(async (tab: AdminTab) => {
+  const loadedTabsRef = useRef<Set<string>>(new Set());
+
+  // Lazy loading data with memory caching to protect Firebase Quota & prevent unnecessary UI repaints
+  const loadTabData = useCallback(async (tab: AdminTab, forceRefresh: boolean = false) => {
     if (!isDatabaseConnected()) return;
-    setIsDataLoading(true);
+    
+    // Nếu tab đã được nạp dữ liệu trước đó và không yêu cầu forceRefresh thì không hiện spinner chặn UI
+    const isAlreadyLoaded = loadedTabsRef.current.has(tab);
+    if (!isAlreadyLoaded || forceRefresh) {
+      setIsDataLoading(true);
+    }
+
     try {
       if (tab === 'quizzes') {
         const [q, c, cls, t] = await Promise.all([
-          getQuizzesMetadata(), 
-          getChapters(),
-          getClasses(),
-          getTeachers()
+          getQuizzesMetadata(undefined, undefined, forceRefresh), 
+          getChapters(forceRefresh),
+          getClasses(forceRefresh),
+          getTeachers(forceRefresh)
         ]);
         setQuizzes(q);
         setChapters(c);
         setClasses(cls);
         setTeachers(t);
+        loadedTabsRef.current.add('quizzes');
       } else if (tab === 'teachers') {
         const [t, q, cls] = await Promise.all([
-          getTeachers(),
-          getQuizzesMetadata(),
-          getClasses()
+          getTeachers(forceRefresh),
+          getQuizzesMetadata(undefined, undefined, forceRefresh),
+          getClasses(forceRefresh)
         ]);
         setTeachers(t);
         setQuizzes(q);
         setClasses(cls);
+        loadedTabsRef.current.add('teachers');
       } else if (tab === 'classes') {
         const [cls, q, c, t] = await Promise.all([
-          getClasses(),
-          getQuizzesMetadata(),
-          getChapters(),
-          getTeachers()
+          getClasses(forceRefresh),
+          getQuizzesMetadata(undefined, undefined, forceRefresh),
+          getChapters(forceRefresh),
+          getTeachers(forceRefresh)
         ]);
         setClasses(cls);
         setQuizzes(q);
         setChapters(c);
         setTeachers(t);
+        loadedTabsRef.current.add('classes');
       } else if (tab === 'students') {
         const [pagedUsers, cls, t] = await Promise.all([
           getUsersPage(1, 100),
-          getClasses(),
-          getTeachers()
+          getClasses(forceRefresh),
+          getTeachers(forceRefresh)
         ]);
         
         const studentList = pagedUsers.data.filter(user => user.role === 'student');
@@ -120,13 +131,14 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
         setStudentsPage(1);
         setClasses(cls);
         setTeachers(t);
+        loadedTabsRef.current.add('students');
       } else if (tab === 'results') {
         const [paged, q, cls, t, c] = await Promise.all([
           getResultsMetadataPage(1, 50),
-          getQuizzesMetadata(),
-          getClasses(),
-          getTeachers(),
-          getChapters()
+          getQuizzesMetadata(undefined, undefined, forceRefresh),
+          getClasses(forceRefresh),
+          getTeachers(forceRefresh),
+          getChapters(forceRefresh)
         ]);
         setResults(paged.data);
         setResultsTotal(paged.total);
@@ -135,16 +147,19 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
         setClasses(cls);
         setTeachers(t);
         setChapters(c);
+        loadedTabsRef.current.add('results');
       } else if (tab === 'bank') {
         const [b, c] = await Promise.all([
-          getBankQuestions(),
-          getChapters()
+          getBankQuestions(forceRefresh),
+          getChapters(forceRefresh)
         ]);
         setBankQuestions(b);
         setChapters(c);
+        loadedTabsRef.current.add('bank');
       } else if (tab === 'chapters') {
-        const c = await getChapters();
+        const c = await getChapters(forceRefresh);
         setChapters(c);
+        loadedTabsRef.current.add('chapters');
       }
     } catch (e) {
       console.error("Lỗi tải dữ liệu tab:", tab, e);
@@ -154,12 +169,16 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
   }, []);
 
   useEffect(() => {
-    loadTabData(activeTab);
-  }, [activeTab]);
+    // Chỉ nạp lại từ mạng nếu tab này chưa từng nạp dữ liệu
+    if (!loadedTabsRef.current.has(activeTab)) {
+      loadTabData(activeTab);
+    }
+  }, [activeTab, loadTabData]);
 
   // Quiz Editing
   const [isEditingQuiz, setIsEditingQuiz] = useState(false);
   const [editingQuizId, setEditingQuizId] = useState<string | null>(null);
+  const [isFetchingQuizDetail, setIsFetchingQuizDetail] = useState(false);
   const [quizTitle, setQuizTitle] = useState('');
   const [quizGrade, setQuizGrade] = useState<Grade>('12');
   const [quizAcademicYear, setQuizAcademicYear] = useState<string>(getCurrentAcademicYear());
@@ -561,7 +580,7 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
       return;
     }
 
-    setIsDataLoading(true);
+    setIsFetchingQuizDetail(true);
     try {
         let fullQuiz: Quiz | null = null;
         try {
@@ -609,7 +628,7 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
         setIsEditingQuiz(true);
         setActiveTab('quizzes');
     } finally {
-        setIsDataLoading(false);
+        setIsFetchingQuizDetail(false);
     }
   };
 
@@ -624,11 +643,22 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
   };
 
   const handleAssignClasses = async (quiz: Quiz, selectedClassIds: string[]) => {
-    setIsDataLoading(true);
     try {
         const myClassIds = isSuperAdmin ? undefined : accessibleClasses.map(c => c.id);
-        await assignQuizToClasses(quiz.id, selectedClassIds, myClassIds);
-        await loadTabData('quizzes');
+        const { finalClassIds, targetType } = await assignQuizToClasses(quiz.id, selectedClassIds, myClassIds);
+        
+        // Cập nhật trực tiếp 1 đề thi trong danh sách quizzes trên UI mà không cần tải lại toàn bộ danh sách
+        setQuizzes(prev => prev.map(q => {
+          if (q.id === quiz.id) {
+            return {
+              ...q,
+              targetType: targetType as any,
+              assignedClassIds: finalClassIds
+            };
+          }
+          return q;
+        }));
+
         showAlert(
             "Giao đề thành công", 
             `Đã cập nhật phân công đề thi "${quiz.title}" cho ${selectedClassIds.length} lớp học. Học sinh trong các lớp này có thể truy cập làm bài.`,
@@ -637,8 +667,6 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
     } catch (e: any) {
         console.error("Lỗi phân công giao đề:", e);
         showAlert("Lỗi giao đề", e.message || "Không thể lưu phân công đề thi cho lớp học.", "error");
-    } finally {
-        setIsDataLoading(false);
     }
   };
 
@@ -862,11 +890,13 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
     try {
       if (editingQuizId) {
           await updateQuiz(quiz);
+          // Cập nhật ngay trong local state của quizzes
+          setQuizzes(prev => prev.map(q => q.id === quiz.id ? { ...q, ...quiz, questionCount: quiz.questions?.length || 0 } : q));
       } else {
           await saveQuiz(quiz);
+          setQuizzes(prev => [quiz, ...prev.filter(q => q.id !== quiz.id)]);
       }
       setIsEditingQuiz(false);
-      await loadTabData('quizzes');
       showAlert("Thành công", "Đã lưu đề thi thành công vào Database Cloud!", "success");
     } catch (e: any) { 
       showAlert("Lỗi lưu đề thi", e.message || "Không xác định", "error");
@@ -891,15 +921,15 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
       "Xác nhận xóa đề thi",
       "Bạn có chắc chắn muốn xóa vĩnh viễn đề thi này không? Dữ liệu bảng điểm liên quan sẽ không thể phục hồi.",
       async () => {
-        setIsDataLoading(true);
+        // Cập nhật ngay trên UI để mượt mà không delay
+        setQuizzes(prev => prev.filter(q => q.id !== id));
         try {
           await deleteQuiz(id); 
-          await loadTabData('quizzes');
           showAlert("Thành công", "Đã xóa đề thi thành công.", "success");
         } catch (e: any) {
           showAlert("Lỗi khi xóa đề thi", e.message || "Không xác định", "error");
-        } finally {
-          setIsDataLoading(false);
+          // Phục hồi lại nếu lỗi
+          loadTabData('quizzes', true);
         }
       }
     );
@@ -1440,7 +1470,12 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
           )}
 
           {activeTab === 'quizzes' && (
-            isEditingQuiz ? (
+            isFetchingQuizDetail ? (
+              <div className="py-20 text-center">
+                <Loader2 className="animate-spin mx-auto text-blue-500" size={40}/>
+                <p className="mt-4 text-[10px] font-black uppercase text-slate-400">Đang nạp dữ liệu câu hỏi đề thi...</p>
+              </div>
+            ) : isEditingQuiz ? (
               <>
                 {isSavingInProgress && (
                     <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[3000] flex items-center justify-center">
@@ -1514,7 +1549,7 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
                       </button>
                    </div>
                 </div>
-                {isDataLoading ? (
+                {isDataLoading && quizzes.length === 0 ? (
                     <div className="py-20 text-center"><Loader2 className="animate-spin mx-auto text-blue-500" size={40}/><p className="mt-4 text-[10px] font-black uppercase text-slate-400">Đang tải Cloud...</p></div>
                 ) : (
                     <QuizList 
@@ -1741,7 +1776,7 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
                      </div>
                    )}
                 </div>
-                {isDataLoading ? (
+                {isDataLoading && accessibleBankQuestions.length === 0 ? (
                     <div className="py-20 text-center"><Loader2 className="animate-spin mx-auto text-blue-500" size={40}/><p className="mt-4 text-[10px] font-black uppercase text-slate-400">Đang tải...</p></div>
                 ) : (
                     <QuestionBank 
