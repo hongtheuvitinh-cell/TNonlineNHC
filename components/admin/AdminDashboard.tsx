@@ -1229,7 +1229,21 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
         createdAt: selectedStudent?.createdAt || new Date().toISOString(),
         points: selectedStudent?.points || 0
       };
-      await saveUser(newUser); setIsStudentModalOpen(false); loadTabData('students');
+      
+      // Cập nhật State tức thì để UI repaint ngay lập tức không bị trễ
+      setStudents(prev => {
+        const idx = prev.findIndex(s => s.id === newUser.id);
+        if (idx >= 0) {
+          const updated = [...prev];
+          updated[idx] = newUser;
+          return updated;
+        }
+        return [newUser, ...prev];
+      });
+
+      await saveUser(newUser); 
+      setIsStudentModalOpen(false); 
+      await loadTabData('students', true);
       showAlert("Thành công", `Đã lưu học sinh ${studentForm.fullName} thành công!`, "success");
     } catch (e: any) { 
       showAlert("Lỗi", "Lỗi lưu học sinh trên Cloud", "error"); 
@@ -1574,11 +1588,20 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
               classes={classes}
               currentUser={currentUser}
               onSaveTeacher={async (t) => {
+                setTeachers(prev => {
+                  const idx = prev.findIndex(item => item.id === t.id);
+                  if (idx >= 0) {
+                    const copy = [...prev];
+                    copy[idx] = t;
+                    return copy;
+                  }
+                  return [t, ...prev];
+                });
                 await saveTeacher(t);
                 showAlert("Thành công", `Đã lưu tài khoản giáo viên ${t.fullName}! Tên giáo viên trên các lớp học và đề thi liên quan đã được đồng bộ tự động.`, "success");
                 await Promise.all([
-                  loadTabData('teachers'),
-                  loadTabData('classes')
+                  loadTabData('teachers', true),
+                  loadTabData('classes', true)
                 ]);
               }}
               onDeleteTeacher={async (id, name) => {
@@ -1586,9 +1609,10 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
                   "Xác nhận xóa tài khoản giáo viên",
                   `Bạn có chắc chắn muốn xóa tài khoản giáo viên "${name}" không? Thao tác này không thể hoàn tác.`,
                   async () => {
+                    setTeachers(prev => prev.filter(t => t.id !== id));
                     await deleteTeacher(id);
                     showAlert("Thành công", `Đã xóa tài khoản giáo viên "${name}"!`, "success");
-                    await loadTabData('teachers');
+                    await loadTabData('teachers', true);
                   }
                 );
               }}
@@ -1596,12 +1620,12 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
                 const success = await changePassword(t.id, '123');
                 if (success) {
                   showAlert("Thành công", `Đã đặt lại mật khẩu cho giáo viên ${t.fullName} về mặc định "123"!`, "success");
-                  await loadTabData('teachers');
+                  await loadTabData('teachers', true);
                 } else {
                   showAlert("Lỗi", "Không thể đặt lại mật khẩu giáo viên", "error");
                 }
               }}
-              onRefresh={() => loadTabData('teachers')}
+              onRefresh={() => loadTabData('teachers', true)}
             />
           )}
 
@@ -1620,27 +1644,37 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
                   createdBy: c.createdBy || currentUser?.id || '',
                   teacherName: c.teacherName || currentUser?.fullName || ''
                 };
+                setClasses(prev => {
+                  const idx = prev.findIndex(item => item.id === classToSave.id);
+                  if (idx >= 0) {
+                    const copy = [...prev];
+                    copy[idx] = classToSave;
+                    return copy;
+                  }
+                  return [classToSave, ...prev];
+                });
                 await saveClass(classToSave);
-                await loadTabData('classes');
+                await loadTabData('classes', true);
               }}
               onDeleteClass={async (id, name) => {
                 showConfirm(
                   "Xác nhận xóa lớp học",
                   `Bạn có chắc chắn muốn xóa lớp "${name}" không? Học sinh thuộc lớp này sẽ không bị xóa khỏi hệ thống mà chỉ gỡ liên kết lớp.`,
                   async () => {
+                    setClasses(prev => prev.filter(item => item.id !== id));
                     await deleteClass(id);
-                    await loadTabData('classes');
+                    await loadTabData('classes', true);
                   }
                 );
               }}
               onAssignStudents={async (studentIds, classInfo) => {
                 await assignStudentsToClass(studentIds, classInfo);
-                await loadTabData('classes');
-                await loadTabData('students');
+                await loadTabData('classes', true);
+                await loadTabData('students', true);
               }}
               onRefresh={() => {
-                loadTabData('classes');
-                loadTabData('students');
+                loadTabData('classes', true);
+                loadTabData('students', true);
               }}
             />
           )}
