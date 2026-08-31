@@ -518,6 +518,7 @@ const memoryCache: {
   classes?: { data: ClassRoom[]; expires: number };
   quizzesMeta?: { data: Quiz[]; expires: number };
   bankQuestions?: { data: Question[]; expires: number };
+  quizDetails?: Map<string, { data: Quiz; expires: number }>;
 } = {};
 
 export const invalidateMemoryCache = (key?: 'teachers' | 'chapters' | 'classes' | 'quizzes' | 'bank') => {
@@ -527,6 +528,7 @@ export const invalidateMemoryCache = (key?: 'teachers' | 'chapters' | 'classes' 
     delete memoryCache.classes;
     delete memoryCache.quizzesMeta;
     delete memoryCache.bankQuestions;
+    delete memoryCache.quizDetails;
   } else if (key === 'teachers') {
     delete memoryCache.teachers;
   } else if (key === 'chapters') {
@@ -535,6 +537,7 @@ export const invalidateMemoryCache = (key?: 'teachers' | 'chapters' | 'classes' 
     delete memoryCache.classes;
   } else if (key === 'quizzes') {
     delete memoryCache.quizzesMeta;
+    delete memoryCache.quizDetails;
   } else if (key === 'bank') {
     delete memoryCache.bankQuestions;
   }
@@ -588,6 +591,7 @@ export const getTeachers = async (forceRefresh: boolean = false): Promise<User[]
 };
 
 export const saveTeacher = async (teacher: User): Promise<void> => {
+  invalidateMemoryCache('teachers');
   await saveUser(teacher);
 
   // Tự động đồng bộ tên giáo viên mới vào tất cả Lớp học và Đề thi do GV này phụ trách
@@ -607,6 +611,7 @@ export const saveTeacher = async (teacher: User): Promise<void> => {
         });
         await batch.commit();
         trackFirestoreWrite('classes', classesSnap.docs.length);
+        invalidateMemoryCache('classes');
       }
 
       // 2. Cập nhật các Đề thi do GV tạo (createdBy == teacher.id)
@@ -623,6 +628,7 @@ export const saveTeacher = async (teacher: User): Promise<void> => {
         });
         await batch.commit();
         trackFirestoreWrite('quizzes_metadata', quizMetaSnap.docs.length);
+        invalidateMemoryCache('quizzes');
       }
     } catch (err) {
       console.warn("Lỗi đồng bộ tên giáo viên sang các lớp/đề thi:", err);
@@ -641,6 +647,7 @@ export const saveTeacher = async (teacher: User): Promise<void> => {
 };
 
 export const deleteTeacher = async (id: string): Promise<void> => {
+  invalidateMemoryCache('teachers');
   return deleteUser(id);
 };
 
@@ -911,7 +918,31 @@ export const getQuizzes = async (grade?: Grade): Promise<Quiz[]> => {
   }
 };
 
-export const getQuizById = async (id: string): Promise<Quiz | null> => {
+export const getQuizById = async (id: string, forceRefresh: boolean = false): Promise<Quiz | null> => {
+  const now = Date.now();
+  if (!forceRefresh && memoryCache.quizDetails?.has(id)) {
+    const cached = memoryCache.quizDetails.get(id);
+    if (cached && cached.expires > now) {
+      return cached.data;
+    }
+  }
+
+  // Check localStorage cache first
+  if (!forceRefresh) {
+    try {
+      const localCacheKey = `eduquiz_quiz_detail_${id}`;
+      const local = localStorage.getItem(localCacheKey);
+      if (local) {
+        const parsed = JSON.parse(local);
+        if (parsed && parsed.data && parsed.expires > now) {
+          if (!memoryCache.quizDetails) memoryCache.quizDetails = new Map();
+          memoryCache.quizDetails.set(id, { data: parsed.data, expires: parsed.expires });
+          return parsed.data;
+        }
+      }
+    } catch (e) {}
+  }
+
   if (!db) return null;
   try {
     const docSnap = await getDoc(doc(db, 'quizzes', id));
@@ -919,10 +950,20 @@ export const getQuizById = async (id: string): Promise<Quiz | null> => {
     if (!docSnap.exists()) return null;
     const data = docSnap.data();
     const quiz = (data.data as Quiz) || (data as Quiz);
-    return {
+    const resultQuiz: Quiz = {
       ...quiz,
       academicYear: data.academicYear || quiz.academicYear || getQuizAcademicYear(quiz)
     };
+
+    if (!memoryCache.quizDetails) memoryCache.quizDetails = new Map();
+    const expires = now + 10 * 60 * 1000; // 10 minutes cache
+    memoryCache.quizDetails.set(id, { data: resultQuiz, expires });
+
+    try {
+      localStorage.setItem(`eduquiz_quiz_detail_${id}`, JSON.stringify({ data: resultQuiz, expires }));
+    } catch (e) {}
+
+    return resultQuiz;
   } catch (e) {
     console.error("Lỗi getQuizById:", e);
     return null;
@@ -1231,6 +1272,7 @@ export const getClasses = async (forceRefresh: boolean = false): Promise<ClassRo
 };
 
 export const saveClass = async (c: ClassRoom): Promise<void> => {
+  invalidateMemoryCache('classes');
   try {
     const list = await getClasses();
     const idx = list.findIndex(item => item.id === c.id);
@@ -1257,6 +1299,7 @@ export const saveClass = async (c: ClassRoom): Promise<void> => {
 
 export const saveClassesBatch = async (classesList: ClassRoom[]): Promise<void> => {
   if (classesList.length === 0) return;
+  invalidateMemoryCache('classes');
   try {
     localStorage.setItem('eduquiz_classes_cache', JSON.stringify(classesList));
   } catch (e) {}
@@ -1282,6 +1325,7 @@ export const saveClassesBatch = async (classesList: ClassRoom[]): Promise<void> 
 };
 
 export const deleteClass = async (id: string): Promise<void> => {
+  invalidateMemoryCache('classes');
   try {
     const list = await getClasses();
     const updated = list.filter(item => item.id !== id);
