@@ -683,18 +683,15 @@ export default function StudentDashboard({ user, targetQuizId }: StudentDashboar
                                 <p className="text-[9px] font-bold text-slate-600 leading-tight">{status.reason || 'Đã hết thời hạn luyện tập đề thi này'}</p>
                             </div>
                         ) : (
-                            <>
-                                <div className="bg-slate-50/50 rounded-xl p-3 grid grid-cols-2 gap-2 mb-6 text-center">
-                                    <div><p className="text-[7px] font-black text-slate-400 uppercase mb-0.5">Đã làm</p><p className="text-xs font-black text-slate-700">{qs?.count || 0}</p></div>
-                                    <div><p className="text-[7px] font-black text-blue-500 uppercase mb-0.5">Max</p><p className="text-xs font-black text-blue-600">{qs ? qs.max.toFixed(1) : '-'}</p></div>
-                                </div>
-                                <div className={`grid gap-2 mt-auto ${q.disablePractice ? 'grid-cols-1' : 'grid-cols-2'}`}>
-                                  {!q.disablePractice && (
-                                    <button onClick={() => handleStartPractice(q)} className="flex items-center justify-center gap-1.5 bg-slate-900 text-white py-2.5 rounded-xl text-[9px] font-black uppercase hover:bg-black transition-all shadow-md" title="Nhấn từng câu để xem ngay đáp án & lời giải chi tiết"><Zap size={12}/> Luyện</button>
-                                  )}
-                                  <button onClick={() => handleStartQuiz(q)} className="flex items-center justify-center gap-1.5 bg-blue-600 text-white py-2.5 rounded-xl text-[9px] font-black uppercase shadow-lg hover:bg-blue-700 transition-all">Làm bài</button>
-                                </div>
-                            </>
+                            <div className="mt-auto pt-2">
+                                <button 
+                                  onClick={() => handleStartPractice(q)} 
+                                  className="w-full flex items-center justify-center gap-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white py-3 rounded-2xl text-[11px] font-black uppercase shadow-lg shadow-blue-500/20 active:scale-95 transition-all" 
+                                  title="Luyện tập tự do không tính điểm, xem ngay đáp án & lời giải chi tiết từng câu"
+                                >
+                                  <Zap size={14} className="text-yellow-300"/> Luyện tập ngay
+                                </button>
+                            </div>
                         )}
                       </div>
                     );
