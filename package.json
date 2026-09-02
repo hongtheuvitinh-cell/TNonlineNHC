@@ -11,9 +11,11 @@
   },
   "dependencies": {
     "@google/genai": "^1.31.0",
+    "@hungknguyen/docx-math-converter": "^1.1.4",
     "@supabase/supabase-js": "^2.39.7",
     "@types/papaparse": "^5.5.2",
     "date-fns": "^4.1.0",
+    "docx": "^9.7.1",
     "firebase": "^12.18.0",
     "lucide-react": "^0.556.0",
     "papaparse": "^5.5.3",
