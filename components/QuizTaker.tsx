@@ -3,7 +3,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Quiz, User, Result, Question, ExamSession } from '../types';
 import { saveResult, addPointsToUser, saveExamSession, deleteExamSession, verifyResultExists } from '../services/storage';
 import { v4 as uuidv4 } from 'uuid';
-import { Clock, Send, XCircle, ShieldAlert, Loader2, Trophy, Home, SearchCheck } from 'lucide-react';
+import { Clock, Send, XCircle, ShieldAlert, Loader2, Trophy, Home, SearchCheck, ChevronUp, ChevronDown } from 'lucide-react';
 import LatexText from './LatexText';
 import { addMinutes, differenceInSeconds } from 'date-fns';
 
@@ -213,6 +213,43 @@ export default function QuizTaker({ quiz, student, onExit }: QuizTakerProps) {
         document.addEventListener('visibilitychange', handleVisibilityChange);
         return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
     }, [quiz.isMonitored, isSubmitting, submitStatus]);
+
+    useEffect(() => {
+        const handleKeyDown = (e: KeyboardEvent) => {
+            const activeEl = document.activeElement;
+            const isInputFocused = activeEl && (
+                activeEl.tagName === 'INPUT' || 
+                activeEl.tagName === 'TEXTAREA' || 
+                activeEl.getAttribute('contenteditable') === 'true'
+            );
+
+            // Nếu học sinh đang nhập đáp án ở ô input thì giữ nguyên thao tác gõ
+            if (isInputFocused) return;
+
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                window.scrollBy({ top: 160, behavior: 'smooth' });
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                window.scrollBy({ top: -160, behavior: 'smooth' });
+            } else if (e.key === 'PageDown' || (e.key === ' ' && !isInputFocused)) {
+                e.preventDefault();
+                window.scrollBy({ top: window.innerHeight * 0.8, behavior: 'smooth' });
+            } else if (e.key === 'PageUp') {
+                e.preventDefault();
+                window.scrollBy({ top: -window.innerHeight * 0.8, behavior: 'smooth' });
+            } else if (e.key === 'Home') {
+                e.preventDefault();
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+            } else if (e.key === 'End') {
+                e.preventDefault();
+                window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' });
+            }
+        };
+
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, []);
 
     const handleTimeUp = async () => {
         isInternalActionRef.current = true;
@@ -499,6 +536,24 @@ export default function QuizTaker({ quiz, student, onExit }: QuizTakerProps) {
                         </React.Fragment>
                     );
                 })}
+            </div>
+
+            {/* Thanh điều hướng cuộn nhanh */}
+            <div className="fixed bottom-6 right-6 z-40 flex flex-col gap-2">
+                <button
+                    onClick={() => window.scrollBy({ top: -450, behavior: 'smooth' })}
+                    title="Cuộn lên (Phím mũi tên lên / PageUp)"
+                    className="w-12 h-12 bg-white/95 backdrop-blur-md text-slate-700 hover:text-blue-600 rounded-2xl border-2 border-slate-200 shadow-xl flex items-center justify-center hover:bg-blue-50 transition-all active:scale-95 group"
+                >
+                    <ChevronUp size={22} className="group-hover:-translate-y-0.5 transition-transform" />
+                </button>
+                <button
+                    onClick={() => window.scrollBy({ top: 450, behavior: 'smooth' })}
+                    title="Cuộn xuống (Phím mũi tên xuống / PageDown)"
+                    className="w-12 h-12 bg-white/95 backdrop-blur-md text-slate-700 hover:text-blue-600 rounded-2xl border-2 border-slate-200 shadow-xl flex items-center justify-center hover:bg-blue-50 transition-all active:scale-95 group"
+                >
+                    <ChevronDown size={22} className="group-hover:translate-y-0.5 transition-transform" />
+                </button>
             </div>
         </div>
     );
