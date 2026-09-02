@@ -1,9 +1,10 @@
 
-import React, { useMemo } from 'react';
-import { X, CheckCircle2, XCircle, HelpCircle, Info, Lock } from 'lucide-react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { X, CheckCircle2, XCircle, HelpCircle, Info, Lock, Loader2, ChevronUp, ChevronDown } from 'lucide-react';
 import { Result, Quiz, Question } from '../../types';
 import LatexText from '../LatexText';
 import { isAfter, addMinutes } from 'date-fns';
+import { getQuizById } from '../../services/storage';
 
 interface ResultDetailModalProps {
     isOpen: boolean;
@@ -13,9 +14,63 @@ interface ResultDetailModalProps {
     onClose: () => void;
 }
 
-export default function ResultDetailModal({ isOpen, result, quiz, isAdmin = false, onClose }: ResultDetailModalProps) {
-    if (!isOpen || !result || !quiz) return null;
+export default function ResultDetailModal({ isOpen, result, quiz: initialQuiz, isAdmin = false, onClose }: ResultDetailModalProps) {
+    const [fullQuiz, setFullQuiz] = useState<Quiz | null>(initialQuiz);
+    const [isLoadingQuiz, setIsLoadingQuiz] = useState(false);
+    const scrollContainerRef = useRef<HTMLDivElement>(null);
 
+    useEffect(() => {
+        if (!isOpen) return;
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (!scrollContainerRef.current) return;
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                scrollContainerRef.current.scrollBy({ top: 160, behavior: 'smooth' });
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                scrollContainerRef.current.scrollBy({ top: -160, behavior: 'smooth' });
+            } else if (e.key === 'PageDown' || e.key === ' ') {
+                e.preventDefault();
+                scrollContainerRef.current.scrollBy({ top: 500, behavior: 'smooth' });
+            } else if (e.key === 'PageUp') {
+                e.preventDefault();
+                scrollContainerRef.current.scrollBy({ top: -500, behavior: 'smooth' });
+            } else if (e.key === 'Home') {
+                e.preventDefault();
+                scrollContainerRef.current.scrollTo({ top: 0, behavior: 'smooth' });
+            } else if (e.key === 'End') {
+                e.preventDefault();
+                scrollContainerRef.current.scrollTo({ top: scrollContainerRef.current.scrollHeight, behavior: 'smooth' });
+            } else if (e.key === 'Escape') {
+                e.preventDefault();
+                onClose();
+            }
+        };
+
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [isOpen, onClose]);
+
+    useEffect(() => {
+        setFullQuiz(initialQuiz);
+        if (initialQuiz && (!initialQuiz.questions || initialQuiz.questions.length === 0)) {
+            setIsLoadingQuiz(true);
+            getQuizById(initialQuiz.id).then((fetched) => {
+                if (fetched && fetched.questions && fetched.questions.length > 0) {
+                    setFullQuiz(fetched);
+                }
+            }).catch((e) => {
+                console.error("Lỗi tải chi tiết đề thi cho modal xem lại:", e);
+            }).finally(() => {
+                setIsLoadingQuiz(false);
+            });
+        }
+    }, [initialQuiz]);
+
+    if (!isOpen || !result || !initialQuiz) return null;
+
+    const quiz = fullQuiz || initialQuiz;
+    const questions = quiz.questions || [];
     const userAnswers = result.userAnswers || {};
     
     // Kiểm tra hết giờ thi cho bài kiểm tra
@@ -33,8 +88,10 @@ export default function ResultDetailModal({ isOpen, result, quiz, isAdmin = fals
 
     // Sắp xếp câu hỏi theo thứ tự học sinh đã làm (đã xáo trộn từng phần) hoặc theo thứ tự mặc định
     const orderedQuestions = useMemo(() => {
+        if (!questions || questions.length === 0) return [];
+
         if (result.shuffledQuestionIds && Array.isArray(result.shuffledQuestionIds) && result.shuffledQuestionIds.length > 0) {
-            const qMap = new Map(quiz.questions.map(q => [q.id, q]));
+            const qMap = new Map(questions.map(q => [q.id, q]));
             const restored: Question[] = [];
             for (const qid of result.shuffledQuestionIds) {
                 const q = qMap.get(qid);
@@ -51,12 +108,12 @@ export default function ResultDetailModal({ isOpen, result, quiz, isAdmin = fals
         }
 
         const parts = {
-            mcq: quiz.questions.filter(q => q.type === 'mcq'),
-            'group-tf': quiz.questions.filter(q => q.type === 'group-tf'),
-            short: quiz.questions.filter(q => q.type === 'short')
+            mcq: questions.filter(q => q.type === 'mcq'),
+            'group-tf': questions.filter(q => q.type === 'group-tf'),
+            short: questions.filter(q => q.type === 'short')
         };
         return [...parts.mcq, ...parts['group-tf'], ...parts.short];
-    }, [quiz.questions, result.shuffledQuestionIds]);
+    }, [questions, result.shuffledQuestionIds]);
 
     const renderQuestionDetail = (q: Question, idx: number) => {
         const ans = userAnswers[q.id];
@@ -217,7 +274,7 @@ export default function ResultDetailModal({ isOpen, result, quiz, isAdmin = fals
                     <button onClick={onClose} className="p-4 bg-black/20 rounded-2xl hover:bg-red-600 transition-colors"><X/></button>
                 </div>
 
-                <div className="flex-1 overflow-y-auto p-12 bg-slate-50 custom-scrollbar">
+                <div ref={scrollContainerRef} className="flex-1 overflow-y-auto p-12 bg-slate-50 custom-scrollbar relative">
                     <div className="max-w-3xl mx-auto space-y-10 pb-10">
                         
                         {!showDetailAnswers && (
@@ -238,27 +295,58 @@ export default function ResultDetailModal({ isOpen, result, quiz, isAdmin = fals
                             </div>
                         )}
 
-                        {/* Render theo Phần */}
-                        {orderedQuestions.some(q => q.type === 'mcq') && (
-                            <div className="space-y-6">
-                                <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest border-b-2 border-slate-200 pb-2">PHẦN I. TRẮC NGHIỆM NHIỀU LỰA CHỌN</h4>
-                                {orderedQuestions.filter(q => q.type === 'mcq').map((q) => renderQuestionDetail(q, orderedQuestions.indexOf(q)))}
+                        {isLoadingQuiz ? (
+                            <div className="py-20 flex flex-col items-center justify-center gap-4 text-slate-400">
+                                <Loader2 className="animate-spin text-blue-600" size={36}/>
+                                <p className="text-xs font-bold uppercase tracking-wider">Đang tải nội dung câu hỏi bài làm...</p>
                             </div>
-                        )}
+                        ) : orderedQuestions.length === 0 ? (
+                            <div className="py-20 text-center bg-white rounded-3xl border border-slate-100 p-8 shadow-sm">
+                                <p className="text-slate-400 font-bold text-xs uppercase italic">Không tìm thấy dữ liệu câu hỏi của đề thi này hoặc đề thi đã được cập nhật.</p>
+                            </div>
+                        ) : (
+                            <>
+                                {/* Render theo Phần */}
+                                {orderedQuestions.some(q => q.type === 'mcq') && (
+                                    <div className="space-y-6">
+                                        <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest border-b-2 border-slate-200 pb-2">PHẦN I. TRẮC NGHIỆM NHIỀU LỰA CHỌN</h4>
+                                        {orderedQuestions.filter(q => q.type === 'mcq').map((q) => renderQuestionDetail(q, orderedQuestions.indexOf(q)))}
+                                    </div>
+                                )}
 
-                        {orderedQuestions.some(q => q.type === 'group-tf') && (
-                            <div className="space-y-6 pt-10">
-                                <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest border-b-2 border-slate-200 pb-2">PHẦN II. TRẮC NGHIỆM ĐÚNG/SAI</h4>
-                                {orderedQuestions.filter(q => q.type === 'group-tf').map((q) => renderQuestionDetail(q, orderedQuestions.indexOf(q)))}
-                            </div>
-                        )}
+                                {orderedQuestions.some(q => q.type === 'group-tf') && (
+                                    <div className="space-y-6 pt-10">
+                                        <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest border-b-2 border-slate-200 pb-2">PHẦN II. TRẮC NGHIỆM ĐÚNG/SAI</h4>
+                                        {orderedQuestions.filter(q => q.type === 'group-tf').map((q) => renderQuestionDetail(q, orderedQuestions.indexOf(q)))}
+                                    </div>
+                                )}
 
-                        {orderedQuestions.some(q => q.type === 'short') && (
-                            <div className="space-y-6 pt-10">
-                                <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest border-b-2 border-slate-200 pb-2">PHẦN III. TRẢ LỜI NGẮN</h4>
-                                {orderedQuestions.filter(q => q.type === 'short').map((q) => renderQuestionDetail(q, orderedQuestions.indexOf(q)))}
-                            </div>
+                                {orderedQuestions.some(q => q.type === 'short') && (
+                                    <div className="space-y-6 pt-10">
+                                        <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest border-b-2 border-slate-200 pb-2">PHẦN III. TRẢ LỜI NGẮN</h4>
+                                        {orderedQuestions.filter(q => q.type === 'short').map((q) => renderQuestionDetail(q, orderedQuestions.indexOf(q)))}
+                                    </div>
+                                )}
+                            </>
                         )}
+                    </div>
+
+                    {/* Floating quick navigation */}
+                    <div className="sticky bottom-4 float-right flex flex-col gap-2 z-20 pointer-events-auto">
+                        <button
+                            onClick={() => scrollContainerRef.current?.scrollBy({ top: -450, behavior: 'smooth' })}
+                            title="Cuộn lên (Phím mũi tên lên / PageUp)"
+                            className="w-11 h-11 bg-white/95 backdrop-blur-md text-slate-700 hover:text-emerald-600 rounded-2xl border-2 border-slate-200 shadow-xl flex items-center justify-center hover:bg-emerald-50 transition-all active:scale-95 group"
+                        >
+                            <ChevronUp size={20} className="group-hover:-translate-y-0.5 transition-transform" />
+                        </button>
+                        <button
+                            onClick={() => scrollContainerRef.current?.scrollBy({ top: 450, behavior: 'smooth' })}
+                            title="Cuộn xuống (Phím mũi tên xuống / PageDown)"
+                            className="w-11 h-11 bg-white/95 backdrop-blur-md text-slate-700 hover:text-emerald-600 rounded-2xl border-2 border-slate-200 shadow-xl flex items-center justify-center hover:bg-emerald-50 transition-all active:scale-95 group"
+                        >
+                            <ChevronDown size={20} className="group-hover:translate-y-0.5 transition-transform" />
+                        </button>
                     </div>
                 </div>
             </div>
