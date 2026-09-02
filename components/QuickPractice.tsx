@@ -10,6 +10,16 @@ interface QuickPracticeProps {
   onExit: () => void;
 }
 
+// Hàm xáo trộn mảng ngẫu nhiên (Fisher-Yates)
+function shuffleArray<T>(array: T[]): T[] {
+  const shuffled = [...array];
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+  return shuffled;
+}
+
 export default function QuickPractice({ quiz, student, onExit }: QuickPracticeProps) {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [selectedOption, setSelectedOption] = useState<any>(null); // Lưu đáp án chọn (string cho mcq/short, object cho tf)
@@ -17,7 +27,15 @@ export default function QuickPractice({ quiz, student, onExit }: QuickPracticePr
   const [showContent, setShowContent] = useState(true);
   const [memoryTimer, setMemoryTimer] = useState(10); 
 
-  const currentQuestion = quiz.questions[currentIndex];
+  // Xáo trộn riêng từng phần: Phần I (MCQ), Phần II (Đúng/Sai), Phần III (Trả lời ngắn)
+  const orderedQuestions = useMemo(() => {
+    const mcq = quiz.questions.filter(q => q.type === 'mcq');
+    const tf = quiz.questions.filter(q => q.type === 'group-tf');
+    const short = quiz.questions.filter(q => q.type === 'short');
+    return [...shuffleArray(mcq), ...shuffleArray(tf), ...shuffleArray(short)];
+  }, [quiz.questions]);
+
+  const currentQuestion = orderedQuestions[currentIndex] || quiz.questions[0];
 
   // Tính toán đúng/sai
   const checkIsCorrect = () => {
@@ -81,7 +99,7 @@ export default function QuickPractice({ quiz, student, onExit }: QuickPracticePr
   };
 
   const handleNext = () => {
-    if (currentIndex < quiz.questions.length - 1) {
+    if (currentIndex < orderedQuestions.length - 1) {
       setCurrentIndex(currentIndex + 1);
       setSelectedOption(null);
       setIsAnswered(false);
@@ -107,9 +125,9 @@ export default function QuickPractice({ quiz, student, onExit }: QuickPracticePr
         <div className="bg-white rounded-full h-8 p-1 flex items-center shadow-sm relative overflow-hidden border">
            <div 
              className="h-full bg-blue-500 rounded-full transition-all duration-1000 flex items-center justify-end px-3"
-             style={{ width: `${((currentIndex + 1) / quiz.questions.length) * 100}%` }}
+             style={{ width: `${((currentIndex + 1) / orderedQuestions.length) * 100}%` }}
            >
-             <span className="text-[10px] text-white font-black">{currentIndex + 1}/{quiz.questions.length}</span>
+             <span className="text-[10px] text-white font-black">{currentIndex + 1}/{orderedQuestions.length}</span>
            </div>
            {!isAnswered && showContent && (
              <div className="absolute top-0 right-4 h-full flex items-center gap-2">
