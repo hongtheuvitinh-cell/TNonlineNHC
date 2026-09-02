@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
-import { X, Download, FileType, AlignLeft, Rows, FileCode } from 'lucide-react';
+import { X, Download, FileType, AlignLeft, Rows, FileCode, Sparkles, Loader2 } from 'lucide-react';
 import { Quiz, Question } from '../../types';
 import LatexText from '../LatexText';
 import { normalizeFullText, repairVietnameseText } from '../../services/vietnameseFixer';
+import { exportQuizToDocx } from '../../services/docxExporter';
 
 interface QuizPreviewModalProps {
     quiz: Quiz;
@@ -12,6 +13,7 @@ interface QuizPreviewModalProps {
 
 export default function QuizPreviewModal({ quiz, onClose, isAdmin = true }: QuizPreviewModalProps) {
     const [layoutMode, setLayoutMode] = useState<'single' | 'auto'>('single');
+    const [isExportingDocx, setIsExportingDocx] = useState(false);
 
     // Render các phương án dạng văn bản sạch - HOÀN TOÀN KHÔNG DÙNG TABLE
     const renderOptionsNoTable = (q: Question) => {
@@ -390,6 +392,19 @@ export default function QuizPreviewModal({ quiz, onClose, isAdmin = true }: Quiz
         URL.revokeObjectURL(url);
     };
 
+    const handleExportDocx = async () => {
+        if (!isAdmin) return;
+        try {
+            setIsExportingDocx(true);
+            await exportQuizToDocx(quiz, { isAdmin, layoutMode });
+        } catch (error) {
+            console.error("Lỗi xuất Word DOCX:", error);
+            alert("Có lỗi khi tạo file Word (.docx). Vui lòng thử lại hoặc sử dụng nút Xuất Word (.doc).");
+        } finally {
+            setIsExportingDocx(false);
+        }
+    };
+
     const handleExportJSON = () => {
         try {
             const jsonStr = JSON.stringify(quiz, null, 2);
@@ -463,10 +478,18 @@ export default function QuizPreviewModal({ quiz, onClose, isAdmin = true }: Quiz
                                 </button>
                                 <button 
                                     onClick={handleExportWord}
-                                    className="flex items-center gap-2 px-5 py-2.5 bg-emerald-600 text-white rounded-xl text-[11px] font-black uppercase hover:bg-emerald-700 transition-all shadow-xl active:scale-95"
-                                    title="Xuất file Microsoft Word chuẩn định dạng (.doc)"
+                                    className="flex items-center gap-2 px-4 py-2.5 bg-emerald-600 text-white rounded-xl text-[11px] font-black uppercase hover:bg-emerald-700 transition-all shadow-xl active:scale-95"
+                                    title="Xuất file Microsoft Word tương thích cao (.doc)"
                                 >
                                     <Download size={15}/> Xuất Word (.doc)
+                                </button>
+                                <button 
+                                    onClick={handleExportDocx}
+                                    disabled={isExportingDocx}
+                                    className="flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-[11px] font-black uppercase transition-all shadow-xl active:scale-95 disabled:opacity-50"
+                                    title="Xuất file Microsoft Word (.docx) chứa công thức hiển thị trực tiếp bằng Equation trong Word"
+                                >
+                                    {isExportingDocx ? <Loader2 size={15} className="animate-spin" /> : <Sparkles size={15} />} Xuất Word (.docx)
                                 </button>
                             </>
                         )}
