@@ -31,15 +31,32 @@ export default function ResultDetailModal({ isOpen, result, quiz, isAdmin = fals
     const isAnswersAllowedByTeacher = quiz.showResultAnswers !== false;
     const showDetailAnswers = isAdmin || (quiz.type === 'practice') || (isAnswersAllowedByTeacher && isEnded);
 
-    // Sắp xếp câu hỏi theo thứ tự Phần I, II, III giống lúc làm bài
+    // Sắp xếp câu hỏi theo thứ tự học sinh đã làm (đã xáo trộn từng phần) hoặc theo thứ tự mặc định
     const orderedQuestions = useMemo(() => {
+        if (result.shuffledQuestionIds && Array.isArray(result.shuffledQuestionIds) && result.shuffledQuestionIds.length > 0) {
+            const qMap = new Map(quiz.questions.map(q => [q.id, q]));
+            const restored: Question[] = [];
+            for (const qid of result.shuffledQuestionIds) {
+                const q = qMap.get(qid);
+                if (q) {
+                    restored.push(q);
+                    qMap.delete(qid);
+                }
+            }
+            // Thêm các câu còn lại (nếu có bổ sung sau này)
+            for (const remaining of qMap.values()) {
+                restored.push(remaining);
+            }
+            return restored;
+        }
+
         const parts = {
             mcq: quiz.questions.filter(q => q.type === 'mcq'),
             'group-tf': quiz.questions.filter(q => q.type === 'group-tf'),
             short: quiz.questions.filter(q => q.type === 'short')
         };
         return [...parts.mcq, ...parts['group-tf'], ...parts.short];
-    }, [quiz.questions]);
+    }, [quiz.questions, result.shuffledQuestionIds]);
 
     const renderQuestionDetail = (q: Question, idx: number) => {
         const ans = userAnswers[q.id];
