@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { Quiz, Result, Grade, Chapter, ClassRoom, User } from '../../types';
 import { 
   Edit, Trash2, Eye, Users, Filter, FileText, ChevronDown, Link as LinkIcon, 
@@ -78,6 +78,275 @@ export const getQuizStatus = (q: Quiz) => {
         isActive: isStarted && !isExpired
     };
 };
+
+interface QuizCardItemProps {
+    quiz: Quiz;
+    isMine: boolean;
+    canManage: boolean;
+    creatorSubject?: string;
+    classes?: ClassRoom[];
+    resultCount: number;
+    quizYearOverride?: string;
+    updatingYearQuizId: string | null;
+    onPreview: (q: Quiz) => void;
+    onEdit: (q: Quiz) => void;
+    onDelete: (id: string) => void;
+    openAssignModal: (q: Quiz) => void;
+    copyQuizLink: (id: string) => void;
+    handleSetAcademicYear: (id: string, yr: string) => void;
+}
+
+const QuizCardItem = React.memo(function QuizCardItem({
+    quiz: q,
+    isMine,
+    canManage,
+    creatorSubject,
+    classes = [],
+    resultCount,
+    quizYearOverride,
+    updatingYearQuizId,
+    onPreview,
+    onEdit,
+    onDelete,
+    openAssignModal,
+    copyQuizLink,
+    handleSetAcademicYear
+}: QuizCardItemProps) {
+    const now = new Date();
+    const startX = q.startTime ? new Date(q.startTime) : null;
+    const endY = q.endTime ? new Date(q.endTime) : null;
+    const isFlexibleWindow = Boolean(startX && endY && endY.getTime() > startX.getTime());
+
+    let isStarted = true;
+    let isExpired = false;
+
+    if (q.type === 'test') {
+        if (startX) {
+            if (isFlexibleWindow && endY) {
+                isStarted = now.getTime() >= startX.getTime();
+                isExpired = now.getTime() > endY.getTime();
+            } else {
+                const globalEnd = new Date(startX.getTime() + (q.durationMinutes || 0) * 60000);
+                isStarted = now.getTime() >= startX.getTime();
+                isExpired = now.getTime() > globalEnd.getTime();
+            }
+        }
+    } else {
+        isStarted = true;
+        isExpired = Boolean(endY && now.getTime() > endY.getTime());
+    }
+    const isActive = isStarted && !isExpired;
+    
+    let cardBorder = "";
+    let cardBg = "";
+    if (!q.isPublished) {
+        cardBg = "bg-slate-50";
+        cardBorder = "border-slate-300 border-dashed border-l-slate-400";
+    } else if (isExpired) {
+        cardBg = "bg-amber-50/40";
+        cardBorder = "border-amber-200 border-l-amber-500";
+    } else if (q.isUnlisted) {
+        cardBg = "bg-indigo-50/30";
+        cardBorder = "border-indigo-200 border-l-indigo-600";
+    } else {
+        cardBg = "bg-white";
+        cardBorder = "border-slate-200 border-l-blue-600";
+    }
+
+    const assignedNames = useMemo(() => {
+        if (!q.assignedClassIds || q.assignedClassIds.length === 0) return '';
+        const names = q.assignedClassIds.map(id => {
+            const found = classes.find(c => c.id === id);
+            return found ? found.name : id;
+        });
+        if (names.length === 1) return `Lớp ${names[0]}`;
+        return `${names.length} Lớp`;
+    }, [q.assignedClassIds, classes]);
+
+    const effectiveYear = quizYearOverride || q.academicYear || getQuizAcademicYear(q);
+
+    return (
+        <div 
+            className={`rounded-2xl p-4 sm:p-5 border transition-all flex flex-col md:flex-row gap-4 justify-between items-stretch group relative overflow-hidden border-l-4 sm:border-l-[6px] shadow-sm hover:shadow-md ${cardBg} ${cardBorder}`}
+        >
+            {/* Phía Trái & Giữa: Thông tin, Huy hiệu, Tiêu đề, Niên khóa */}
+            <div className="flex-1 flex flex-col justify-between min-w-0 space-y-2.5">
+                {/* Dòng Huy hiệu (Badges) */}
+                <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className={`px-2 py-0.5 rounded-lg text-[9px] font-black uppercase tracking-tight ${q.isPublished ? (isExpired ? 'bg-amber-600 text-white' : (q.isUnlisted ? 'bg-indigo-600 text-white' : 'bg-blue-600 text-white')) : 'bg-slate-300 text-slate-700'}`}>
+                        K{q.grade}
+                    </span>
+                    
+                    {q.type === 'practice' ? (
+                        <span className="px-2 py-0.5 bg-amber-100 border border-amber-300 text-amber-900 rounded-lg text-[9px] font-black uppercase flex items-center gap-1 shadow-xs" title="Chế độ Luyện tập: Nhấn vào câu hỏi xem ngay đáp án & lời giải chi tiết">
+                            📖 Luyện tập
+                        </span>
+                    ) : (
+                        <span className="px-2 py-0.5 bg-indigo-100 border border-indigo-300 text-indigo-900 rounded-lg text-[9px] font-black uppercase flex items-center gap-1 shadow-xs" title={`Chế độ Làm bài: ${(q.maxAttempts === 1 || q.maxAttempts === undefined) ? 'Làm 1 lần duy nhất rồi đóng băng' : q.maxAttempts > 1 ? `Tối đa ${q.maxAttempts} lần làm bài` : 'Không giới hạn số lần'}`}>
+                            ✍️ {(q.maxAttempts === 1 || q.maxAttempts === undefined) ? '1 Lần (Đóng băng)' : q.maxAttempts > 1 ? `${q.maxAttempts} Lần` : 'Làm bài'}
+                        </span>
+                    )}
+
+                    {(q.subject || creatorSubject) && (
+                        <span className="px-2 py-0.5 bg-purple-50 border border-purple-200 text-purple-800 rounded-lg text-[9px] font-black uppercase flex items-center gap-1">
+                            <BookOpen size={10} className="text-purple-600"/>
+                            {q.subject || creatorSubject}
+                        </span>
+                    )}
+
+                    {q.targetType === 'classes' && assignedNames && (
+                        <span className="px-2 py-0.5 bg-sky-50 border border-sky-200 text-sky-800 rounded-lg text-[9px] font-black uppercase flex items-center gap-1">
+                            <GraduationCap size={11}/>
+                            {assignedNames}
+                        </span>
+                    )}
+
+                    {q.isPublished && (
+                        isExpired ? (
+                            <span className="px-2 py-0.5 bg-amber-50 border border-amber-300 text-amber-700 rounded-lg text-[9px] font-black uppercase flex items-center gap-1">
+                                HẾT HẠN
+                            </span>
+                        ) : (
+                            <span className={`px-2 py-0.5 bg-white border ${isActive ? 'border-emerald-300 text-emerald-700 bg-emerald-50/50' : 'border-amber-300 text-amber-700 bg-amber-50/50'} rounded-lg text-[9px] font-black uppercase flex items-center gap-1`}>
+                                {isActive ? 'ĐANG MỞ' : 'CHƯA ĐẾN GIỜ'}
+                            </span>
+                        )
+                    )}
+
+                    {q.isPublished && q.isUnlisted && (
+                        <span className="px-2 py-0.5 bg-indigo-50 border border-indigo-200 text-indigo-700 rounded-lg text-[9px] font-black uppercase flex items-center gap-1">
+                            <EyeOff size={10}/> RIÊNG TƯ
+                        </span>
+                    )}
+
+                    {q.showResultAnswers === false && q.type === 'test' && (
+                        <span className="px-2 py-0.5 bg-rose-50 border border-rose-200 text-rose-700 rounded-lg text-[9px] font-black uppercase flex items-center gap-1" title="Ẩn đáp án đúng và lời giải đối với học sinh">
+                            <EyeOff size={10}/> ẨN ĐÁP ÁN
+                        </span>
+                    )}
+
+                    {q.isMonitored && (
+                        <span className="p-1 bg-red-50 text-red-600 rounded-md border border-red-100" title="Có giám sát chống gian lận">
+                            <ShieldCheck size={11}/>
+                        </span>
+                    )}
+                </div>
+
+                {/* Tiêu đề đề thi */}
+                <h3 
+                    onClick={() => onPreview(q)}
+                    className={`font-black text-sm leading-snug uppercase transition-colors line-clamp-2 cursor-pointer hover:text-blue-600 ${q.isPublished ? 'text-slate-900' : 'text-slate-600'}`}
+                >
+                    {q.title}
+                </h3>
+
+                {/* Thông tin phụ: Tác giả, Thời lượng, Niên khóa */}
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[10px] text-slate-500 font-bold pt-0.5">
+                    {q.createdByName ? (
+                        <span className="flex items-center gap-1">
+                            <UserIcon size={11} className="text-slate-400"/>
+                            {isMine ? <b className="text-blue-700">Tôi (Tác giả)</b> : `GV: ${q.createdByName}`}
+                        </span>
+                    ) : null}
+
+                    {q.isSharedWithTeachers && (
+                        <span className="px-1.5 py-0.5 bg-blue-50 text-blue-700 border border-blue-200 rounded text-[8px] font-black uppercase flex items-center gap-1">
+                            <Share2 size={9}/> Cùng môn
+                        </span>
+                    )}
+
+                    {q.durationMinutes ? (
+                        <span className="text-slate-600 font-black">⏱️ {q.durationMinutes}p</span>
+                    ) : null}
+
+                    {/* Sét nhanh Niên khóa */}
+                    <div className="flex items-center gap-1 bg-slate-100/80 px-2 py-0.5 rounded-lg border border-slate-200/70">
+                        <Calendar size={11} className="text-sky-600"/>
+                        <span className="text-sky-800 font-black text-[9px]">NH {effectiveYear}</span>
+                        {canManage && (
+                            <select
+                                className="text-[9px] font-black py-0.5 px-1 bg-white hover:bg-sky-50 border border-slate-200 rounded text-slate-700 outline-none cursor-pointer ml-1"
+                                value={effectiveYear}
+                                disabled={updatingYearQuizId === q.id}
+                                onChange={(e) => handleSetAcademicYear(q.id, e.target.value)}
+                            >
+                                {getAcademicYearOptions([effectiveYear]).map(yr => (
+                                    <option key={yr} value={yr}>
+                                        Đổi sang NH {yr}
+                                    </option>
+                                ))}
+                            </select>
+                        )}
+                    </div>
+                </div>
+            </div>
+
+            {/* Phía Phải: Số liệu nhanh & Các nút thao tác */}
+            <div className="w-full md:w-52 lg:w-56 shrink-0 flex flex-col justify-between border-t md:border-t-0 md:border-l border-slate-200/80 md:pl-4 pt-3 md:pt-0 space-y-3">
+                {/* Dòng số liệu và nút Sửa/Xóa/Link */}
+                <div className="flex items-center justify-between gap-1.5">
+                    <div className="flex items-center gap-1.5">
+                        <span className="px-2 py-1 bg-slate-100 rounded-lg text-[9px] font-black text-slate-700 flex items-center gap-1 border border-slate-200/60">
+                            <FileText size={11} className="text-blue-600"/> {q.questionCount || 0} câu
+                        </span>
+                        <span className="px-2 py-1 bg-slate-100 rounded-lg text-[9px] font-black text-slate-700 flex items-center gap-1 border border-slate-200/60">
+                            <Users size={11} className="text-emerald-600"/> {resultCount} lượt
+                        </span>
+                    </div>
+
+                    <div className="flex items-center gap-1">
+                        {q.isUnlisted && (
+                            <button onClick={() => copyQuizLink(q.id)} className="p-1.5 bg-indigo-600 text-white rounded-lg hover:bg-black shadow-xs transition-colors" title="Copy Link Riêng Tư">
+                                <LinkIcon size={12}/>
+                            </button>
+                        )}
+                        {canManage && (
+                            <>
+                                <button 
+                                    onClick={(e) => { e.stopPropagation(); onEdit(q); }} 
+                                    className="px-2 py-1.5 bg-slate-900 text-white rounded-lg hover:bg-blue-600 shadow-xs transition-all flex items-center gap-1 text-[9px] font-black" 
+                                    title="Sửa đề thi"
+                                >
+                                    <Edit size={11}/>
+                                    <span>Sửa</span>
+                                </button>
+                                <button 
+                                    onClick={(e) => { e.stopPropagation(); onDelete(q.id); }} 
+                                    className="p-1.5 bg-rose-50 border border-rose-200 text-rose-600 rounded-lg hover:bg-rose-600 hover:text-white shadow-xs transition-all" 
+                                    title="Xóa đề thi"
+                                >
+                                    <Trash2 size={11}/>
+                                </button>
+                            </>
+                        )}
+                    </div>
+                </div>
+
+                {/* Các nút Xem & Giao lớp */}
+                <div className="grid grid-cols-2 gap-2">
+                    <button 
+                        onClick={() => onPreview(q)} 
+                        className="py-2 px-2 rounded-xl text-[9px] font-black uppercase flex items-center justify-center gap-1 transition-all bg-slate-100 text-slate-700 hover:bg-slate-200 border border-slate-200 active:scale-95 shadow-xs"
+                        title="Xem chi tiết & Xuất file Word (.docx / .doc) / JSON (.json)"
+                    >
+                        <Eye size={12}/> Xem & In
+                    </button>
+                    <button 
+                        onClick={() => openAssignModal(q)} 
+                        className={`py-2 px-2 rounded-xl text-[9px] font-black uppercase flex items-center justify-center gap-1 transition-all shadow-xs active:scale-95 text-white ${
+                            !isMine 
+                                ? 'bg-emerald-600 hover:bg-emerald-700' 
+                                : 'bg-blue-600 hover:bg-blue-700'
+                        }`}
+                        title={!isMine ? "Giao đề chia sẻ này cho lớp bạn phụ trách" : "Giao đề cho các lớp học"}
+                    >
+                        <GraduationCap size={13}/> Giao Lớp
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+});
 
 export default function QuizList({ 
     quizzes, results, chapters, classes = [], currentUser, teachers = [],
@@ -315,6 +584,24 @@ export default function QuizList({
 
     const visibleQuizzes = filtered.slice(0, visibleCount);
 
+    const resultCountsMap = useMemo(() => {
+        const map: Record<string, number> = {};
+        results.forEach(r => {
+            if (r.quizId) {
+                map[r.quizId] = (map[r.quizId] || 0) + 1;
+            }
+        });
+        return map;
+    }, [results]);
+
+    const teachersMap = useMemo(() => {
+        const map: Record<string, User> = {};
+        teachers.forEach(t => {
+            if (t.id) map[t.id] = t;
+        });
+        return map;
+    }, [teachers]);
+
     const [copiedId, setCopiedId] = useState<string | null>(null);
     const [assigningQuiz, setAssigningQuiz] = useState<Quiz | null>(null);
     const [selectedClassIdsForAssign, setSelectedClassIdsForAssign] = useState<string[]>([]);
@@ -322,12 +609,12 @@ export default function QuizList({
     const [assignGradeFilter, setAssignGradeFilter] = useState<'matching' | 'all'>('matching');
     const [assignSearchClass, setAssignSearchClass] = useState<string>('');
 
-    const openAssignModal = (q: Quiz) => {
+    const openAssignModal = useCallback((q: Quiz) => {
         setAssigningQuiz(q);
         setSelectedClassIdsForAssign(q.assignedClassIds || []);
         setAssignGradeFilter('matching');
         setAssignSearchClass('');
-    };
+    }, []);
 
     const handleSaveAssignment = async () => {
         if (!assigningQuiz) return;
@@ -364,13 +651,13 @@ export default function QuizList({
         return list;
     }, [classes, assigningQuiz, isSuperAdmin, currentUser?.id, assignGradeFilter, assignSearchClass]);
 
-    const copyQuizLink = (quizId: string) => {
+    const copyQuizLink = useCallback((quizId: string) => {
         const url = `${window.location.origin}/?quiz=${quizId}`;
         navigator.clipboard.writeText(url).then(() => {
             setCopiedId(quizId);
             setTimeout(() => setCopiedId(null), 3000);
         });
-    };
+    }, []);
 
     return (
         <div className="space-y-8 animate-fade-in relative">
@@ -572,241 +859,28 @@ export default function QuizList({
                 {visibleQuizzes.map(q => {
                     const isMine = Boolean(currentUser?.id && q.createdBy === currentUser.id);
                     const canManage = isSuperAdmin || isMine;
-
-                    const now = new Date();
-                    const startX = q.startTime ? new Date(q.startTime) : null;
-                    const endY = q.endTime ? new Date(q.endTime) : null;
-                    const isFlexibleWindow = Boolean(startX && endY && endY.getTime() > startX.getTime());
-
-                    let isStarted = true;
-                    let isExpired = false;
-
-                    if (q.type === 'test') {
-                        if (startX) {
-                            if (isFlexibleWindow && endY) {
-                                isStarted = now.getTime() >= startX.getTime();
-                                isExpired = now.getTime() > endY.getTime();
-                            } else {
-                                const globalEnd = new Date(startX.getTime() + (q.durationMinutes || 0) * 60000);
-                                isStarted = now.getTime() >= startX.getTime();
-                                isExpired = now.getTime() > globalEnd.getTime();
-                            }
-                        }
-                    } else {
-                        isStarted = true;
-                        isExpired = Boolean(endY && now.getTime() > endY.getTime());
-                    }
-                    const isActive = isStarted && !isExpired;
-                    
-                    let cardBorder = "";
-                    let cardBg = "";
-                    if (!q.isPublished) {
-                        cardBg = "bg-slate-50";
-                        cardBorder = "border-slate-300 border-dashed border-l-slate-400";
-                    } else if (isExpired) {
-                        cardBg = "bg-amber-50/40";
-                        cardBorder = "border-amber-200 border-l-amber-500";
-                    } else if (q.isUnlisted) {
-                        cardBg = "bg-indigo-50/30";
-                        cardBorder = "border-indigo-200 border-l-indigo-600";
-                    } else {
-                        cardBg = "bg-white";
-                        cardBorder = "border-slate-200 border-l-blue-600";
-                    }
+                    const creator = teachersMap[q.createdBy || ''];
+                    const creatorSubj = creator?.subject;
+                    const resCount = resultCountsMap[q.id] || 0;
 
                     return (
-                        <div 
-                            key={q.id} 
-                            className={`rounded-2xl p-4 sm:p-5 border transition-all flex flex-col md:flex-row gap-4 justify-between items-stretch group relative overflow-hidden border-l-4 sm:border-l-[6px] shadow-sm hover:shadow-md ${cardBg} ${cardBorder}`}
-                        >
-                            {/* Phía Trái & Giữa: Thông tin, Huy hiệu, Tiêu đề, Niên khóa */}
-                            <div className="flex-1 flex flex-col justify-between min-w-0 space-y-2.5">
-                                {/* Dòng Huy hiệu (Badges) */}
-                                <div className="flex items-center gap-1.5 flex-wrap">
-                                    <span className={`px-2 py-0.5 rounded-lg text-[9px] font-black uppercase tracking-tight ${q.isPublished ? (isExpired ? 'bg-amber-600 text-white' : (q.isUnlisted ? 'bg-indigo-600 text-white' : 'bg-blue-600 text-white')) : 'bg-slate-300 text-slate-700'}`}>
-                                        K{q.grade}
-                                    </span>
-                                    
-                                    {q.type === 'practice' ? (
-                                        <span className="px-2 py-0.5 bg-amber-100 border border-amber-300 text-amber-900 rounded-lg text-[9px] font-black uppercase flex items-center gap-1 shadow-xs" title="Chế độ Luyện tập: Nhấn vào câu hỏi xem ngay đáp án & lời giải chi tiết">
-                                            📖 Luyện tập
-                                        </span>
-                                    ) : (
-                                        <span className="px-2 py-0.5 bg-indigo-100 border border-indigo-300 text-indigo-900 rounded-lg text-[9px] font-black uppercase flex items-center gap-1 shadow-xs" title={`Chế độ Làm bài: ${(q.maxAttempts === 1 || q.maxAttempts === undefined) ? 'Làm 1 lần duy nhất rồi đóng băng' : q.maxAttempts > 1 ? `Tối đa ${q.maxAttempts} lần làm bài` : 'Không giới hạn số lần'}`}>
-                                            ✍️ {(q.maxAttempts === 1 || q.maxAttempts === undefined) ? '1 Lần (Đóng băng)' : q.maxAttempts > 1 ? `${q.maxAttempts} Lần` : 'Làm bài'}
-                                        </span>
-                                    )}
-
-                                    {((q.subject) || (teachers.find(t => t.id === q.createdBy)?.subject)) && (
-                                        <span className="px-2 py-0.5 bg-purple-50 border border-purple-200 text-purple-800 rounded-lg text-[9px] font-black uppercase flex items-center gap-1">
-                                            <BookOpen size={10} className="text-purple-600"/>
-                                            {q.subject || teachers.find(t => t.id === q.createdBy)?.subject}
-                                        </span>
-                                    )}
-
-                                    {q.targetType === 'classes' && q.assignedClassIds && q.assignedClassIds.length > 0 && (
-                                        <span className="px-2 py-0.5 bg-sky-50 border border-sky-200 text-sky-800 rounded-lg text-[9px] font-black uppercase flex items-center gap-1">
-                                            <GraduationCap size={11}/>
-                                            {(() => {
-                                                const assignedNames = q.assignedClassIds.map(id => {
-                                                    const found = classes?.find(c => c.id === id);
-                                                    return found ? `${found.name}` : id;
-                                                });
-                                                if (assignedNames.length === 1) return `Lớp ${assignedNames[0]}`;
-                                                return `${assignedNames.length} Lớp`;
-                                            })()}
-                                        </span>
-                                    )}
-
-                                    {q.isPublished && (
-                                        isExpired ? (
-                                            <span className="px-2 py-0.5 bg-amber-50 border border-amber-300 text-amber-700 rounded-lg text-[9px] font-black uppercase flex items-center gap-1">
-                                                HẾT HẠN
-                                            </span>
-                                        ) : (
-                                            <span className={`px-2 py-0.5 bg-white border ${isActive ? 'border-emerald-300 text-emerald-700 bg-emerald-50/50' : 'border-amber-300 text-amber-700 bg-amber-50/50'} rounded-lg text-[9px] font-black uppercase flex items-center gap-1`}>
-                                                {isActive ? 'ĐANG MỞ' : 'CHƯA ĐẾN GIỜ'}
-                                            </span>
-                                        )
-                                    )}
-
-                                    {q.isPublished && q.isUnlisted && (
-                                        <span className="px-2 py-0.5 bg-indigo-50 border border-indigo-200 text-indigo-700 rounded-lg text-[9px] font-black uppercase flex items-center gap-1">
-                                            <EyeOff size={10}/> RIÊNG TƯ
-                                        </span>
-                                    )}
-
-                                    {q.showResultAnswers === false && q.type === 'test' && (
-                                        <span className="px-2 py-0.5 bg-rose-50 border border-rose-200 text-rose-700 rounded-lg text-[9px] font-black uppercase flex items-center gap-1" title="Ẩn đáp án đúng và lời giải đối với học sinh">
-                                            <EyeOff size={10}/> ẨN ĐÁP ÁN
-                                        </span>
-                                    )}
-
-                                    {q.isMonitored && (
-                                        <span className="p-1 bg-red-50 text-red-600 rounded-md border border-red-100" title="Có giám sát chống gian lận">
-                                            <ShieldCheck size={11}/>
-                                        </span>
-                                    )}
-                                </div>
-
-                                {/* Tiêu đề đề thi rõ chữ, thanh thoát */}
-                                <h3 
-                                    onClick={() => onPreview(q)}
-                                    className={`font-black text-sm leading-snug uppercase transition-colors line-clamp-2 cursor-pointer hover:text-blue-600 ${q.isPublished ? 'text-slate-900' : 'text-slate-600'}`}
-                                >
-                                    {q.title}
-                                </h3>
-
-                                {/* Thông tin phụ: Tác giả, Thời lượng, Niên khóa */}
-                                <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[10px] text-slate-500 font-bold pt-0.5">
-                                    {q.createdByName ? (
-                                        <span className="flex items-center gap-1">
-                                            <UserIcon size={11} className="text-slate-400"/>
-                                            {isMine ? <b className="text-blue-700">Tôi (Tác giả)</b> : `GV: ${q.createdByName}`}
-                                        </span>
-                                    ) : null}
-
-                                    {q.isSharedWithTeachers && (
-                                        <span className="px-1.5 py-0.5 bg-blue-50 text-blue-700 border border-blue-200 rounded text-[8px] font-black uppercase flex items-center gap-1">
-                                            <Share2 size={9}/> Cùng môn
-                                        </span>
-                                    )}
-
-                                    {q.durationMinutes ? (
-                                        <span className="text-slate-600 font-black">⏱️ {q.durationMinutes}p</span>
-                                    ) : null}
-
-                                    {/* Sét nhanh Niên khóa */}
-                                    {(() => {
-                                        const effectiveYear = quizYearOverrides[q.id] || q.academicYear || getQuizAcademicYear(q);
-                                        return (
-                                            <div className="flex items-center gap-1 bg-slate-100/80 px-2 py-0.5 rounded-lg border border-slate-200/70">
-                                                <Calendar size={11} className="text-sky-600"/>
-                                                <span className="text-sky-800 font-black text-[9px]">NH {effectiveYear}</span>
-                                                {canManage && (
-                                                    <select
-                                                        className="text-[9px] font-black py-0.5 px-1 bg-white hover:bg-sky-50 border border-slate-200 rounded text-slate-700 outline-none cursor-pointer ml-1"
-                                                        value={effectiveYear}
-                                                        disabled={updatingYearQuizId === q.id}
-                                                        onChange={(e) => handleSetAcademicYear(q.id, e.target.value)}
-                                                    >
-                                                        {getAcademicYearOptions([effectiveYear]).map(yr => (
-                                                            <option key={yr} value={yr}>
-                                                                Đổi sang NH {yr}
-                                                            </option>
-                                                        ))}
-                                                    </select>
-                                                )}
-                                            </div>
-                                        );
-                                    })()}
-                                </div>
-                            </div>
-
-                            {/* Phía Phải: Số liệu nhanh & Các nút thao tác */}
-                            <div className="w-full md:w-52 lg:w-56 shrink-0 flex flex-col justify-between border-t md:border-t-0 md:border-l border-slate-200/80 md:pl-4 pt-3 md:pt-0 space-y-3">
-                                {/* Dòng số liệu và nút Sửa/Xóa/Link */}
-                                <div className="flex items-center justify-between gap-1.5">
-                                    <div className="flex items-center gap-1.5">
-                                        <span className="px-2 py-1 bg-slate-100 rounded-lg text-[9px] font-black text-slate-700 flex items-center gap-1 border border-slate-200/60">
-                                            <FileText size={11} className="text-blue-600"/> {q.questionCount || 0} câu
-                                        </span>
-                                        <span className="px-2 py-1 bg-slate-100 rounded-lg text-[9px] font-black text-slate-700 flex items-center gap-1 border border-slate-200/60">
-                                            <Users size={11} className="text-emerald-600"/> {results.filter(r => r.quizId === q.id).length} lượt
-                                        </span>
-                                    </div>
-
-                                    <div className="flex items-center gap-1">
-                                        {q.isUnlisted && (
-                                            <button onClick={() => copyQuizLink(q.id)} className="p-1.5 bg-indigo-600 text-white rounded-lg hover:bg-black shadow-xs transition-colors" title="Copy Link Riêng Tư">
-                                                <LinkIcon size={12}/>
-                                            </button>
-                                        )}
-                                        {canManage && (
-                                            <>
-                                                <button 
-                                                    onClick={(e) => { e.stopPropagation(); onEdit(q); }} 
-                                                    className="px-2 py-1.5 bg-slate-900 text-white rounded-lg hover:bg-blue-600 shadow-xs transition-all flex items-center gap-1 text-[9px] font-black" 
-                                                    title="Sửa đề thi"
-                                                >
-                                                    <Edit size={11}/>
-                                                    <span>Sửa</span>
-                                                </button>
-                                                <button 
-                                                    onClick={(e) => { e.stopPropagation(); onDelete(q.id); }} 
-                                                    className="p-1.5 bg-rose-50 border border-rose-200 text-rose-600 rounded-lg hover:bg-rose-600 hover:text-white shadow-xs transition-all" 
-                                                    title="Xóa đề thi"
-                                                >
-                                                    <Trash2 size={11}/>
-                                                </button>
-                                            </>
-                                        )}
-                                    </div>
-                                </div>
-
-                                {/* Các nút Xem & Giao lớp */}
-                                <div className="grid grid-cols-2 gap-2">
-                                    <button 
-                                        onClick={() => onPreview(q)} 
-                                        className="py-2 px-2 rounded-xl text-[9px] font-black uppercase flex items-center justify-center gap-1 transition-all bg-slate-100 text-slate-700 hover:bg-slate-200 border border-slate-200 active:scale-95 shadow-xs"
-                                        title="Xem chi tiết & Xuất file Word (.doc) / JSON (.json)"
-                                    >
-                                        <Eye size={12}/> Xem & In
-                                    </button>
-                                    <button 
-                                        onClick={() => openAssignModal(q)} 
-                                        className={`py-2 px-2 rounded-xl text-[9px] font-black uppercase flex items-center justify-center gap-1 transition-all shadow-xs active:scale-95 text-white ${
-                                            !isMine 
-                                                ? 'bg-emerald-600 hover:bg-emerald-700' 
-                                                : 'bg-blue-600 hover:bg-blue-700'
-                                        }`}
-                                        title={!isMine ? "Giao đề chia sẻ này cho lớp bạn phụ trách" : "Giao đề cho các lớp học"}
-                                    >
-                                        <GraduationCap size={13}/> Giao Lớp
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
+                        <QuizCardItem
+                            key={q.id}
+                            quiz={q}
+                            isMine={isMine}
+                            canManage={canManage}
+                            creatorSubject={creatorSubj}
+                            classes={classes}
+                            resultCount={resCount}
+                            quizYearOverride={quizYearOverrides[q.id]}
+                            updatingYearQuizId={updatingYearQuizId}
+                            onPreview={onPreview}
+                            onEdit={onEdit}
+                            onDelete={onDelete}
+                            openAssignModal={openAssignModal}
+                            copyQuizLink={copyQuizLink}
+                            handleSetAcademicYear={handleSetAcademicYear}
+                        />
                     );
                 })}
             </div>
