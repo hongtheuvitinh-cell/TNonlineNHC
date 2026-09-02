@@ -126,6 +126,7 @@ export interface Result {
   bonusPoint?: number; 
   userAnswers?: Record<string, any>; 
   violationCount?: number;
+  shuffledQuestionIds?: string[];
 }
 
 export interface ExamSession {
