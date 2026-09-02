@@ -164,6 +164,26 @@ export default function StudentDashboard({ user, targetQuizId }: StudentDashboar
     if (canStart) setActivePracticeQuiz(fullQuiz);
   };
 
+  const handleViewResultDetail = async (r: Result, q?: Quiz) => {
+    let targetQuiz = q || quizzes.find(item => item.id === r.quizId);
+    if (targetQuiz && (!targetQuiz.questions || targetQuiz.questions.length === 0)) {
+      setIsLoading(true);
+      const fetched = await getQuizById(targetQuiz.id);
+      setIsLoading(false);
+      if (fetched) targetQuiz = fetched;
+    } else if (!targetQuiz) {
+      setIsLoading(true);
+      const fetched = await getQuizById(r.quizId);
+      setIsLoading(false);
+      if (fetched) targetQuiz = fetched;
+    }
+    if (targetQuiz) {
+      setSelectedResult({ result: r, quiz: targetQuiz });
+    } else {
+      alert("Không tìm thấy thông tin đề thi này.");
+    }
+  };
+
   // Xử lý tự động mở đề thi từ link ẩn
   useEffect(() => {
     if (targetQuizId) {
@@ -590,7 +610,7 @@ export default function StudentDashboard({ user, targetQuizId }: StudentDashboar
                                           <button 
                                               onClick={() => {
                                                   const res = attempts[attempts.length - 1] || results.find(r => r.quizId === q.id);
-                                                  if (res) setSelectedResult({ result: res, quiz: q });
+                                                  if (res) handleViewResultDetail(res, q);
                                               }} 
                                               className="w-full py-2.5 rounded-xl border-2 border-emerald-200 bg-white text-emerald-700 font-black uppercase text-[9px] hover:bg-emerald-50 flex items-center justify-center gap-2 shadow-sm transition-all"
                                           >
@@ -609,7 +629,7 @@ export default function StudentDashboard({ user, targetQuizId }: StudentDashboar
                                               <button 
                                                   onClick={() => {
                                                       const res = attempts[attempts.length - 1] || results.find(r => r.quizId === q.id);
-                                                      if (res) setSelectedResult({ result: res, quiz: q });
+                                                      if (res) handleViewResultDetail(res, q);
                                                   }} 
                                                   className="w-full py-2 rounded-xl border border-slate-200 text-slate-600 font-black uppercase text-[9px] hover:bg-slate-50 flex items-center justify-center gap-1.5 transition-all"
                                               >
@@ -723,7 +743,7 @@ export default function StudentDashboard({ user, targetQuizId }: StudentDashboar
                                   <td className="p-6"><span className="font-black text-slate-800 uppercase text-xs leading-tight">{quiz?.title || 'Đề thi đã bị xóa'}</span></td>
                                   <td className="p-6 text-center text-xs font-bold text-slate-500">{format(new Date(r.submittedAt), 'HH:mm dd/MM/yyyy')}</td>
                                   <td className="p-6 text-center"><span className={`text-sm font-black ${r.score >= 8 ? 'text-emerald-600' : r.score >= 5 ? 'text-blue-600' : 'text-orange-600'}`}>{r.score.toFixed(2)}</span></td>
-                                  <td className="p-6 text-center"><button onClick={() => quiz && setSelectedResult({ result: r, quiz: quiz })} className="inline-flex items-center gap-2 px-5 py-2.5 bg-blue-50 text-blue-600 rounded-xl text-[9px] font-black uppercase hover:bg-blue-600 hover:text-white transition-all shadow-sm">Xem lại <ChevronRight size={14}/></button></td>
+                                  <td className="p-6 text-center"><button onClick={() => handleViewResultDetail(r, quiz)} className="inline-flex items-center gap-2 px-5 py-2.5 bg-blue-50 text-blue-600 rounded-xl text-[9px] font-black uppercase hover:bg-blue-600 hover:text-white transition-all shadow-sm">Xem lại <ChevronRight size={14}/></button></td>
                               </tr>
                           );
                       })}
