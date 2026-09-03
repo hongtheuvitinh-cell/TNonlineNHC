@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, Download, FileType, AlignLeft, Rows, FileCode, Sparkles, Loader2 } from 'lucide-react';
+import { X, Download, FileType, AlignLeft, Rows, FileCode, Sparkles, Loader2, ChevronUp, ChevronDown } from 'lucide-react';
 import { Quiz, Question } from '../../types';
 import LatexText from '../LatexText';
 import { normalizeFullText, repairVietnameseText } from '../../services/vietnameseFixer';
@@ -425,7 +425,7 @@ export default function QuizPreviewModal({ quiz, onClose, isAdmin = true }: Quiz
 
     return (
         <div className="fixed inset-0 bg-slate-900/95 z-[2000] flex items-center justify-center p-0 md:p-4 backdrop-blur-xl animate-fade-in">
-            <div className="bg-white rounded-[0] md:rounded-[3.5rem] w-full max-w-5xl h-full md:h-[95vh] flex flex-col overflow-hidden shadow-2xl">
+            <div className="bg-white rounded-[0] md:rounded-[3.5rem] w-full max-w-5xl h-full md:h-[95vh] flex flex-col overflow-hidden shadow-2xl relative">
                 
                 <div className="p-6 bg-slate-900 text-white flex flex-wrap justify-between items-center gap-4 shrink-0 border-b border-slate-800">
                     <div className="flex items-center gap-4">
@@ -502,7 +502,12 @@ export default function QuizPreviewModal({ quiz, onClose, isAdmin = true }: Quiz
                     </div>
                 </div>
 
-                <div className="flex-1 overflow-y-auto p-6 md:p-12 bg-white custom-scrollbar">
+                <div 
+                    id="quiz-preview-scroll" 
+                    tabIndex={0} 
+                    data-scroll-container="true" 
+                    className="flex-1 overflow-y-auto p-6 md:p-12 bg-white custom-scrollbar outline-none focus:outline-none"
+                >
                     <div 
                         id="quiz-export-content" 
                         className="max-w-4xl mx-auto space-y-8 pb-20 bg-white p-4 md:p-8 rounded-lg shadow-sm border border-slate-100" 
@@ -672,6 +677,32 @@ export default function QuizPreviewModal({ quiz, onClose, isAdmin = true }: Quiz
                             <p style={{ fontSize: '11pt', margin: '5pt 0' }}>--- HẾT ---</p>
                         </div>
                     </div>
+                </div>
+
+                {/* Nút cuộn nhanh cho đề thi */}
+                <div className="absolute bottom-6 right-6 z-40 flex flex-col gap-2">
+                    <button
+                        type="button"
+                        onClick={() => {
+                            const el = document.getElementById('quiz-preview-scroll');
+                            el?.scrollTo({ top: 0, behavior: 'smooth' });
+                        }}
+                        title="Cuộn lên đầu đề thi (Phím mũi tên lên / PageUp)"
+                        className="w-11 h-11 bg-white/95 backdrop-blur-md text-slate-700 hover:text-blue-600 rounded-2xl border-2 border-slate-200 shadow-xl flex items-center justify-center hover:bg-blue-50 transition-all active:scale-95 group"
+                    >
+                        <ChevronUp size={20} className="group-hover:-translate-y-0.5 transition-transform" />
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => {
+                            const el = document.getElementById('quiz-preview-scroll');
+                            el?.scrollBy({ top: 500, behavior: 'smooth' });
+                        }}
+                        title="Cuộn xuống đề thi (Phím mũi tên xuống / PageDown)"
+                        className="w-11 h-11 bg-white/95 backdrop-blur-md text-slate-700 hover:text-blue-600 rounded-2xl border-2 border-slate-200 shadow-xl flex items-center justify-center hover:bg-blue-50 transition-all active:scale-95 group"
+                    >
+                        <ChevronDown size={20} className="group-hover:translate-y-0.5 transition-transform" />
+                    </button>
                 </div>
             </div>
         </div>
