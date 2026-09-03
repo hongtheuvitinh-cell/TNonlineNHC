@@ -52,9 +52,11 @@ export default function Layout({ children, user, onLogout }: LayoutProps) {
       setIsChangePassOpen(true);
   };
 
+  const isAdmin = user?.role === 'admin' || user?.role === 'superadmin';
+
   return (
-    <div className="min-h-screen flex flex-col bg-gray-50">
-      <nav className="bg-white border-b sticky top-0 z-50 shadow-sm">
+    <div className={`flex flex-col bg-gray-50 ${isAdmin ? 'h-screen overflow-hidden' : 'min-h-screen'}`}>
+      <nav className="bg-white border-b sticky top-0 z-50 shadow-sm shrink-0">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between h-16">
             <div className="flex items-center gap-2">
@@ -90,25 +92,27 @@ export default function Layout({ children, user, onLogout }: LayoutProps) {
           </div>
         </div>
       </nav>
-      <main className="flex-1 w-full">
+      <main className={`flex-1 w-full ${isAdmin ? 'overflow-hidden flex flex-col min-h-0' : ''}`}>
         {children}
       </main>
-      <footer className="bg-white border-t mt-auto py-6">
-         <div className="max-w-7xl mx-auto text-center text-gray-500 text-sm flex flex-col items-center gap-3">
-            <span>© 2026 EduQuiz NHC. LH Thạnh 0909091634</span>
-            <div className="flex flex-wrap justify-center gap-3">
-                <div className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-black uppercase border ${isOnline ? 'bg-green-50 text-green-700 border-green-200' : 'bg-red-50 text-red-700 border-red-200'}`}>
-                    <Database size={12}/> {isOnline ? 'Cloud: lchfhsio...' : 'DB Offline'}
-                </div>
-                <div 
-                  className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-black uppercase border cursor-help ${isAIReady ? 'bg-purple-50 text-purple-700 border-purple-200' : 'bg-red-50 text-red-700 border-red-200'}`}
-                  title={isAIReady ? "Hệ thống AI đã sẵn sàng" : "Thiếu API_KEY hoặc cần Redeploy lại trên Vercel"}
-                >
-                    <Sparkles size={12}/> {isAIReady ? 'AI Ready' : 'AI No Key'}
-                </div>
-            </div>
-         </div>
-      </footer>
+      {!isAdmin && (
+        <footer className="bg-white border-t mt-auto py-6">
+           <div className="max-w-7xl mx-auto text-center text-gray-500 text-sm flex flex-col items-center gap-3">
+              <span>© 2026 EduQuiz NHC. LH Thạnh 0909091634</span>
+              <div className="flex flex-wrap justify-center gap-3">
+                  <div className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-black uppercase border ${isOnline ? 'bg-green-50 text-green-700 border-green-200' : 'bg-red-50 text-red-700 border-red-200'}`}>
+                      <Database size={12}/> {isOnline ? 'Cloud: lchfhsio...' : 'DB Offline'}
+                  </div>
+                  <div 
+                    className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-black uppercase border cursor-help ${isAIReady ? 'bg-purple-50 text-purple-700 border-purple-200' : 'bg-red-50 text-red-700 border-red-200'}`}
+                    title={isAIReady ? "Hệ thống AI đã sẵn sàng" : "Thiếu API_KEY hoặc cần Redeploy lại trên Vercel"}
+                  >
+                      <Sparkles size={12}/> {isAIReady ? 'AI Ready' : 'AI No Key'}
+                  </div>
+              </div>
+           </div>
+        </footer>
+      )}
 
       {isChangePassOpen && (
         <div className="fixed inset-0 bg-black/50 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-fade-in">
