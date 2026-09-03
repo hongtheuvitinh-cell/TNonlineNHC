@@ -1366,10 +1366,12 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
   };
 
   const dbConnected = isDatabaseConnected();
+  const rawKey = process.env.API_KEY;
+  const isAIReady = Boolean(rawKey && rawKey !== "undefined" && rawKey.length > 10);
 
   return (
-    <div className="min-h-screen bg-white flex">
-      <aside className="w-16 lg:w-64 bg-slate-900 text-white flex flex-col shrink-0 transition-all">
+    <div className="h-full bg-white flex overflow-hidden min-h-0 flex-1">
+      <aside className="w-16 lg:w-64 bg-slate-900 text-white flex flex-col shrink-0 h-full overflow-y-auto custom-scrollbar transition-all">
         <div className="p-4 lg:p-8 border-b border-white/10 text-center lg:text-left">
           <h2 className="text-xl font-black uppercase tracking-tighter italic">
             <span className="hidden lg:inline">EDU_QUIZ<span className="text-blue-500">List</span></span>
@@ -1463,8 +1465,8 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
         </div>
       </aside>
 
-      <main className="flex-1 h-screen overflow-y-auto custom-scrollbar bg-slate-50">
-        <div className="p-4 lg:p-8 max-w-[1600px] mx-auto">
+      <main className="flex-1 h-full overflow-y-auto custom-scrollbar bg-slate-50 flex flex-col justify-between">
+        <div className="p-4 lg:p-8 max-w-[1600px] mx-auto flex-1 w-full">
           {!dbConnected && (
             <div className="mb-8 bg-red-50 border-2 border-red-100 p-8 rounded-[3rem] shadow-sm flex flex-col md:flex-row items-center justify-between gap-6 animate-pulse">
                 <div className="flex items-center gap-5">
@@ -1842,6 +1844,24 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
             />
           )}
         </div>
+
+        {/* Footer inside the scrollable main container */}
+        <footer className="bg-white border-t mt-auto py-4 text-center text-gray-500 text-xs shrink-0">
+          <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between px-6 gap-3">
+            <span>© 2026 EduQuiz NHC. LH Thạnh 0909091634</span>
+            <div className="flex flex-wrap justify-center gap-3">
+              <div className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-black uppercase border ${dbConnected ? 'bg-green-50 text-green-700 border-green-200' : 'bg-red-50 text-red-700 border-red-200'}`}>
+                <Database size={12}/> {dbConnected ? 'Cloud: lchfhsio...' : 'DB Offline'}
+              </div>
+              <div 
+                className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-black uppercase border cursor-help ${isAIReady ? 'bg-purple-50 text-purple-700 border-purple-200' : 'bg-red-50 text-red-700 border-red-200'}`}
+                title={isAIReady ? "Hệ thống AI đã sẵn sàng" : "Thiếu API_KEY hoặc cần Redeploy lại trên Vercel"}
+              >
+                <Sparkles size={12}/> {isAIReady ? 'AI Ready' : 'AI No Key'}
+              </div>
+            </div>
+          </div>
+        </footer>
       </main>
 
       {/* Modals */}
