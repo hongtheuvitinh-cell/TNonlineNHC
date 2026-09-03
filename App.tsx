@@ -2,6 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { AuthState, User } from './types';
 import { initStorage, findUser, findUserByStudentCode, isDatabaseConnected } from './services/storage';
+import { initGlobalKeyboardScroll } from './services/keyboardScroll';
 import Auth from './components/Auth';
 import AdminDashboard from './components/admin/AdminDashboard'; 
 import StudentDashboard from './components/StudentDashboard';
@@ -17,6 +18,7 @@ const App: React.FC = () => {
 
   useEffect(() => {
     initStorage();
+    const cleanupKeyboardScroll = initGlobalKeyboardScroll();
     
     // Kiểm tra link đề thi từ URL
     const urlParams = new URLSearchParams(window.location.search);
@@ -26,6 +28,10 @@ const App: React.FC = () => {
     }
     
     checkPersistentLogin();
+
+    return () => {
+      cleanupKeyboardScroll();
+    };
   }, []);
 
   const checkPersistentLogin = async () => {
