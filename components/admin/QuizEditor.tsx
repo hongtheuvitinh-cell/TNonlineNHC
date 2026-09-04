@@ -11,7 +11,7 @@ import {
 import { v4 as uuidv4 } from 'uuid';
 import LatexText from '../LatexText';
 import LatexEditorModal from './LatexEditorModal';
-import { parseQuestionsFromJSON } from '../../services/gemini';
+import { parseQuestionsFromJSON, classifyQuestionsIntoChapters, QuestionChapterAssignment } from '../../services/gemini';
 import { STANDARD_SUBJECTS, isSameSubject } from '../../services/subjectUtils';
 import { getAcademicYearOptions, getCurrentAcademicYear } from '../../services/academicUtils';
 
@@ -89,14 +89,52 @@ interface QuestionSectionProps {
     onUploadImage: (qId: string, file: File) => void;
     uploadingId: string | null;
     onOpenBank: (type: QuestionType) => void;
+    chapters: Chapter[];
+    relevantChapters: Chapter[];
 }
 
-const QuestionSection: React.FC<QuestionSectionProps> = ({ sectionTitle, type, questions, setQuestions, onUploadImage, uploadingId, onOpenBank }) => {
+const QuestionSection: React.FC<QuestionSectionProps> = ({ 
+    sectionTitle, 
+    type, 
+    questions, 
+    setQuestions, 
+    onUploadImage, 
+    uploadingId, 
+    onOpenBank,
+    chapters,
+    relevantChapters
+}) => {
     const [quickPoints, setQuickPoints] = useState(type === 'mcq' ? "0.25" : "1.0");
+    const [batchSectionChapter, setBatchSectionChapter] = useState('');
     const [galleryTargetQId, setGalleryTargetQId] = useState<string | null>(null);
     const [batchImageSrc, setBatchImageSrc] = useState<string | null>(null);
     const [batchSelectedQIds, setBatchSelectedQIds] = useState<string[]>([]);
     const [batchFilterType, setBatchFilterType] = useState<QuestionType | 'all'>('all');
+
+    const otherChapters = useMemo(() => {
+        const relevantIds = new Set(relevantChapters.map(c => c.id));
+        return chapters.filter(c => !relevantIds.has(c.id));
+    }, [chapters, relevantChapters]);
+
+    const handleApplySectionChapter = () => {
+        if (!batchSectionChapter) return;
+        const targetChapter = chapters.find(c => c.id === batchSectionChapter) || relevantChapters.find(c => c.id === batchSectionChapter);
+        if (!targetChapter) return;
+
+        const updated = questions.map(q => {
+            if (q.type === type) {
+                return {
+                    ...q,
+                    chapterId: targetChapter.id,
+                    chapterName: targetChapter.name,
+                    quizCategory: targetChapter.name
+                };
+            }
+            return q;
+        });
+        setQuestions(updated);
+        alert(`🎉 Đã gán chương "${targetChapter.name}" cho tất cả các câu hỏi ở "${sectionTitle}"!`);
+    };
 
     // Quản lý Modal soạn thảo công thức LaTeX
     const [latexModalConfig, setLatexModalConfig] = useState<{
@@ -594,6 +632,33 @@ const QuestionSection: React.FC<QuestionSectionProps> = ({ sectionTitle, type, q
                             <Zap size={14}/>
                         </button>
                     </div>
+
+                    {/* Gán nhanh chương cho toàn bộ câu trong phần này */}
+                    {relevantChapters.length > 0 && (
+                        <div className="flex items-center gap-1.5 bg-amber-50/80 border-2 border-amber-200 px-3 py-1.5 rounded-2xl" title="Gán nhanh chương cho tất cả câu hỏi trong phần này">
+                            <BookOpen size={13} className="text-amber-600 shrink-0" />
+                            <select
+                                className="bg-white border border-amber-200 rounded-lg text-[10px] font-bold text-amber-950 outline-none p-1 max-w-[130px] truncate cursor-pointer"
+                                value={batchSectionChapter}
+                                onChange={e => setBatchSectionChapter(e.target.value)}
+                            >
+                                <option value="">Gán nhanh chương...</option>
+                                {relevantChapters.map(c => (
+                                    <option key={c.id} value={c.id}>{c.name}</option>
+                                ))}
+                            </select>
+                            <button
+                                type="button"
+                                disabled={!batchSectionChapter}
+                                onClick={handleApplySectionChapter}
+                                className="p-1.5 bg-amber-600 disabled:opacity-40 text-white rounded-lg hover:bg-amber-700 transition-all shadow-sm active:scale-90"
+                                title="Áp dụng chương này cho tất cả câu trong phần này"
+                            >
+                                <Check size={13} />
+                            </button>
+                        </div>
+                    )}
+
                     <button onClick={() => onOpenBank(type)} className="flex items-center gap-2 px-4 py-2.5 bg-white border-2 border-slate-200 text-slate-600 rounded-2xl text-[10px] font-black uppercase hover:bg-slate-50 transition-colors"><Database size={14}/> Ngân hàng</button>
                     <button onClick={addManual} className="flex items-center gap-2 px-6 py-2.5 bg-slate-900 text-white rounded-2xl text-[10px] font-black uppercase hover:bg-black transition-all shadow-xl active:scale-95"><Plus size={14}/> Thêm câu mới</button>
                 </div>
@@ -610,6 +675,12 @@ const QuestionSection: React.FC<QuestionSectionProps> = ({ sectionTitle, type, q
                     ? questions.findIndex(item => item.id === prevQuestionWithImg.id) + 1 
                     : null;
 
+                // Xác định chapterId đang gán
+                const currentChapterId = q.chapterId || 
+                    (relevantChapters.find(c => c.name === q.chapterName || c.name === q.quizCategory)?.id) || 
+                    (chapters.find(c => c.name === q.chapterName || c.name === q.quizCategory)?.id) || 
+                    '';
+
                 return (
                 <div 
                     key={q.id} 
@@ -618,11 +689,11 @@ const QuestionSection: React.FC<QuestionSectionProps> = ({ sectionTitle, type, q
                 >
                     <button onClick={() => setQuestions(questions.filter(qu => qu.id !== q.id))} className="absolute top-8 right-8 text-slate-200 hover:text-red-500 transition-colors p-2 hover:bg-red-50 rounded-xl"><Trash2 size={24}/></button>
                     
-                    <div className="flex flex-wrap items-center gap-4 mb-6">
-                        <span className="text-[11px] font-black px-5 py-2 rounded-xl uppercase bg-slate-900 text-white">Câu {idx + 1} (Toàn đề: Câu {globalIndex + 1})</span>
+                    <div className="flex flex-wrap items-center gap-3 mb-6">
+                        <span className="text-[11px] font-black px-4 py-2 rounded-xl uppercase bg-slate-900 text-white shrink-0">Câu {idx + 1} (Toàn đề: Câu {globalIndex + 1})</span>
                         
                         {/* MỨC ĐỘ NHẬN THỨC CÂU HỎI */}
-                        <div className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-2xl border border-slate-200">
+                        <div className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-2xl border border-slate-200 shrink-0">
                             <span className="text-[9px] font-black text-slate-400 uppercase px-2">Mức độ:</span>
                             {(['B', 'H', 'VD', 'VDC'] as const).map(lvl => {
                                 const isSelected = q.level === lvl;
@@ -643,12 +714,65 @@ const QuestionSection: React.FC<QuestionSectionProps> = ({ sectionTitle, type, q
                                             nl[i].level = isSelected ? undefined : lvl;
                                             setQuestions(nl);
                                         }}
-                                        className={`px-3 py-1.5 rounded-xl text-[10px] font-black uppercase transition-all ${colors[lvl]}`}
+                                        className={`px-2.5 py-1 rounded-xl text-[10px] font-black uppercase transition-all ${colors[lvl]}`}
                                     >
                                         [{lvl}] {labels[lvl]}
                                     </button>
                                 );
                             })}
+                        </div>
+
+                        {/* CHƯƠNG TƯƠNG ỨNG CỦA CÂU HỎI */}
+                        <div className={`flex items-center gap-1.5 py-1 px-2.5 rounded-2xl border transition-all ${
+                            currentChapterId 
+                                ? 'bg-indigo-50/90 border-indigo-200 text-indigo-900 shadow-xs' 
+                                : 'bg-slate-50 border-slate-200 text-slate-500'
+                        }`} title="Chọn chương bài học tương ứng cho câu hỏi này">
+                            <BookOpen size={13} className={currentChapterId ? "text-indigo-600 shrink-0" : "text-slate-400 shrink-0"} />
+                            <span className="text-[9px] font-black uppercase tracking-wider whitespace-nowrap">Chương:</span>
+                            <select
+                                className={`text-xs font-bold rounded-xl px-2 py-1 outline-none border focus:ring-2 focus:ring-indigo-400 cursor-pointer max-w-[190px] sm:max-w-[260px] truncate transition-all ${
+                                    currentChapterId
+                                        ? 'bg-white border-indigo-300 text-indigo-950 font-black'
+                                        : 'bg-white border-slate-200 text-slate-600'
+                                }`}
+                                value={currentChapterId}
+                                onChange={e => {
+                                    const chosenId = e.target.value;
+                                    const chosen = chapters.find(c => c.id === chosenId) || relevantChapters.find(c => c.id === chosenId);
+                                    const nl = [...questions];
+                                    const i = nl.findIndex(x => x.id === q.id);
+                                    if (i !== -1) {
+                                        nl[i] = {
+                                            ...nl[i],
+                                            chapterId: chosenId || undefined,
+                                            chapterName: chosen ? chosen.name : undefined,
+                                            quizCategory: chosen ? chosen.name : undefined
+                                        };
+                                        setQuestions(nl);
+                                    }
+                                }}
+                            >
+                                <option value="">-- Chưa phân chương --</option>
+                                {relevantChapters.length > 0 && (
+                                    <optgroup label="Chương thuộc khối & môn hiện tại">
+                                        {relevantChapters.map(c => (
+                                            <option key={c.id} value={c.id}>
+                                                {c.name}
+                                            </option>
+                                        ))}
+                                    </optgroup>
+                                )}
+                                {otherChapters.length > 0 && (
+                                    <optgroup label="Các chương khác">
+                                        {otherChapters.map(c => (
+                                            <option key={c.id} value={c.id}>
+                                                [K{c.grade}] {c.name}
+                                            </option>
+                                        ))}
+                                    </optgroup>
+                                )}
+                            </select>
                         </div>
 
                         <div className="flex items-center gap-2 bg-blue-50 px-4 py-2 rounded-2xl border-2 border-blue-100 ml-auto">
@@ -922,6 +1046,71 @@ export default function QuizEditor(props: QuizEditorProps) {
         });
     }, [props.chapters, props.grade, props.subject]);
     const [showKeyInput, setShowKeyInput] = useState(false);
+    const [isAssigningChapters, setIsAssigningChapters] = useState(false);
+
+    const handleAiAutoAssignChapters = async () => {
+        if (!props.questions || props.questions.length === 0) {
+            alert("Đề thi chưa có câu hỏi nào để phân chương!");
+            return;
+        }
+
+        const candidateChapters = relevantChapters.length > 0 ? relevantChapters : props.chapters;
+        if (!candidateChapters || candidateChapters.length === 0) {
+            alert("Hệ thống chưa có danh sách chương nào phù hợp cho môn học và khối lớp này! Vui lòng vào mục Quản lý chương để tạo danh sách chương trước.");
+            return;
+        }
+
+        const unassignedCount = props.questions.filter(q => !q.chapterId && !q.chapterName && !q.quizCategory).length;
+        const confirmMsg = unassignedCount > 0 && unassignedCount < props.questions.length
+            ? `Đề thi có ${props.questions.length} câu hỏi (${unassignedCount} câu chưa gán chương).\n\nBạn có muốn AI Gemini quét toàn bộ các câu hỏi trong đề và tự động gán vào ${candidateChapters.length} chương tương ứng của môn ${props.subject || 'Toán'} Khối ${props.grade}?`
+            : `AI Gemini sẽ quét nội dung toàn bộ ${props.questions.length} câu hỏi trong đề và tự động phân loại, gán vào ${candidateChapters.length} chương tương ứng của môn ${props.subject || 'Toán'} Khối ${props.grade}.\n\nBạn có muốn tiếp tục?`;
+
+        if (!window.confirm(confirmMsg)) return;
+
+        setIsAssigningChapters(true);
+        try {
+            const assignments = await classifyQuestionsIntoChapters(
+                props.questions,
+                candidateChapters,
+                {
+                    subject: props.subject,
+                    grade: String(props.grade),
+                    customApiKey: props.customApiKey
+                }
+            );
+
+            if (!assignments || assignments.length === 0) {
+                alert("AI không trả về kết quả phân loại nào. Vui lòng kiểm tra lại nội dung câu hỏi hoặc kết nối mạng.");
+                return;
+            }
+
+            const assignmentMap = new Map<string, QuestionChapterAssignment>();
+            assignments.forEach(a => assignmentMap.set(a.questionId, a));
+
+            let assignedCount = 0;
+            const updatedQuestions = props.questions.map(q => {
+                const item = assignmentMap.get(q.id);
+                if (item && item.chapterName) {
+                    assignedCount++;
+                    return {
+                        ...q,
+                        chapterId: item.chapterId || q.chapterId,
+                        chapterName: item.chapterName,
+                        quizCategory: item.chapterName
+                    };
+                }
+                return q;
+            });
+
+            props.setQuestions(updatedQuestions);
+            alert(`🎉 Thành công! AI Gemini đã quét và tự động gán chương cho ${assignedCount}/${props.questions.length} câu hỏi trong đề thi. Bạn có thể kiểm tra từng câu và tùy chỉnh lại nếu cần trước khi lưu.`);
+        } catch (error: any) {
+            console.error("Lỗi tự động gán chương bằng AI:", error);
+            alert("❌ Lỗi AI: " + (error?.message || "Không thể phân loại câu hỏi vào chương. Vui lòng thử lại."));
+        } finally {
+            setIsAssigningChapters(false);
+        }
+    };
 
     const handleConfirmTextExtract = () => {
         if (!pastedText.trim()) return;
@@ -988,6 +1177,24 @@ export default function QuizEditor(props: QuizEditorProps) {
                         <div className="space-y-3">
                             <h3 className="text-xl font-black uppercase text-slate-800 tracking-tight leading-none">AI Đang bóc tách...</h3>
                             <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest leading-relaxed px-4">Đang trích xuất câu hỏi, đáp án và lời giải bằng Gemini 3 Flash.</p>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {isAssigningChapters && (
+                <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[2100] flex items-center justify-center p-6 animate-fade-in">
+                    <div className="bg-white p-10 rounded-[3rem] shadow-2xl text-center space-y-6 max-w-sm w-full border-8 border-purple-100">
+                        <div className="relative w-24 h-24 mx-auto">
+                            <div className="absolute inset-0 border-8 border-purple-50 rounded-full"></div>
+                            <div className="absolute inset-0 border-8 border-purple-600 border-t-transparent rounded-full animate-spin"></div>
+                            <div className="absolute inset-0 flex items-center justify-center">
+                                <Sparkles className="text-purple-600 animate-pulse" size={32}/>
+                            </div>
+                        </div>
+                        <div className="space-y-3">
+                            <h3 className="text-xl font-black uppercase text-slate-800 tracking-tight leading-none">AI Đang quét đề...</h3>
+                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest leading-relaxed px-2">Đang phân tích các câu hỏi và tự động gán vào chương phù hợp bằng Gemini.</p>
                         </div>
                     </div>
                 </div>
@@ -1153,23 +1360,52 @@ export default function QuizEditor(props: QuizEditorProps) {
                             >
                                 <Zap size={13}/> DỌN NHÃN
                             </button>
+
+                            {/* Nút AI Quét qua đề và tự động gán vào các chương */}
+                            <button 
+                                type="button"
+                                onClick={handleAiAutoAssignChapters}
+                                disabled={isAssigningChapters || props.questions.length === 0}
+                                className={`flex items-center gap-1.5 px-3.5 py-2 bg-gradient-to-r from-purple-600 via-indigo-600 to-blue-600 text-white rounded-xl text-[10px] font-black uppercase hover:opacity-95 transition-all shadow-md active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed ${isAssigningChapters ? 'animate-pulse' : ''}`}
+                                title="Dùng AI Gemini quét qua toàn bộ câu hỏi trong đề và tự động gán vào chương tương ứng"
+                            >
+                                {isAssigningChapters ? (
+                                    <Loader2 size={13} className="animate-spin text-purple-200" />
+                                ) : (
+                                    <Sparkles size={13} className="text-amber-300 animate-pulse" />
+                                )}
+                                <span>{isAssigningChapters ? "AI ĐANG GÁN..." : "AI GÁN CHƯƠNG"}</span>
+                            </button>
                         </div>
 
-                        {props.onApiKeyChange && (
-                            <button
-                                type="button"
-                                onClick={() => setShowKeyInput(true)}
-                                className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-[10px] font-black uppercase border transition-all shadow-sm active:scale-95 ${
-                                    props.customApiKey 
-                                        ? 'bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100' 
-                                        : 'bg-slate-100 border-slate-200 text-slate-600 hover:bg-slate-200'
-                                }`}
-                                title="Cấu hình Gemini API Key riêng"
-                            >
-                                <Key size={13} className={props.customApiKey ? "text-emerald-600" : "text-slate-500"}/>
-                                <span>{props.customApiKey ? "Key riêng: Đã bật" : "Gemini API Key"}</span>
-                            </button>
-                        )}
+                        <div className="flex items-center gap-2">
+                            {/* Thống kê số câu đã gán chương */}
+                            {props.questions.length > 0 && (
+                                <div className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 bg-indigo-50 border border-indigo-200 rounded-xl text-[10px] font-bold text-indigo-900" title="Số lượng câu hỏi trong đề đã được gắn chương">
+                                    <BookOpen size={12} className="text-indigo-600" />
+                                    <span>Gán chương:</span>
+                                    <span className="font-black text-indigo-700">
+                                        {props.questions.filter(q => Boolean(q.chapterId || q.chapterName || q.quizCategory)).length}/{props.questions.length} câu
+                                    </span>
+                                </div>
+                            )}
+
+                            {props.onApiKeyChange && (
+                                <button
+                                    type="button"
+                                    onClick={() => setShowKeyInput(true)}
+                                    className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-[10px] font-black uppercase border transition-all shadow-sm active:scale-95 ${
+                                        props.customApiKey 
+                                            ? 'bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100' 
+                                            : 'bg-slate-100 border-slate-200 text-slate-600 hover:bg-slate-200'
+                                    }`}
+                                    title="Cấu hình Gemini API Key riêng"
+                                >
+                                    <Key size={13} className={props.customApiKey ? "text-emerald-600" : "text-slate-500"}/>
+                                    <span>{props.customApiKey ? "Key riêng: Đã bật" : "Gemini API Key"}</span>
+                                </button>
+                            )}
+                        </div>
                     </div>
                 </div>
                 
@@ -1732,9 +1968,39 @@ export default function QuizEditor(props: QuizEditorProps) {
                 </button>
             </div>
 
-            <QuestionSection sectionTitle="PHẦN I. TRẮC NGHIỆM NHIỀU LỰA CHỌN" type="mcq" questions={props.questions} setQuestions={props.setQuestions} onUploadImage={props.onUploadImage} uploadingId={props.uploadingId} onOpenBank={props.onOpenBank} />
-            <QuestionSection sectionTitle="PHẦN II. TRẮC NGHIỆM ĐÚNG SAI" type="group-tf" questions={props.questions} setQuestions={props.setQuestions} onUploadImage={props.onUploadImage} uploadingId={props.uploadingId} onOpenBank={props.onOpenBank} />
-            <QuestionSection sectionTitle="PHẦN III. TRẢ LỜI NGẮN" type="short" questions={props.questions} setQuestions={props.setQuestions} onUploadImage={props.onUploadImage} uploadingId={props.uploadingId} onOpenBank={props.onOpenBank} />
+            <QuestionSection 
+                sectionTitle="PHẦN I. TRẮC NGHIỆM NHIỀU LỰA CHỌN" 
+                type="mcq" 
+                questions={props.questions} 
+                setQuestions={props.setQuestions} 
+                onUploadImage={props.onUploadImage} 
+                uploadingId={props.uploadingId} 
+                onOpenBank={props.onOpenBank}
+                chapters={props.chapters}
+                relevantChapters={relevantChapters}
+            />
+            <QuestionSection 
+                sectionTitle="PHẦN II. TRẮC NGHIỆM ĐÚNG SAI" 
+                type="group-tf" 
+                questions={props.questions} 
+                setQuestions={props.setQuestions} 
+                onUploadImage={props.onUploadImage} 
+                uploadingId={props.uploadingId} 
+                onOpenBank={props.onOpenBank}
+                chapters={props.chapters}
+                relevantChapters={relevantChapters}
+            />
+            <QuestionSection 
+                sectionTitle="PHẦN III. TRẢ LỜI NGẮN" 
+                type="short" 
+                questions={props.questions} 
+                setQuestions={props.setQuestions} 
+                onUploadImage={props.onUploadImage} 
+                uploadingId={props.uploadingId} 
+                onOpenBank={props.onOpenBank}
+                chapters={props.chapters}
+                relevantChapters={relevantChapters}
+            />
         </div>
     );
 }
