@@ -529,6 +529,9 @@ export const invalidateMemoryCache = (key?: 'teachers' | 'chapters' | 'classes' 
     delete memoryCache.quizzesMeta;
     delete memoryCache.bankQuestions;
     delete memoryCache.quizDetails;
+    try {
+      localStorage.removeItem('eduquiz_quizzes_meta_cache');
+    } catch {}
   } else if (key === 'teachers') {
     delete memoryCache.teachers;
   } else if (key === 'chapters') {
@@ -538,6 +541,9 @@ export const invalidateMemoryCache = (key?: 'teachers' | 'chapters' | 'classes' 
   } else if (key === 'quizzes') {
     delete memoryCache.quizzesMeta;
     delete memoryCache.quizDetails;
+    try {
+      localStorage.removeItem('eduquiz_quizzes_meta_cache');
+    } catch {}
   } else if (key === 'bank') {
     delete memoryCache.bankQuestions;
   }
@@ -832,13 +838,26 @@ export const getQuizzesMetadata = async (
       const row = d.data();
       const quiz = (row.data as Quiz) || (row as Quiz);
       const computedYear = row.academicYear || quiz.academicYear || getQuizAcademicYear(quiz);
+      const isShared = row.isSharedWithTeachers !== undefined 
+        ? Boolean(row.isSharedWithTeachers) 
+        : Boolean(quiz.isSharedWithTeachers);
       return {
         ...quiz,
         id: d.id,
-        grade: row.grade || quiz.grade,
+        title: row.title || quiz.title || '',
+        grade: row.grade || quiz.grade || '12',
+        subject: row.subject || quiz.subject || '',
         academicYear: computedYear,
-        attemptCount: quiz.attemptCount || 0,
-        questionCount: quiz.questionCount || (quiz.questions ? quiz.questions.length : 0),
+        createdBy: row.createdBy || quiz.createdBy || '',
+        createdByName: row.createdByName || quiz.createdByName || '',
+        isSharedWithTeachers: isShared,
+        isPublished: row.isPublished !== undefined ? Boolean(row.isPublished) : Boolean(quiz.isPublished),
+        isMonitored: row.isMonitored !== undefined ? Boolean(row.isMonitored) : Boolean(quiz.isMonitored),
+        isUnlisted: row.isUnlisted !== undefined ? Boolean(row.isUnlisted) : Boolean(quiz.isUnlisted),
+        targetType: row.targetType || quiz.targetType || 'all',
+        assignedClassIds: row.assignedClassIds || quiz.assignedClassIds || [],
+        attemptCount: row.attemptCount !== undefined ? row.attemptCount : (quiz.attemptCount || 0),
+        questionCount: row.questionCount !== undefined ? row.questionCount : (quiz.questionCount || (quiz.questions ? quiz.questions.length : 0)),
         questions: []
       };
     });
@@ -950,9 +969,26 @@ export const getQuizById = async (id: string, forceRefresh: boolean = false): Pr
     if (!docSnap.exists()) return null;
     const data = docSnap.data();
     const quiz = (data.data as Quiz) || (data as Quiz);
+    const isShared = data.isSharedWithTeachers !== undefined 
+      ? Boolean(data.isSharedWithTeachers) 
+      : Boolean(quiz.isSharedWithTeachers);
     const resultQuiz: Quiz = {
       ...quiz,
-      academicYear: data.academicYear || quiz.academicYear || getQuizAcademicYear(quiz)
+      id: docSnap.id,
+      title: data.title || quiz.title || '',
+      grade: data.grade || quiz.grade || '12',
+      subject: data.subject || quiz.subject || '',
+      academicYear: data.academicYear || quiz.academicYear || getQuizAcademicYear(quiz),
+      createdBy: data.createdBy || quiz.createdBy || '',
+      createdByName: data.createdByName || quiz.createdByName || '',
+      isSharedWithTeachers: isShared,
+      isPublished: data.isPublished !== undefined ? Boolean(data.isPublished) : Boolean(quiz.isPublished),
+      isMonitored: data.isMonitored !== undefined ? Boolean(data.isMonitored) : Boolean(quiz.isMonitored),
+      isUnlisted: data.isUnlisted !== undefined ? Boolean(data.isUnlisted) : Boolean(quiz.isUnlisted),
+      targetType: data.targetType || quiz.targetType || 'all',
+      assignedClassIds: data.assignedClassIds || quiz.assignedClassIds || [],
+      questionCount: data.questionCount !== undefined ? data.questionCount : (quiz.questions ? quiz.questions.length : 0),
+      attemptCount: data.attemptCount !== undefined ? data.attemptCount : (quiz.attemptCount || 0)
     };
 
     if (!memoryCache.quizDetails) memoryCache.quizDetails = new Map();
@@ -1056,6 +1092,47 @@ export const updateQuizAcademicYear = async (quizId: string, academicYear: strin
       localStorage.setItem('eduquiz_quizzes_meta_cache', JSON.stringify(memoryCache.quizzesMeta.data));
     } catch {}
   }
+  trackFirestoreWrite('quizzes', 1);
+};
+
+export const updateQuizShareStatus = async (quizId: string, isShared: boolean): Promise<void> => {
+  if (!db) throw new Error("Mất kết nối Database Cloud Firestore");
+  const quizRef = doc(db, 'quizzes', quizId);
+  await updateDoc(quizRef, {
+    isSharedWithTeachers: Boolean(isShared),
+    'data.isSharedWithTeachers': Boolean(isShared)
+  });
+  
+  // Cập nhật ngay lập tức trong MemoryCache và localStorage
+  if (memoryCache.quizzesMeta?.data) {
+    memoryCache.quizzesMeta.data = memoryCache.quizzesMeta.data.map(q => 
+      q.id === quizId ? { ...q, isSharedWithTeachers: Boolean(isShared) } : q
+    );
+    try {
+      localStorage.setItem('eduquiz_quizzes_meta_cache', JSON.stringify(memoryCache.quizzesMeta.data));
+    } catch {}
+  }
+  
+  if (memoryCache.quizDetails?.has(quizId)) {
+    const cached = memoryCache.quizDetails.get(quizId)!;
+    memoryCache.quizDetails.set(quizId, {
+      ...cached,
+      data: { ...cached.data, isSharedWithTeachers: Boolean(isShared) }
+    });
+  }
+
+  try {
+    const localDetailKey = `eduquiz_quiz_detail_${quizId}`;
+    const localStr = localStorage.getItem(localDetailKey);
+    if (localStr) {
+      const parsed = JSON.parse(localStr);
+      if (parsed?.data) {
+        parsed.data.isSharedWithTeachers = Boolean(isShared);
+        localStorage.setItem(localDetailKey, JSON.stringify(parsed));
+      }
+    }
+  } catch {}
+
   trackFirestoreWrite('quizzes', 1);
 };
 
@@ -1496,7 +1573,9 @@ export const syncQuizzesToBank = async (targetSubject?: string): Promise<SyncBan
             ...q,
             quizTitle: quiz.title,
             quizGrade: quiz.grade,
-            quizCategory: quiz.category || '',
+            quizCategory: q.quizCategory || q.chapterName || quiz.category || '',
+            chapterId: q.chapterId || undefined,
+            chapterName: q.chapterName || q.quizCategory || quiz.category || undefined,
             subject: qSubject,
             createdBy: q.createdBy || quiz.createdBy || '',
             createdByName: q.createdByName || quiz.createdByName || ''
