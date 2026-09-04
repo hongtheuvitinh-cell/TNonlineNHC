@@ -555,6 +555,54 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
     return bankQuestions;
   }, [bankQuestions]);
 
+  // Hỗ trợ phím mũi tên Lên / Xuống / PageUp / PageDown để cuộn trang mượt mà trên mọi môi trường (cả Vercel & Studio)
+  useEffect(() => {
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      // Nếu đang gõ trong input, textarea, select hoặc contenteditable thì không can thiệp
+      const target = e.target as HTMLElement | null;
+      if (target) {
+        const tagName = target.tagName?.toLowerCase();
+        if (tagName === 'input' || tagName === 'textarea' || tagName === 'select' || target.isContentEditable) {
+          return;
+        }
+      }
+
+      // Xác định container cuộn ưu tiên: Modal ngân hàng nếu đang mở, hoặc main scroll
+      let scrollEl: HTMLElement | null = null;
+      const bankModalScroll = document.getElementById('modal-bank-scroll');
+      if (isBankOpen && bankModalScroll) {
+        scrollEl = bankModalScroll;
+      } else {
+        scrollEl = document.getElementById('admin-main-scroll');
+      }
+
+      if (!scrollEl) return;
+
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        scrollEl.scrollBy({ top: 80, behavior: 'smooth' });
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        scrollEl.scrollBy({ top: -80, behavior: 'smooth' });
+      } else if (e.key === 'PageDown') {
+        e.preventDefault();
+        scrollEl.scrollBy({ top: 400, behavior: 'smooth' });
+      } else if (e.key === 'PageUp') {
+        e.preventDefault();
+        scrollEl.scrollBy({ top: -400, behavior: 'smooth' });
+      } else if (e.key === 'Home') {
+        e.preventDefault();
+        scrollEl.scrollTo({ top: 0, behavior: 'smooth' });
+      } else if (e.key === 'End') {
+        e.preventDefault();
+        scrollEl.scrollTo({ top: scrollEl.scrollHeight, behavior: 'smooth' });
+      }
+    };
+
+    window.addEventListener('keydown', handleGlobalKeyDown);
+    return () => window.removeEventListener('keydown', handleGlobalKeyDown);
+  }, [isBankOpen]);
+
   // Quiz Handlers
   const handleCreateQuiz = () => {
     setEditingQuizId(null); setQuizTitle(''); setQuizGrade('12'); setQuizType('test');
@@ -881,6 +929,9 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
       questions: questions.map(q => ({
         ...q,
         subject: q.subject || finalQuizSubject,
+        chapterId: q.chapterId || undefined,
+        chapterName: q.chapterName || q.quizCategory || (category || undefined),
+        quizCategory: q.quizCategory || q.chapterName || (category || ''),
         createdBy: q.createdBy || currentUser?.id,
         createdByName: q.createdByName || currentUser?.fullName
       })), 
@@ -904,6 +955,10 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
     } finally {
       setIsSavingInProgress(false);
     }
+  };
+
+  const handleToggleQuizShare = (quizId: string, newShareStatus: boolean) => {
+    setQuizzes(prev => prev.map(q => q.id === quizId ? { ...q, isSharedWithTeachers: newShareStatus } : q));
   };
 
   const handleDeleteQuiz = (id: string) => {
@@ -1579,6 +1634,7 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
                         currentUser={currentUser} teachers={teachers}
                         onEdit={handleEditQuiz} onDelete={handleDeleteQuiz} onPreview={handlePreviewQuiz}
                         onAssignClasses={handleAssignClasses}
+                        onToggleShare={handleToggleQuizShare}
                         qSearch={qSearch} setQSearch={setQSearch} qGradeFilter={qGradeFilter} setQGradeFilter={setQGradeFilter}
                         qChapterFilter={qChapterFilter} setQChapterFilter={setQChapterFilter}
                         qSubjectFilter={qSubjectFilter} setQSubjectFilter={setQSubjectFilter}
