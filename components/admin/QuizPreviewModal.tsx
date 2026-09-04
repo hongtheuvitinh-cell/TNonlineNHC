@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { X, Download, FileType, AlignLeft, Rows, FileCode, Sparkles, Loader2, ChevronUp, ChevronDown } from 'lucide-react';
 import { Quiz, Question } from '../../types';
 import LatexText from '../LatexText';
@@ -14,6 +14,41 @@ interface QuizPreviewModalProps {
 export default function QuizPreviewModal({ quiz, onClose, isAdmin = true }: QuizPreviewModalProps) {
     const [layoutMode, setLayoutMode] = useState<'single' | 'auto'>('single');
     const [isExportingDocx, setIsExportingDocx] = useState(false);
+
+    useEffect(() => {
+        const handleKeyDown = (e: KeyboardEvent) => {
+            const target = e.target as HTMLElement | null;
+            if (target) {
+                const tagName = target.tagName?.toLowerCase();
+                if (tagName === 'input' || tagName === 'textarea' || tagName === 'select' || target.isContentEditable) {
+                    return;
+                }
+            }
+
+            const scrollEl = document.getElementById('quiz-preview-scroll');
+            if (!scrollEl) return;
+
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                scrollEl.scrollBy({ top: 80, behavior: 'smooth' });
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                scrollEl.scrollBy({ top: -80, behavior: 'smooth' });
+            } else if (e.key === 'PageDown') {
+                e.preventDefault();
+                scrollEl.scrollBy({ top: 400, behavior: 'smooth' });
+            } else if (e.key === 'PageUp') {
+                e.preventDefault();
+                scrollEl.scrollBy({ top: -400, behavior: 'smooth' });
+            } else if (e.key === 'Escape') {
+                e.preventDefault();
+                onClose();
+            }
+        };
+
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [onClose]);
 
     // Render các phương án dạng văn bản sạch - HOÀN TOÀN KHÔNG DÙNG TABLE
     const renderOptionsNoTable = (q: Question) => {

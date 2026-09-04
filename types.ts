@@ -71,6 +71,8 @@ export interface Question {
   quizTitle?: string;
   quizGrade?: Grade;
   quizCategory?: string;
+  chapterId?: string; // ID của chương thuộc về câu hỏi
+  chapterName?: string; // Tên của chương thuộc về câu hỏi
   subject?: string; // Môn học (VD: Toán, Vật lí, Hóa học...)
   createdBy?: string;
   createdByName?: string;

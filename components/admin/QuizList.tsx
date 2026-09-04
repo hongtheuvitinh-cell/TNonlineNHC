@@ -9,7 +9,7 @@ import {
 } from 'lucide-react';
 import { isSameSubject, STANDARD_SUBJECTS, normalizeSubject, getDisplaySubject } from '../../services/subjectUtils';
 import { getCurrentAcademicYear, getQuizAcademicYear, getAcademicYearOptions } from '../../services/academicUtils';
-import { updateQuizAcademicYear } from '../../services/storage';
+import { updateQuizAcademicYear, updateQuizShareStatus } from '../../services/storage';
 
 interface QuizListProps {
     quizzes: Quiz[];
@@ -22,6 +22,7 @@ interface QuizListProps {
     onDelete: (id: string) => void;
     onPreview: (quiz: Quiz) => void;
     onAssignClasses?: (quiz: Quiz, selectedClassIds: string[]) => Promise<void>;
+    onToggleShare?: (quizId: string, newShareStatus: boolean) => void;
     qSearch: string;
     setQSearch: (val: string) => void;
     qGradeFilter: Grade | 'all';
@@ -88,12 +89,15 @@ interface QuizCardItemProps {
     resultCount: number;
     quizYearOverride?: string;
     updatingYearQuizId: string | null;
+    quizShareOverride?: boolean;
+    updatingShareQuizId: string | null;
     onPreview: (q: Quiz) => void;
     onEdit: (q: Quiz) => void;
     onDelete: (id: string) => void;
     openAssignModal: (q: Quiz) => void;
     copyQuizLink: (id: string) => void;
     handleSetAcademicYear: (id: string, yr: string) => void;
+    handleToggleShare: (id: string, newShare: boolean) => void;
 }
 
 const QuizCardItem = React.memo(function QuizCardItem({
@@ -105,12 +109,15 @@ const QuizCardItem = React.memo(function QuizCardItem({
     resultCount,
     quizYearOverride,
     updatingYearQuizId,
+    quizShareOverride,
+    updatingShareQuizId,
     onPreview,
     onEdit,
     onDelete,
     openAssignModal,
     copyQuizLink,
-    handleSetAcademicYear
+    handleSetAcademicYear,
+    handleToggleShare
 }: QuizCardItemProps) {
     const now = new Date();
     const startX = q.startTime ? new Date(q.startTime) : null;
@@ -164,6 +171,7 @@ const QuizCardItem = React.memo(function QuizCardItem({
     }, [q.assignedClassIds, classes]);
 
     const effectiveYear = quizYearOverride || q.academicYear || getQuizAcademicYear(q);
+    const effectiveIsShared = quizShareOverride !== undefined ? quizShareOverride : Boolean(q.isSharedWithTeachers);
 
     return (
         <div 
@@ -249,10 +257,34 @@ const QuizCardItem = React.memo(function QuizCardItem({
                         </span>
                     ) : null}
 
-                    {q.isSharedWithTeachers && (
-                        <span className="px-1.5 py-0.5 bg-blue-50 text-blue-700 border border-blue-200 rounded text-[8px] font-black uppercase flex items-center gap-1">
-                            <Share2 size={9}/> Cùng môn
-                        </span>
+                    {canManage ? (
+                        <button
+                            type="button"
+                            disabled={updatingShareQuizId === q.id}
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                handleToggleShare(q.id, !effectiveIsShared);
+                            }}
+                            className={`px-2 py-0.5 rounded-lg text-[9px] font-black uppercase flex items-center gap-1 transition-all border shadow-2xs active:scale-95 cursor-pointer select-none ${
+                                effectiveIsShared 
+                                    ? 'bg-blue-50 hover:bg-rose-50 text-blue-700 hover:text-rose-700 border-blue-200 hover:border-rose-300' 
+                                    : 'bg-slate-100 hover:bg-blue-50 text-slate-500 hover:text-blue-700 border-slate-200 hover:border-blue-300'
+                            }`}
+                            title={
+                                effectiveIsShared 
+                                    ? "Đang chia sẻ cho các GV khác cùng môn xem và giao lớp. Nhấn để hủy chia sẻ (chuyển về riêng tư)." 
+                                    : "Đang ở chế độ riêng tư. Nhấn để chia sẻ đề thi này cho các giáo viên khác cùng môn xem và giao lớp."
+                            }
+                        >
+                            <Share2 size={10} className={effectiveIsShared ? "text-blue-600" : "text-slate-400"}/>
+                            <span>{updatingShareQuizId === q.id ? 'Đang lưu...' : (effectiveIsShared ? 'Đã chia sẻ GV' : 'Chưa chia sẻ')}</span>
+                        </button>
+                    ) : (
+                        effectiveIsShared && (
+                            <span className="px-2 py-0.5 bg-blue-50 text-blue-700 border border-blue-200 rounded-lg text-[9px] font-black uppercase flex items-center gap-1">
+                                <Share2 size={10} className="text-blue-600"/> Đề GV chia sẻ
+                            </span>
+                        )
                     )}
 
                     {q.durationMinutes ? (
@@ -350,7 +382,7 @@ const QuizCardItem = React.memo(function QuizCardItem({
 
 export default function QuizList({ 
     quizzes, results, chapters, classes = [], currentUser, teachers = [],
-    onEdit, onDelete, onPreview, onAssignClasses,
+    onEdit, onDelete, onPreview, onAssignClasses, onToggleShare,
     qSearch, setQSearch, qGradeFilter, setQGradeFilter,
     qChapterFilter, setQChapterFilter,
     qSubjectFilter: propSubjectFilter,
@@ -359,7 +391,7 @@ export default function QuizList({
     setQAcademicYearFilter: propSetAcademicYearFilter
 }: QuizListProps) {
     const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
-    const [authorFilter, setAuthorFilter] = useState<string>('all'); // 'all' | 'mine' | 'shared' | specific_teacher_id
+    const [authorFilter, setAuthorFilter] = useState<string>('all'); // 'all' | 'mine' | 'shared' | 'private' | specific_teacher_id
     const [quickFilter, setQuickFilter] = useState<QuickFilterType>('all');
     const [localSubjectFilter, setLocalSubjectFilter] = useState<string>('all');
     const [localAcademicYearFilter, setLocalAcademicYearFilter] = useState<string>(getCurrentAcademicYear());
@@ -371,6 +403,29 @@ export default function QuizList({
     const [quizYearOverrides, setQuizYearOverrides] = useState<Record<string, string>>({});
     const [updatingYearQuizId, setUpdatingYearQuizId] = useState<string | null>(null);
     const [yearNotification, setYearNotification] = useState<{ id: string; year: string } | null>(null);
+
+    // Quiz Share state & overrides
+    const [quizShareOverrides, setQuizShareOverrides] = useState<Record<string, boolean>>({});
+    const [updatingShareQuizId, setUpdatingShareQuizId] = useState<string | null>(null);
+    const [shareNotification, setShareNotification] = useState<{ id: string; isShared: boolean } | null>(null);
+
+    const handleToggleShare = async (quizId: string, newShareStatus: boolean) => {
+        setUpdatingShareQuizId(quizId);
+        try {
+            await updateQuizShareStatus(quizId, newShareStatus);
+            setQuizShareOverrides(prev => ({ ...prev, [quizId]: newShareStatus }));
+            if (onToggleShare) {
+                onToggleShare(quizId, newShareStatus);
+            }
+            setShareNotification({ id: quizId, isShared: newShareStatus });
+            setTimeout(() => setShareNotification(null), 3500);
+        } catch (e: any) {
+            console.error("Lỗi cập nhật chia sẻ đề thi:", e);
+            alert("Lỗi khi cập nhật trạng thái chia sẻ: " + (e.message || 'Không xác định'));
+        } finally {
+            setUpdatingShareQuizId(null);
+        }
+    };
 
     const handleSetAcademicYear = async (quizId: string, newYear: string) => {
         setUpdatingYearQuizId(quizId);
@@ -517,14 +572,21 @@ export default function QuizList({
             if (qSearch.trim() && !q.title.toLowerCase().includes(qSearch.toLowerCase())) return false;
 
             // 5. Role & Author Filter
+            const isShared = quizShareOverrides[q.id] !== undefined
+                ? quizShareOverrides[q.id]
+                : (q.isSharedWithTeachers !== undefined ? Boolean(q.isSharedWithTeachers) : !q.createdBy);
+
             if (isSuperAdmin) {
-                if (authorFilter !== 'all' && q.createdBy !== authorFilter) {
+                if (authorFilter === 'shared') {
+                    if (!isShared) return false;
+                } else if (authorFilter === 'private') {
+                    if (isShared) return false;
+                } else if (authorFilter !== 'all' && q.createdBy !== authorFilter) {
                     return false;
                 }
             } else {
                 // Teacher (Admin)
                 const isMine = Boolean(currentUser?.id && q.createdBy === currentUser.id);
-                const isShared = Boolean(q.isSharedWithTeachers) || !q.createdBy;
 
                 // By default, teacher can only see their own quizzes OR shared quizzes
                 if (!isMine && !isShared) return false;
@@ -542,7 +604,7 @@ export default function QuizList({
 
             return true;
         });
-    }, [quizzes, quizYearOverrides, qAcademicYearFilter, qSubjectFilter, qGradeFilter, qChapterFilter, qSearch, isSuperAdmin, authorFilter, currentUser, teachers]);
+    }, [quizzes, quizYearOverrides, quizShareOverrides, qAcademicYearFilter, qSubjectFilter, qGradeFilter, qChapterFilter, qSearch, isSuperAdmin, authorFilter, currentUser, teachers]);
 
     const counts = useMemo(() => {
         let all = 0;
@@ -754,12 +816,16 @@ export default function QuizList({
                                 value={authorFilter}
                                 onChange={e => setAuthorFilter(e.target.value)}
                             >
-                                <option value="all">👤 TẤT CẢ GIÁO VIÊN ({filteredTeachers.length})</option>
-                                {filteredTeachers.map(t => (
-                                    <option key={t.id} value={t.id}>
-                                        GV: {t.fullName} {t.subject ? `(${t.subject})` : ''}
-                                    </option>
-                                ))}
+                                <option value="all">👤 TẤT CẢ TÁC GIẢ</option>
+                                <option value="shared">🤝 TẤT CẢ ĐỀ ĐÃ CHIA SẺ GV</option>
+                                <option value="private">🔒 ĐỀ RIÊNG TƯ (CHƯA CHIA SẺ)</option>
+                                <optgroup label={`LỌC THEO GIÁO VIÊN (${filteredTeachers.length})`}>
+                                    {filteredTeachers.map(t => (
+                                        <option key={t.id} value={t.id}>
+                                            GV: {t.fullName} {t.subject ? `(${t.subject})` : ''}
+                                        </option>
+                                    ))}
+                                </optgroup>
                             </select>
                         ) : (
                             <select 
@@ -874,12 +940,15 @@ export default function QuizList({
                             resultCount={resCount}
                             quizYearOverride={quizYearOverrides[q.id]}
                             updatingYearQuizId={updatingYearQuizId}
+                            quizShareOverride={quizShareOverrides[q.id]}
+                            updatingShareQuizId={updatingShareQuizId}
                             onPreview={onPreview}
                             onEdit={onEdit}
                             onDelete={onDelete}
                             openAssignModal={openAssignModal}
                             copyQuizLink={copyQuizLink}
                             handleSetAcademicYear={handleSetAcademicYear}
+                            handleToggleShare={handleToggleShare}
                         />
                     );
                 })}
@@ -1114,6 +1183,25 @@ export default function QuizList({
                                     </>
                                 )}
                             </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Toast Thông báo Chia sẻ */}
+            {shareNotification && (
+                <div className="fixed bottom-6 right-6 z-[6000] bg-slate-900 text-white px-5 py-3.5 rounded-2xl shadow-2xl border border-slate-700 flex items-center gap-3.5 animate-in fade-in slide-in-from-bottom-4 duration-200">
+                    <div className={`p-2.5 rounded-xl shrink-0 ${shareNotification.isShared ? 'bg-blue-600' : 'bg-slate-700'}`}>
+                        <Share2 size={18} className="text-white"/>
+                    </div>
+                    <div>
+                        <div className="text-xs font-black uppercase tracking-tight">
+                            {shareNotification.isShared ? 'Đã bật chia sẻ đề thi' : 'Đã chuyển về đề riêng tư'}
+                        </div>
+                        <div className="text-[11px] text-slate-300 mt-0.5">
+                            {shareNotification.isShared 
+                                ? 'Các giáo viên khác cùng bộ môn đã có thể xem và giao đề cho các lớp.' 
+                                : 'Đề thi hiện chỉ hiển thị cho bạn và Ban giám hiệu (Super Admin).'}
                         </div>
                     </div>
                 </div>
