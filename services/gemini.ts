@@ -756,3 +756,125 @@ export const solveMultipleQuestionsWithAI = async (
     }
     return updated;
 };
+
+export interface QuestionChapterAssignment {
+    questionId: string;
+    chapterId?: string;
+    chapterName: string;
+}
+
+/**
+ * Dùng AI Gemini quét toàn bộ câu hỏi trong đề và tự động phân loại vào chương học tương ứng
+ */
+export const classifyQuestionsIntoChapters = async (
+    questions: Question[],
+    chapters: { id: string; name: string; grade?: string; subject?: string }[],
+    options?: {
+        subject?: string;
+        grade?: string;
+        customApiKey?: string;
+    }
+): Promise<QuestionChapterAssignment[]> => {
+    if (!questions || questions.length === 0) return [];
+    if (!chapters || chapters.length === 0) return [];
+
+    const ai = getAiClient(options?.customApiKey);
+
+    // Chuẩn bị danh sách chương cho AI
+    const chaptersListText = chapters.map((c, idx) => `${idx + 1}. [ID: "${c.id}"] Tên chương: "${c.name}"`).join('\n');
+
+    // Chuẩn bị nội dung câu hỏi
+    const questionsSummary = questions.map((q, idx) => {
+        let content = `--- CÂU ${idx + 1} [ID: "${q.id}"] ---
+Loại: ${q.type}
+Nội dung: ${q.text}`;
+        if (q.options && q.options.length > 0) {
+            content += `\nCác phương án: ${q.options.map((opt, i) => `${String.fromCharCode(65 + i)}. ${opt}`).join(' | ')}`;
+        }
+        if (q.subQuestions && q.subQuestions.length > 0) {
+            content += `\nCác ý: ${q.subQuestions.map((sq, i) => `${String.fromCharCode(97 + i)}) ${sq.text}`).join(' | ')}`;
+        }
+        return content;
+    }).join('\n\n');
+
+    const prompt = `Bạn là chuyên gia giáo dục phụ trách phân loại đề thi môn ${options?.subject || 'Toán'} - Khối ${options?.grade || '12'} theo chương mục kiến thức.
+Dưới đây là danh sách các chương học hiện có và danh sách các câu hỏi trong đề thi.
+
+DANH SÁCH CÁC CHƯƠNG HỌC (BẮT BUỘC CHỈ ĐƯỢC CHỌN TRONG DANH SÁCH NÀY):
+${chaptersListText}
+
+DANH SÁCH CÂU HỎI TRONG ĐỀ:
+${questionsSummary}
+
+NHIỆM VỤ:
+1. Đọc kỹ nội dung từng câu hỏi (kiến thức toán/lý/hóa/sinh/sử/địa/v.v., công thức, định nghĩa, hiện tượng).
+2. Xác định câu hỏi đó thuộc về CHƯƠNG NÀO phù hợp nhất trong danh sách các chương học ở trên.
+3. Trả về mảng JSON gồm tất cả các câu hỏi được phân loại, mỗi phần tử có:
+   - "questionId": ID chính xác của câu hỏi
+   - "chapterId": ID chính xác của chương được gán (trong ngoặc kép sau [ID: "..."])
+   - "chapterName": Tên chính xác của chương được gán
+Tuyệt đối không bỏ sót bất kỳ câu hỏi nào.`;
+
+    const runCall = async (modelName: string) => {
+        const response = await ai.models.generateContent({
+            model: modelName,
+            contents: prompt,
+            config: {
+                responseMimeType: "application/json",
+                responseSchema: {
+                    type: Type.ARRAY,
+                    items: {
+                        type: Type.OBJECT,
+                        properties: {
+                            questionId: { type: Type.STRING },
+                            chapterId: { type: Type.STRING },
+                            chapterName: { type: Type.STRING }
+                        },
+                        required: ["questionId", "chapterId", "chapterName"]
+                    }
+                }
+            }
+        });
+
+        const textOutput = response.text || "[]";
+        return safeParseJsonWithLatex(textOutput) || [];
+    };
+
+    let rawAssignments: any[] = [];
+    try {
+        rawAssignments = await runCall('gemini-3.8-flash');
+    } catch (err: any) {
+        console.warn("Thử model gemini-3.8-flash không thành công, thử lại với gemini-2.5-flash:", err);
+        try {
+            rawAssignments = await runCall('gemini-2.5-flash');
+        } catch (secondErr: any) {
+            throw new Error("Lỗi AI phân loại chương: " + formatGeminiError(secondErr));
+        }
+    }
+
+    if (!Array.isArray(rawAssignments)) {
+        return [];
+    }
+
+    // Chuẩn hóa và đối chiếu lại với danh sách chapters thực tế để đảm bảo ID và Name chính xác 100%
+    const chapterMapById = new Map<string, typeof chapters[0]>();
+    const chapterMapByName = new Map<string, typeof chapters[0]>();
+    chapters.forEach(c => {
+        chapterMapById.set(c.id, c);
+        chapterMapByName.set(c.name.trim().toLowerCase(), c);
+    });
+
+    return rawAssignments.map(item => {
+        const qId = String(item.questionId || '').trim();
+        let targetChapter = chapterMapById.get(item.chapterId);
+        if (!targetChapter && item.chapterName) {
+            targetChapter = chapterMapByName.get(String(item.chapterName).trim().toLowerCase());
+        }
+        return {
+            questionId: qId,
+            chapterId: targetChapter ? targetChapter.id : item.chapterId,
+            chapterName: targetChapter ? targetChapter.name : (item.chapterName || '')
+        };
+    });
+};
+
