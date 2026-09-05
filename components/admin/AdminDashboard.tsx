@@ -894,6 +894,57 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
     }
   };
 
+  const handleMatrixGenerateComplete = async (result: {
+    title: string;
+    durationMinutes: number;
+    questions: Question[];
+    target: 'editor' | 'bank';
+    category?: string;
+  }) => {
+    const currentSub = quizSubject || currentUser?.subject || '';
+    if (result.target === 'editor') {
+      const enriched = result.questions.map(q => ({
+        ...q,
+        subject: currentSub || q.subject || '',
+        createdBy: currentUser?.id,
+        createdByName: currentUser?.fullName
+      }));
+      setQuestions(enriched);
+      setQuizTitle(result.title || '');
+      setDuration(result.durationMinutes || 45);
+      if (result.category) {
+        setCategory(result.category);
+      } else {
+        setCategory('');
+      }
+      setActiveTab('quizzes');
+      setIsEditingQuiz(true);
+      showAlert(
+        "Tạo đề thành công", 
+        `Đã tạo thành công bộ ${enriched.length} câu hỏi theo đúng ma trận kiến thức! Bạn hãy điền tiêu đề đề thi và lưu trong Editor.`, 
+        "success"
+      );
+    } else {
+      setIsDataLoading(true);
+      try {
+        for (const q of result.questions) {
+          await saveBankQuestion({
+            ...q,
+            subject: currentSub || q.subject || '',
+            createdBy: currentUser?.id,
+            createdByName: currentUser?.fullName
+          });
+        }
+        showAlert("Thành công", `Đã lưu thành công ${result.questions.length} câu hỏi theo ma trận vào Ngân hàng!`, "success");
+        loadTabData('bank');
+      } catch (err: any) {
+        showAlert("Lỗi lưu ngân hàng", err.message || "Không thể lưu câu hỏi vào ngân hàng", "error");
+      } finally {
+        setIsDataLoading(false);
+      }
+    }
+  };
+
   const handleSaveQuiz = async () => {
     if (!quizTitle.trim()) return showAlert("Thiếu thông tin", "Vui lòng nhập tiêu đề đề thi!", "warning");
     if (questions.length === 0) return showAlert("Thiếu câu hỏi", "Đề thi chưa có câu hỏi nào!", "warning");
@@ -1745,16 +1796,33 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
 
           {activeTab === 'ai' && (
             <div className="space-y-6">
-                <h1 className="text-xl font-black text-slate-800 uppercase italic">SOẠN ĐỀ THÔNG MINH</h1>
                 <AIRenderer 
                     grade={quizGrade} 
                     setGrade={setQuizGrade} 
+                    subject={quizSubject || currentUser?.subject || 'Toán'}
+                    chapters={accessibleChapters}
+                    bankQuestions={accessibleBankQuestions}
+                    onOpenEditor={() => { setActiveTab('quizzes'); setIsEditingQuiz(true); }}
+                    onOpenBank={() => { setActiveTab('bank'); }}
+                    onMatrixGenerateComplete={handleMatrixGenerateComplete}
                     onGenerate={handleAiGenerate}
                     isLoading={isAiLoading}
                     hasQuestionsInEditor={questions.length > 0}
                     customApiKey={customApiKey}
                     onApiKeyChange={handleApiKeyChange}
                     isSuperAdmin={isSuperAdmin}
+                    onAddChapter={async (name, g, s) => {
+                      await saveChapter({
+                        id: 'chap_' + Date.now(),
+                        name,
+                        grade: g,
+                        subject: s,
+                        order: chapters.length + 1,
+                        createdBy: currentUser?.id,
+                        createdByName: currentUser?.fullName
+                      });
+                      await loadTabData('chapters', true);
+                    }}
                 />
             </div>
           )}
