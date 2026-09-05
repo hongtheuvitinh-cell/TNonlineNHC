@@ -326,6 +326,180 @@ QUY TẮC KỸ THUẬT BẮT BUỘC:
     }
 };
 
+export interface MatrixRequirementItem {
+    chapterId?: string;
+    chapterName: string;
+    type: 'mcq' | 'group-tf' | 'short';
+    level: QuestionLevel;
+    count: number;
+}
+
+export interface GenerateMatrixQuizConfig {
+    subject?: string;
+    grade: Grade | string;
+    requirements: MatrixRequirementItem[];
+    topic?: string;
+    promptAdditions?: string;
+    pdfBase64?: string;
+    customApiKey?: string;
+}
+
+export const generateQuestionsForMatrix = async (config: GenerateMatrixQuizConfig): Promise<Question[]> => {
+    const validRequirements = config.requirements.filter(r => r.count > 0);
+    if (validRequirements.length === 0) return [];
+
+    const keyToUse = config.customApiKey;
+    const ai = getAiClient(keyToUse);
+
+    const totalQuestions = validRequirements.reduce((sum, r) => sum + r.count, 0);
+
+    // Nếu số lượng câu hỏi cần sinh vượt quá 25 câu, chia thành các mẻ nhỏ để đảm bảo không bị quá tải token
+    const chunks: MatrixRequirementItem[][] = [];
+    let currentChunk: MatrixRequirementItem[] = [];
+    let currentChunkCount = 0;
+
+    for (const req of validRequirements) {
+        if (currentChunkCount + req.count > 22 && currentChunk.length > 0) {
+            chunks.push(currentChunk);
+            currentChunk = [req];
+            currentChunkCount = req.count;
+        } else {
+            currentChunk.push(req);
+            currentChunkCount += req.count;
+        }
+    }
+    if (currentChunk.length > 0) chunks.push(currentChunk);
+
+    const allGeneratedQuestions: Question[] = [];
+
+    for (let i = 0; i < chunks.length; i++) {
+        const chunkReqs = chunks[i];
+        const chunkTotal = chunkReqs.reduce((sum, r) => sum + r.count, 0);
+
+        const reqDescription = chunkReqs.map((r, idx) => {
+            const typeStr = r.type === 'mcq' ? 'Trắc nghiệm nhiều lựa chọn 4 phương án (type: "mcq")' 
+                : (r.type === 'group-tf' ? 'Trắc nghiệm Đúng/Sai gồm đúng 4 ý a, b, c, d (type: "group-tf")' 
+                : 'Trả lời ngắn điền số/kết quả (type: "short")');
+            const levelStr = r.level === 'B' ? 'Nhận biết (level: "B")' 
+                : (r.level === 'H' ? 'Thông hiểu (level: "H")' 
+                : (r.level === 'VD' ? 'Vận dụng (level: "VD")' 
+                : 'Vận dụng cao (level: "VDC")'));
+            return `  ${idx + 1}. Chương: "${r.chapterName}" | Loại: ${typeStr} | Mức độ: ${levelStr} -> BẮT BUỘC TẠO CHÍNH XÁC ${r.count} CÂU HỎI.`;
+        }).join('\n');
+
+        const sourceInstruction = config.pdfBase64
+            ? "NGUỒN TÀI LIỆU PDF: Bạn được cung cấp tệp PDF. Hãy bóc tách hoặc sáng tạo câu hỏi bám sát tài liệu này. Nếu tài liệu không đủ các câu ở mức độ yêu cầu, hãy tự động soạn câu hỏi tương ứng với nội dung kiến thức trong tài liệu theo đúng mức độ."
+            : "NGUỒN KIẾN THỨC: Bám sát khung chương trình giáo dục phổ thông mới (GDPT 2018) của Bộ GD&ĐT Việt Nam.";
+
+        const prompt = `Bạn là chuyên gia khảo thí và ra đề thi chuẩn GDPT 2018 của Bộ Giáo dục & Đào tạo Việt Nam.
+${sourceInstruction}
+
+THÔNG TIN ĐỀ THI:
+- Môn học: ${config.subject || 'Toán'}
+- Khối lớp: ${config.grade}
+- Tiêu đề / Chủ đề: ${config.topic || `Đề thi kiểm tra môn ${config.subject || 'Toán'} Khối ${config.grade}`}
+${config.promptAdditions ? `\n- YÊU CẦU ĐẶC BIỆT CỦA GIÁO VIÊN:\n"""\n${config.promptAdditions}\n"""` : ''}
+
+DANH SÁCH CHI TIẾT CÁC CÂU CẦN TẠO THEO MA TRẬN (TỔNG CỘNG MẺ NÀY: ${chunkTotal} CÂU):
+${reqDescription}
+
+QUY TẮC KỸ THUẬT BẮT BUỘC:
+1. MỖI CÂU HỎI trong mảng JSON trả về PHẢI CÓ ĐỦ:
+   - "chapterName": Tên chương chính xác như đã yêu cầu ở trên.
+   - "type": "mcq" | "group-tf" | "short".
+   - "level": "B" | "H" | "VD" | "VDC".
+   - "text": Nội dung câu hỏi.
+   - "points": 0.25 (mcq), 1.0 (group-tf), 0.5 (short).
+   - "solution": Lời giải súc tích, ngắn gọn, có công thức và kết luận.
+2. LOẠI CÂU:
+   - "mcq": Cung cấp "options" gồm đúng 4 lựa chọn (không gắn nhãn A, B, C, D vào nội dung). "correctAnswer" là chuỗi phương án đúng.
+   - "group-tf": Cung cấp "subQuestions" gồm chính xác 4 ý (a, b, c, d), mỗi ý có "text", "correctAnswer" ("True" hoặc "False"), "level".
+   - "short": "correctAnswer" là đáp số ngắn gọn (dạng số thập phân, phân số, hoặc cụm ngắn).
+3. CÔNG THỨC VÀ KÝ HIỆU TOÁN/LÝ/HÓA:
+   - BẮT BUỘC bọc trong cặp dấu $...$ (VD: $x^2 + 2x - 3 = 0$, $v = 20\\text{ m/s}$, $F = ma$).
+   - Tuyệt đối KHÔNG viết tiếng Việt có dấu trong thẻ \\text{} nếu không cần thiết.
+4. JSON: Trả về một mảng JSON các câu hỏi hợp lệ theo schema.`;
+
+        try {
+            const contents = config.pdfBase64
+                ? {
+                    parts: [
+                        { inlineData: { mimeType: "application/pdf", data: config.pdfBase64 } },
+                        { text: prompt }
+                    ]
+                }
+                : prompt;
+
+            const response = await ai.models.generateContent({
+                model: 'gemini-2.5-flash',
+                contents: contents,
+                config: {
+                    responseMimeType: "application/json",
+                    responseSchema: {
+                        type: Type.ARRAY,
+                        items: {
+                            type: Type.OBJECT,
+                            properties: {
+                                chapterName: { type: Type.STRING },
+                                type: { type: Type.STRING },
+                                text: { type: Type.STRING },
+                                level: { type: Type.STRING, nullable: true },
+                                points: { type: Type.NUMBER, nullable: true },
+                                options: { type: Type.ARRAY, items: { type: Type.STRING }, nullable: true },
+                                correctAnswer: { type: Type.STRING, nullable: true },
+                                solution: { type: Type.STRING },
+                                subQuestions: {
+                                    type: Type.ARRAY,
+                                    nullable: true,
+                                    items: {
+                                        type: Type.OBJECT,
+                                        properties: {
+                                            text: { type: Type.STRING },
+                                            correctAnswer: { type: Type.STRING },
+                                            level: { type: Type.STRING, nullable: true }
+                                        },
+                                        required: ["text", "correctAnswer"]
+                                    }
+                                }
+                            },
+                            required: ["type", "text", "solution"]
+                        }
+                    }
+                }
+            });
+
+            const textOutput = response.text || "[]";
+            const rawData = JSON.parse(cleanJsonString(textOutput));
+            const processed = processAIQuestions(rawData);
+
+            // Gán chapterId tương ứng theo chapterName nếu có trong yêu cầu
+            const chapterMap = new Map<string, string>();
+            chunkReqs.forEach(r => {
+                if (r.chapterId) chapterMap.set(r.chapterName.trim().toLowerCase(), r.chapterId);
+            });
+
+            processed.forEach(q => {
+                const cName = (q.chapterName || (q as any).chapter || '').trim();
+                const matchedId = chapterMap.get(cName.toLowerCase());
+                if (matchedId) q.chapterId = matchedId;
+                if (cName) {
+                    q.chapterName = cName;
+                    q.quizCategory = cName;
+                }
+                q.subject = config.subject;
+                q.quizGrade = config.grade as Grade;
+            });
+
+            allGeneratedQuestions.push(...processed);
+        } catch (err: any) {
+            console.error(`Lỗi generate chunk ${i + 1}/${chunks.length}:`, err);
+            throw new Error(`AI không thể tạo câu hỏi theo ma trận: ${formatGeminiError(err)}`);
+        }
+    }
+
+    return allGeneratedQuestions;
+};
+
 export const parseQuestionsFromPDF = async (base64Data: string, customApiKey?: string): Promise<Question[]> => {
   const ai = getAiClient(customApiKey);
   
