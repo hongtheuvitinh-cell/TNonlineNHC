@@ -1107,9 +1107,15 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
     if (!f) return;
     setUploadingId(id);
     try {
-      const url = await uploadQuizImage(f);
+      const mode = (localStorage.getItem('eduquiz_image_storage_mode') as any) || 'cloud';
+      const url = await uploadQuizImage(f, mode);
       if (url) {
         setQuestions(prev => prev.map(q => q.id === id ? { ...q, imageUrl: url } : q));
+        if (url.startsWith('http')) {
+          showAlert("Thành công", "Đã tải ảnh lên Firebase Cloud Storage và lấy link trực tuyến thành công!", "success");
+        } else {
+          showAlert("Đã lưu ảnh", "Đã nén và lưu ảnh Base64 vào câu hỏi.", "info");
+        }
       }
     } catch (err: any) {
       console.error("Lỗi khi tải ảnh:", err);
