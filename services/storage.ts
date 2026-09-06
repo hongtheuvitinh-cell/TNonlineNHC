@@ -1014,6 +1014,21 @@ export const getQuizById = async (id: string, forceRefresh: boolean = false): Pr
       extractedQuestions = (data.data as any).questions;
     }
 
+    // Nếu đề thi được lưu dạng chunked (do dung lượng lớn), tải câu hỏi từ subcollection 'chunks'
+    if (extractedQuestions.length === 0 && (data.isChunked || data.chunkCount)) {
+      try {
+        const chunksSnap = await getDocs(collection(db, 'quizzes', id, 'chunks'));
+        if (!chunksSnap.empty) {
+          const sorted = chunksSnap.docs
+            .map(d => d.data() as { index: number; questions: Question[] })
+            .sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
+          extractedQuestions = sorted.flatMap(c => c.questions || []);
+        }
+      } catch (err) {
+        console.error("Lỗi tải chunks câu hỏi đề thi:", err);
+      }
+    }
+
     const isShared = data.isSharedWithTeachers !== undefined 
       ? Boolean(data.isSharedWithTeachers) 
       : Boolean(quiz.isSharedWithTeachers);
@@ -1060,28 +1075,167 @@ export const getQuizById = async (id: string, forceRefresh: boolean = false): Pr
   }
 };
 
+// Helper to compress and convert image file / blob to an optimized JPEG Base64 / Blob
+export const compressImageFile = async (
+  file: File | Blob, 
+  maxWidth: number = 850, 
+  maxHeight: number = 850, 
+  quality: number = 0.8
+): Promise<{ dataUrl: string; blob: Blob }> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        let { width, height } = img;
+        if (width > maxWidth || height > maxHeight) {
+          const ratio = Math.min(maxWidth / width, maxHeight / height);
+          width = Math.round(width * ratio);
+          height = Math.round(height * ratio);
+        }
+
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          return resolve({
+            dataUrl: (e.target?.result as string) || '',
+            blob: file as Blob
+          });
+        }
+
+        // Đổ nền trắng trước khi vẽ để ảnh PNG trong suốt không bị biến thành màu đen khi đổi sang JPEG
+        ctx.fillStyle = '#FFFFFF';
+        ctx.fillRect(0, 0, width, height);
+        ctx.drawImage(img, 0, 0, width, height);
+
+        // Xuất ra định dạng JPEG nén chuẩn (giảm dung lượng từ ~600KB PNG xuống chỉ còn ~25-40KB)
+        const dataUrl = canvas.toDataURL('image/jpeg', quality);
+
+        canvas.toBlob(
+          (blob) => {
+            resolve({
+              dataUrl,
+              blob: blob || (file as Blob)
+            });
+          },
+          'image/jpeg',
+          quality
+        );
+      };
+      img.onerror = () => {
+        resolve({
+          dataUrl: (e.target?.result as string) || '',
+          blob: file as Blob
+        });
+      };
+      img.src = (e.target?.result as string) || '';
+    };
+    reader.onerror = (err) => reject(err);
+    reader.readAsDataURL(file);
+  });
+};
+
+// Nén chuỗi ảnh Base64 sẵn có trong câu hỏi đề thi (giải phóng dung lượng vượt giới hạn 1MB của Firestore)
+export const compressBase64Image = async (
+  dataUrl: string, 
+  maxWidth: number = 850, 
+  maxHeight: number = 850, 
+  quality: number = 0.8
+): Promise<string> => {
+  if (!dataUrl || typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/')) return dataUrl;
+  // Nếu đã là JPEG nhỏ (< 40KB) thì không cần nén lại
+  if (dataUrl.startsWith('data:image/jpeg') && dataUrl.length < 40 * 1024) return dataUrl;
+
+  return new Promise((resolve) => {
+    try {
+      const img = new Image();
+      img.onload = () => {
+        try {
+          let { width, height } = img;
+          if (width > maxWidth || height > maxHeight) {
+            const ratio = Math.min(maxWidth / width, maxHeight / height);
+            width = Math.round(width * ratio);
+            height = Math.round(height * ratio);
+          }
+          const canvas = document.createElement('canvas');
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) return resolve(dataUrl);
+
+          ctx.fillStyle = '#FFFFFF';
+          ctx.fillRect(0, 0, width, height);
+          ctx.drawImage(img, 0, 0, width, height);
+
+          const compressed = canvas.toDataURL('image/jpeg', quality);
+          // Chỉ lấy ảnh nén nếu dung lượng thực sự nhỏ hơn ảnh gốc
+          if (compressed && compressed.length < dataUrl.length) {
+            resolve(compressed);
+          } else {
+            resolve(dataUrl);
+          }
+        } catch {
+          resolve(dataUrl);
+        }
+      };
+      img.onerror = () => resolve(dataUrl);
+      img.src = dataUrl;
+    } catch {
+      resolve(dataUrl);
+    }
+  });
+};
+
+// Quét toàn bộ câu hỏi và nén mọi ảnh Base64 trước khi ghi vào Cloud Firestore
+export const optimizeQuizQuestions = async (questions: Question[]): Promise<Question[]> => {
+  if (!questions || !Array.isArray(questions)) return [];
+  return Promise.all(
+    questions.map(async (q) => {
+      let updatedQ = { ...q };
+      if (updatedQ.imageUrl && updatedQ.imageUrl.startsWith('data:image/')) {
+        updatedQ.imageUrl = await compressBase64Image(updatedQ.imageUrl, 850, 850, 0.8);
+      }
+      return updatedQ;
+    })
+  );
+};
+
 export const saveQuiz = async (quiz: Quiz): Promise<void> => {
   if (!db) throw new Error("Mất kết nối Database Cloud Firestore");
   const effectiveYear = quiz.academicYear || getQuizAcademicYear(quiz);
-  const qList = quiz.questions || [];
+  const rawQList = quiz.questions || [];
+  
+  // Tự động nén ảnh Base64 trong câu hỏi (nếu có)
+  const qList = await optimizeQuizQuestions(rawQList);
   const enrichedQuiz = { 
     ...quiz, 
     academicYear: effectiveYear,
     questions: qList,
     questionCount: qList.length 
   };
-  const payload = {
+
+  // Tách biệt metadata và questions để KHÔNG lưu trùng lặp danh sách câu hỏi 2 lần trong cùng 1 document
+  const { questions: _unusedQuestions, data: _unusedData, ...metaOnly } = enrichedQuiz as any;
+
+  const payload: any = {
     id: quiz.id,
-    title: quiz.title,
-    grade: quiz.grade,
-    type: quiz.type,
+    title: quiz.title || '',
+    grade: quiz.grade || '12',
+    type: quiz.type || 'test',
     category: quiz.category || '',
     subject: quiz.subject || '',
     academicYear: effectiveYear,
-    isPublished: quiz.isPublished,
+    isPublished: quiz.isPublished ?? false,
     isMonitored: quiz.isMonitored || false,
     isUnlisted: quiz.isUnlisted || false,
     disablePractice: quiz.disablePractice || false,
+    showResultAnswers: quiz.showResultAnswers !== false,
+    durationMinutes: quiz.durationMinutes || 45,
+    orderIndex: quiz.orderIndex || 0,
+    startTime: quiz.startTime || null,
+    endTime: quiz.endTime || null,
     createdBy: quiz.createdBy || '',
     createdByName: quiz.createdByName || '',
     isSharedWithTeachers: quiz.isSharedWithTeachers ?? false,
@@ -1090,10 +1244,44 @@ export const saveQuiz = async (quiz: Quiz): Promise<void> => {
     questionCount: enrichedQuiz.questionCount,
     attemptCount: quiz.attemptCount || 0,
     createdAt: quiz.createdAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    // Chỉ lưu metadata vào data, KHÔNG bao gồm mảng questions để tiết kiệm 50% dung lượng
+    data: cleanUndefined(metaOnly),
     questions: qList,
-    data: cleanUndefined(enrichedQuiz)
+    isChunked: false,
+    chunkCount: 0
   };
-  await setDoc(doc(db, 'quizzes', quiz.id), cleanUndefined(payload));
+
+  // Tính toán dung lượng document (Firestore giới hạn tối đa 1,048,576 bytes ~ 1MB)
+  const estimatedSize = new Blob([JSON.stringify(payload)]).size;
+  const FIRESTORE_SAFE_LIMIT = 750 * 1024; // 750 KB ngưỡng an toàn
+
+  if (estimatedSize > FIRESTORE_SAFE_LIMIT) {
+    // Đề thi có kích thước lớn (> 750KB): Tự động chia nhỏ (chunk) câu hỏi sang subcollection
+    const CHUNK_SIZE = 15;
+    const chunks: Question[][] = [];
+    for (let i = 0; i < qList.length; i += CHUNK_SIZE) {
+      chunks.push(qList.slice(i, i + CHUNK_SIZE));
+    }
+
+    payload.isChunked = true;
+    payload.chunkCount = chunks.length;
+    payload.questions = []; // Root document chỉ giữ metadata
+
+    await setDoc(doc(db, 'quizzes', quiz.id), cleanUndefined(payload));
+
+    // Lưu các chunks vào subcollection 'chunks'
+    const batch = writeBatch(db);
+    chunks.forEach((chunk, idx) => {
+      const chunkRef = doc(db, 'quizzes', quiz.id, 'chunks', `chunk_${idx}`);
+      batch.set(chunkRef, { index: idx, questions: cleanUndefined(chunk) });
+    });
+    await batch.commit();
+  } else {
+    // Kích thước an toàn: Lưu trực tiếp vào root document
+    await setDoc(doc(db, 'quizzes', quiz.id), cleanUndefined(payload));
+  }
+
   if (memoryCache.quizDetails) memoryCache.quizDetails.delete(quiz.id);
   try {
     localStorage.removeItem(`eduquiz_quiz_detail_${quiz.id}`);
@@ -1105,25 +1293,37 @@ export const saveQuiz = async (quiz: Quiz): Promise<void> => {
 export const updateQuiz = async (enrichedQuiz: Quiz): Promise<void> => {
   if (!db) throw new Error("Mất kết nối Database Cloud Firestore");
   const effectiveYear = enrichedQuiz.academicYear || getQuizAcademicYear(enrichedQuiz);
-  const qList = enrichedQuiz.questions || [];
+  const rawQList = enrichedQuiz.questions || [];
+  
+  // Tự động nén ảnh Base64 trong câu hỏi (nếu có)
+  const qList = await optimizeQuizQuestions(rawQList);
   const quiz = { 
     ...enrichedQuiz, 
     academicYear: effectiveYear,
     questions: qList,
     questionCount: qList.length 
   };
-  const payload = {
+
+  // Tách biệt metadata và questions để KHÔNG lưu trùng lặp danh sách câu hỏi 2 lần trong cùng 1 document
+  const { questions: _unusedQuestions, data: _unusedData, ...metaOnly } = quiz as any;
+
+  const payload: any = {
     id: quiz.id,
-    title: quiz.title,
-    grade: quiz.grade,
-    type: quiz.type,
+    title: quiz.title || '',
+    grade: quiz.grade || '12',
+    type: quiz.type || 'test',
     category: quiz.category || '',
     subject: quiz.subject || '',
     academicYear: effectiveYear,
-    isPublished: quiz.isPublished,
+    isPublished: quiz.isPublished ?? false,
     isMonitored: quiz.isMonitored || false,
     isUnlisted: quiz.isUnlisted || false,
     disablePractice: quiz.disablePractice || false,
+    showResultAnswers: quiz.showResultAnswers !== false,
+    durationMinutes: quiz.durationMinutes || 45,
+    orderIndex: quiz.orderIndex || 0,
+    startTime: quiz.startTime || null,
+    endTime: quiz.endTime || null,
     createdBy: quiz.createdBy || '',
     createdByName: quiz.createdByName || '',
     isSharedWithTeachers: quiz.isSharedWithTeachers ?? false,
@@ -1131,10 +1331,55 @@ export const updateQuiz = async (enrichedQuiz: Quiz): Promise<void> => {
     assignedClassIds: quiz.assignedClassIds || [],
     questionCount: quiz.questionCount,
     attemptCount: quiz.attemptCount || 0,
+    updatedAt: new Date().toISOString(),
+    // Chỉ lưu metadata vào data, KHÔNG bao gồm mảng questions để tiết kiệm 50% dung lượng
+    data: cleanUndefined(metaOnly),
     questions: qList,
-    data: cleanUndefined(quiz)
+    isChunked: false,
+    chunkCount: 0
   };
-  await setDoc(doc(db, 'quizzes', quiz.id), cleanUndefined(payload), { merge: true });
+
+  // Tính toán dung lượng document (Firestore giới hạn tối đa 1,048,576 bytes ~ 1MB)
+  const estimatedSize = new Blob([JSON.stringify(payload)]).size;
+  const FIRESTORE_SAFE_LIMIT = 750 * 1024; // 750 KB ngưỡng an toàn
+
+  if (estimatedSize > FIRESTORE_SAFE_LIMIT) {
+    // Đề thi lớn: Tự động chia nhỏ (chunk) câu hỏi sang subcollection
+    const CHUNK_SIZE = 15;
+    const chunks: Question[][] = [];
+    for (let i = 0; i < qList.length; i += CHUNK_SIZE) {
+      chunks.push(qList.slice(i, i + CHUNK_SIZE));
+    }
+
+    payload.isChunked = true;
+    payload.chunkCount = chunks.length;
+    payload.questions = []; // Root document chỉ giữ metadata
+
+    // Ghi đè root doc mà không dùng { merge: true } để dọn dẹp triệt để dữ liệu cũ phình to
+    await setDoc(doc(db, 'quizzes', quiz.id), cleanUndefined(payload));
+
+    // Lưu các chunks vào subcollection 'chunks'
+    const batch = writeBatch(db);
+    chunks.forEach((chunk, idx) => {
+      const chunkRef = doc(db, 'quizzes', quiz.id, 'chunks', `chunk_${idx}`);
+      batch.set(chunkRef, { index: idx, questions: cleanUndefined(chunk) });
+    });
+    await batch.commit();
+  } else {
+    // Kích thước an toàn: Ghi đè document (loại bỏ hoàn toàn duplicate data.questions cũ gây lỗi 1MB)
+    await setDoc(doc(db, 'quizzes', quiz.id), cleanUndefined(payload));
+
+    // Nếu trước đó từng dùng subcollection chunks, dọn dẹp các chunks thừa
+    try {
+      const oldChunks = await getDocs(collection(db, 'quizzes', quiz.id, 'chunks'));
+      if (!oldChunks.empty) {
+        const delBatch = writeBatch(db);
+        oldChunks.docs.forEach(d => delBatch.delete(d.ref));
+        await delBatch.commit();
+      }
+    } catch {}
+  }
+
   if (memoryCache.quizDetails) memoryCache.quizDetails.delete(quiz.id);
   try {
     localStorage.removeItem(`eduquiz_quiz_detail_${quiz.id}`);
@@ -1231,20 +1476,14 @@ export const assignQuizToClasses = async (
   }
   
   const targetType = finalClassIds.length > 0 ? 'classes' : (quiz.targetType || 'classes');
-  
-  const updatedQuiz = {
-    ...quiz,
-    questions: qList,
-    targetType,
-    assignedClassIds: finalClassIds
-  };
-  
-  await setDoc(quizRef, {
+
+  // Chỉ cập nhật targetType và assignedClassIds mà KHÔNG serialize lại toàn bộ mảng questions
+  await updateDoc(quizRef, {
     targetType,
     assignedClassIds: finalClassIds,
-    questions: qList,
-    data: cleanUndefined(updatedQuiz)
-  }, { merge: true });
+    'data.targetType': targetType,
+    'data.assignedClassIds': finalClassIds
+  });
 
   // Update in memory cache and local storage in-place instead of invalidating and refetching all
   if (memoryCache.quizzesMeta?.data) {
@@ -1262,6 +1501,14 @@ export const assignQuizToClasses = async (
 
 export const deleteQuiz = async (id: string): Promise<void> => {
   if (db) {
+    try {
+      const chunksSnap = await getDocs(collection(db, 'quizzes', id, 'chunks'));
+      if (!chunksSnap.empty) {
+        const batch = writeBatch(db);
+        chunksSnap.docs.forEach(d => batch.delete(d.ref));
+        await batch.commit();
+      }
+    } catch {}
     await deleteDoc(doc(db, 'quizzes', id));
     invalidateMemoryCache('quizzes');
     trackFirestoreDelete('quizzes', 1);
@@ -1887,94 +2134,51 @@ export const deleteBatchBankQuestions = async (ids: string[]): Promise<number> =
   return deletedCount;
 };
 
-// Helper to compress and convert image file to an optimized Base64 / Blob
-export const compressImageFile = async (
-  file: File, 
-  maxWidth: number = 1000, 
-  maxHeight: number = 1000, 
-  quality: number = 0.85
-): Promise<{ dataUrl: string; blob: Blob }> => {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const img = new Image();
-      img.onload = () => {
-        let { width, height } = img;
-        if (width > maxWidth || height > maxHeight) {
-          const ratio = Math.min(maxWidth / width, maxHeight / height);
-          width = Math.round(width * ratio);
-          height = Math.round(height * ratio);
-        }
+// Upload Quiz Image (supports Firebase Storage with generous timeout, or compressed Base64 fallback)
+export type ImageStorageDestination = 'cloud' | 'base64' | 'auto';
 
-        const canvas = document.createElement('canvas');
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) {
-          return resolve({
-            dataUrl: (e.target?.result as string) || '',
-            blob: file
-          });
-        }
-
-        ctx.drawImage(img, 0, 0, width, height);
-
-        const format = file.type === 'image/png' ? 'image/png' : 'image/jpeg';
-        const dataUrl = canvas.toDataURL(format, quality);
-
-        canvas.toBlob(
-          (blob) => {
-            resolve({
-              dataUrl,
-              blob: blob || file
-            });
-          },
-          format,
-          quality
-        );
-      };
-      img.onerror = () => {
-        resolve({
-          dataUrl: (e.target?.result as string) || '',
-          blob: file
-        });
-      };
-      img.src = (e.target?.result as string) || '';
-    };
-    reader.onerror = (err) => reject(err);
-    reader.readAsDataURL(file);
-  });
-};
-
-// Upload Quiz Image (via Firebase Storage with quick timeout, or compressed Base64 fallback)
-export const uploadQuizImage = async (file: File): Promise<string> => {
+export const uploadQuizImage = async (
+  file: File | Blob, 
+  mode: ImageStorageDestination = 'cloud'
+): Promise<string> => {
   try {
     // 1. Compress image client-side first for instant speed & lightweight footprint
-    const { dataUrl, blob } = await compressImageFile(file);
+    const { dataUrl, blob } = await compressImageFile(file, 900, 900, 0.82);
 
-    // 2. Try Firebase Storage with a strict 2500ms timeout
+    // Nếu người dùng chủ động chọn lưu Base64 cục bộ
+    if (mode === 'base64') {
+      return dataUrl;
+    }
+
+    // 2. Tải lên Firebase Cloud Storage với thời gian chờ 15s
     if (storage) {
-      const storageUploadPromise = (async () => {
-        const fileExt = file.type === 'image/png' ? 'png' : 'jpg';
+      try {
+        const fileExt = (file instanceof File && file.type === 'image/png') ? 'png' : 'jpg';
         const fileName = `quiz-images/${uuidv4()}.${fileExt}`;
         const imageRef = ref(storage, fileName);
-        const snapshot = await uploadBytes(imageRef, blob);
-        return await getDownloadURL(snapshot.ref);
-      })();
+        const metadata = {
+          contentType: fileExt === 'png' ? 'image/png' : 'image/jpeg',
+          customMetadata: { uploadedAt: new Date().toISOString() }
+        };
 
-      const timeoutPromise = new Promise<string>((_, reject) => 
-        setTimeout(() => reject(new Error("Firebase Storage timeout")), 2500)
-      );
+        const storageUploadPromise = (async () => {
+          const snapshot = await uploadBytes(imageRef, blob, metadata);
+          return await getDownloadURL(snapshot.ref);
+        })();
 
-      try {
+        const timeoutPromise = new Promise<string>((_, reject) => 
+          setTimeout(() => reject(new Error("Quá thời gian tải lên Firebase Storage (15s)")), 15000)
+        );
+
         const cloudUrl = await Promise.race([storageUploadPromise, timeoutPromise]);
         if (cloudUrl) return cloudUrl;
-      } catch (err) {
-        console.warn("Storage upload skipped/timed out, using optimized base64 storage:", err);
+      } catch (err: any) {
+        console.warn("Tải lên Firebase Storage thất bại hoặc quá giờ, tự động fallback sang Base64 nén:", err);
+        return dataUrl;
       }
     }
 
-    // 3. Seamlessly return optimized Base64
+    // 3. Trả về Base64 nén nếu chưa cấu hình storage
     return dataUrl;
   } catch (error) {
     console.error("Lỗi xử lý ảnh:", error);
@@ -1985,6 +2189,69 @@ export const uploadQuizImage = async (file: File): Promise<string> => {
       reader.readAsDataURL(file);
     });
   }
+};
+
+// Tải một chuỗi ảnh Base64 sẵn có lên Firebase Storage và lấy đường dẫn URL
+export const uploadBase64ToStorage = async (dataUrl: string): Promise<string> => {
+  if (!dataUrl || !dataUrl.startsWith('data:image/')) return dataUrl;
+  if (!storage) throw new Error("Firebase Storage chưa được khởi tạo!");
+
+  const res = await fetch(dataUrl);
+  const blob = await res.blob();
+
+  const fileName = `quiz-images/${uuidv4()}.jpg`;
+  const imageRef = ref(storage, fileName);
+  const metadata = {
+    contentType: 'image/jpeg',
+    customMetadata: { convertedFromBase64: 'true', uploadedAt: new Date().toISOString() }
+  };
+
+  const snapshot = await uploadBytes(imageRef, blob, metadata);
+  return await getDownloadURL(snapshot.ref);
+};
+
+// Quét toàn bộ đề thi và chuyển các ảnh dạng Base64 lên Firebase Storage hàng loạt
+export const batchUploadQuizImagesToStorage = async (
+  questions: Question[],
+  onProgress?: (current: number, total: number) => void
+): Promise<{ updatedQuestions: Question[]; successCount: number; failCount: number }> => {
+  let successCount = 0;
+  let failCount = 0;
+
+  const base64Questions = questions.filter(q => q.imageUrl && q.imageUrl.startsWith('data:image/'));
+  const total = base64Questions.length;
+  let processed = 0;
+
+  const urlMap = new Map<string, string>();
+  const updatedQuestions: Question[] = [];
+
+  for (const q of questions) {
+    if (!q.imageUrl || !q.imageUrl.startsWith('data:image/')) {
+      updatedQuestions.push(q);
+      continue;
+    }
+
+    try {
+      let cloudUrl: string;
+      if (urlMap.has(q.imageUrl)) {
+        cloudUrl = urlMap.get(q.imageUrl)!;
+      } else {
+        cloudUrl = await uploadBase64ToStorage(q.imageUrl);
+        urlMap.set(q.imageUrl, cloudUrl);
+      }
+      updatedQuestions.push({ ...q, imageUrl: cloudUrl });
+      successCount++;
+    } catch (err) {
+      console.error(`Không thể chuyển ảnh câu ${q.id} lên Storage:`, err);
+      updatedQuestions.push(q);
+      failCount++;
+    }
+
+    processed++;
+    if (onProgress) onProgress(processed, total);
+  }
+
+  return { updatedQuestions, successCount, failCount };
 };
 
 // --- Published Results ---
