@@ -205,7 +205,55 @@ export function cleanLatexTextTags(text: string): string {
     // 5. Xóa các tàn dư \text đứng trơ trọi nếu có
     res = res.replace(/\\text\b/g, '');
 
+    // 6. Sửa lỗi thiếu dấu gạch chéo \ trước Rightarrow, Leftarrow, Rightarrow...
+    // Ví dụ: Q_2Rightarrowm_1 -> Q_2 \Rightarrow m_1
+    res = res.replace(/([^\\])\b(Rightarrow|Leftarrow|Leftrightarrow)\b/g, '$1 \\$2 ');
+    res = res.replace(/^Rightarrow\b/g, '\\Rightarrow ');
+    res = res.replace(/^Leftarrow\b/g, '\\Leftarrow ');
+    res = res.replace(/^Leftrightarrow\b/g, '\\Leftrightarrow ');
+
+    // Sửa các ký hiệu mũi tên text thường =>, <=>, -> trong công thức
+    res = res.replace(/(?<=[0-9a-zA-Z_\)\}\]])\s*=>\s*(?=[0-9a-zA-Z_\\\{\(])/g, ' \\Rightarrow ');
+    res = res.replace(/(?<=[0-9a-zA-Z_\)\}\]])\s*<=>\s*(?=[0-9a-zA-Z_\\\{\(])/g, ' \\Leftrightarrow ');
+
+    // 7. Sửa lỗi hiển thị độ C: 10^oC, 50^oC, 100^oC -> 10^\circ C
+    res = res.replace(/(\d+)\s*\^o\s*C\b/g, '$1^\\circ\\text{C}');
+    res = res.replace(/(\d+)\s*\^{\s*o\s*}\s*C\b/g, '$1^\\circ\\text{C}');
+
+    // 8. Đảm bảo khoảng trắng xung quanh \Rightarrow, \Leftrightarrow, \rightarrow nếu dính liền
+    res = res.replace(/([0-9a-zA-Z_\)\}\]])(\\Rightarrow|\\Leftarrow|\\Leftrightarrow|\\rightarrow)([0-9a-zA-Z_\\\{\(])/g, '$1 $2 $3');
+
     return res;
+}
+
+/**
+ * Tách một đoạn văn bản tiếng Việt bị bọc nhầm trong $...$ thành văn bản và công thức chuẩn
+ */
+export function unpackAccidentallyMathWrappedParagraph(text: string): string {
+    // Nếu khối bắt đầu bằng $ và kết thúc bằng $ nhưng bên trong chứa nhiều từ tiếng Việt có dấu
+    if (!text.startsWith('$') || !text.endsWith('$') || text.length < 15) return text;
+    const inner = text.slice(1, -1);
+    // Kiểm tra xem có chứa từ tiếng Việt phổ biến không
+    const vietnameseWordPattern = /\b(gọi|nhiệt|lượng|nước|cân bằng|phương trình|theo|nhận|tỏa|chọn|đáp án|vì|do đó|áp dụng|ta có|kết quả|vận tốc|quãng đường|thời gian|khối lượng)\b/i;
+    if (!vietnameseWordPattern.test(inner)) {
+        return text;
+    }
+
+    // Nếu chứa cả câu tiếng Việt, ta bỏ dấu $ bên ngoài và bọc lại các biểu thức toán học thực sự
+    // Các biểu thức toán học có dạng: m_1 = 1kg, T_1 = 10^\circ C, Q_1 = m_1c(T - T_1), v.v.
+    const sentences = inner.split(/([.,;:?\n]+)/);
+    const processedSentences = sentences.map(part => {
+        if (/^[.,;:?\n\s]+$/.test(part)) return part;
+        // Nếu một cụm chứa dấu bằng hoặc dấu suy ra hoặc phép toán: ví dụ: Q_1 = Q_2 \Rightarrow m_1...
+        // Tách các mệnh đề bằng chữ và công thức
+        return part.replace(/([a-zA-Z0-9_\^\{\}\\\(\)]+\s*=\s*[^,;.\n]+)/g, (match) => {
+            const trimmed = match.trim();
+            if (trimmed.startsWith('$') && trimmed.endsWith('$')) return trimmed;
+            return `$${trimmed}$`;
+        });
+    });
+
+    return processedSentences.join('');
 }
 
 /**
@@ -216,7 +264,12 @@ export function normalizeFullText(text: string): string {
     if (!text) return '';
 
     // Bước 1: Dọn dẹp lỗi \text / ext trên toàn chuỗi
-    const cleanedText = cleanLatexTextTags(text);
+    let cleanedText = cleanLatexTextTags(text);
+
+    // Kiểm tra và gỡ các đoạn văn bản tiếng Việt bị bọc nhầm cả đoạn vào $...$
+    if (cleanedText.startsWith('$') && cleanedText.endsWith('$') && cleanedText.indexOf('$', 1) === cleanedText.length - 1) {
+        cleanedText = unpackAccidentallyMathWrappedParagraph(cleanedText);
+    }
 
     // Nếu không có ký tự $, chuẩn hóa trực tiếp text
     if (!cleanedText.includes('$')) {
@@ -224,12 +277,16 @@ export function normalizeFullText(text: string): string {
     }
 
     // Tách chuỗi thành các phần LaTeX ($...$) và văn bản thường
-    const parts = cleanedText.split(/(\$.*?\$)/g);
+    const parts = cleanedText.split(/(\$.*?\$)/gs);
     
     return parts.map(part => {
         if (part.startsWith('$') && part.endsWith('$')) {
-            // Khối LaTeX: Đã được làm sạch \text, giữ nguyên để KaTeX render
-            return part;
+            // Khối LaTeX: kiểm tra nếu khối này bị bọc nhầm cả câu tiếng Việt
+            if (part.length > 20 && /\b(gọi|nhiệt|phương trình|theo|nhận|tỏa|chọn|vì|ta có)\b/i.test(part)) {
+                return unpackAccidentallyMathWrappedParagraph(part);
+            }
+            // Sửa lỗi dính mũi tên trong LaTeX
+            return cleanLatexTextTags(part);
         }
         // Khối văn bản thường: Sửa lỗi tiếng Việt bị vỡ dấu
         return repairVietnameseTextOnly(part);
