@@ -2,7 +2,7 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { Question, Grade, QuestionLevel, SubQuestion } from "../types";
 import { v4 as uuidv4 } from 'uuid';
-import { normalizeFullText, cleanLatexTextTags } from './vietnameseFixer';
+import { normalizeFullText, cleanLatexTextTags, unpackAccidentallyMathWrappedParagraph } from './vietnameseFixer';
 
 export const cleanJsonString = (str: string): string => {
     return str.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
@@ -18,8 +18,9 @@ export const safeParseJsonWithLatex = (inputStr: string): any => {
     } catch (firstErr) {
         // Nếu thất bại do các ký tự escape LaTeX (như \Delta, \frac, \text, \pm, \alpha, \s, \d...), sửa chữa tự động
         try {
-            // Thay thế các ký tự escape không hợp lệ trong chuỗi JSON thành escape kép (\\)
+    // Thay thế các ký tự escape không hợp lệ trong chuỗi JSON thành escape kép (\\)
             // JSON chỉ cho phép escape: \" \\ \/ \b \f \n \r \t \uXXXX
+            // Cẩn thận với \Rightarrow, \rightarrow, \rho, \tau... tránh bị \r hoặc \t biến tính
             const fixedEscape = cleanStr.replace(/\\([^"\\\/bfnrtu]|u(?![\da-fA-F]{4}))/g, '\\\\$1');
             return JSON.parse(fixedEscape);
         } catch (secondErr) {
@@ -255,11 +256,14 @@ ${matrixPrompt}
 
 QUY TẮC KỸ THUẬT BẮT BUỘC:
 1. LaTeX & ĐƠN VỊ:
-   - Mọi biểu thức, công thức, ký hiệu toán/lý/hóa (VD: $\\Delta\\Phi$, $\\Omega$, $x^2$, $\\vec{v}$) BẮT BUỘC phải nằm trong cặp dấu $...$. Quy tắc này áp dụng cho NỘI DUNG CÂU HỎI, CÁC PHƯƠNG ÁN (Options), và LỜI GIẢI (Solution).
-   - TUYỆT ĐỐI KHÔNG dùng thẻ \\text{...}, \\mathrm{...}, \\mbox{...} trong công thức (tránh lỗi JSON escape \\t thành 'ext').
-   - Đơn vị đo (m/s, km/h, kg, g, N, J, W, V, A, Hz, s, min, h, cm, rad/s...): Hãy viết dạng văn bản thường ngoài dấu $ (VD: '$v = 20$ m/s', '$m = 5$ kg', '$F = 10$ N') hoặc viết trực tiếp (VD: '$20$ m/s').
-   - Chỉ số trên/dưới (VD: $v_{max}$, $F_{ms}$, $m_1$, $x_2$, $I_{hd}$): Đánh trực tiếp chữ vào chỉ số không bọc \\text{}.
-2. Solution (Lời giải): Lời giải đơn giản, súc tích bằng các gạch đầu dòng. Viết công thức rồi ghi dấu bằng ra kết quả ngay ([Công thức] = [Kết quả]), TUYỆT ĐỐI BỎ QUA quá trình thay số/điền số chi tiết vào giữa các phép tính để tránh rối mắt.
+   - Bọc RIÊNG BIỆT từng biểu thức, công thức, ký hiệu toán/lý/hóa (VD: $\\Delta\\Phi$, $\\Omega$, $x^2$, $\\vec{v}$) trong cặp dấu $...$.
+   - TUYỆT ĐỐI KHÔNG bọc cả câu văn bản tiếng Việt dài vào trong $...$. Chỉ bọc phần công thức.
+   - Khi viết dấu suy ra, BẮT BUỘC dùng $\\Rightarrow$ (có dấu gạch chéo \\ và khoảng cách hai bên), TUYỆT ĐỐI KHÔNG viết 'Rightarrow' thiếu gạch chéo hoặc viết liền kề biến số.
+   - Ký hiệu độ C viết là ^\\circ\\text{C} (VD: $10^\\circ\\text{C}$, $50^\\circ\\text{C}$, KHÔNG viết ^oC).
+   - TUYỆT ĐỐI KHÔNG dùng thẻ \\text{...}, \\mathrm{...}, \\mbox{...} cho từ tiếng Việt có dấu.
+   - Đơn vị đo (m/s, km/h, kg, g, N, J, W, V, A, Hz, s, min, h, cm, rad/s...): Viết dạng văn bản thường ngoài dấu $ (VD: '$v = 20$ m/s', '$m_1 = 1$ kg', '$Q_1 = 100$ J') hoặc viết trực tiếp ($20$ m/s).
+   - Chỉ số trên/dưới: Viết trực tiếp (VD: $v_{max}$, $F_{ms}$, $m_1$, $T_2$).
+2. Solution (Lời giải): Lời giải đơn giản, súc tích bằng các gạch đầu dòng (- ...). Nêu công thức rồi ghi dấu bằng ra kết quả ngay ([Công thức] = [Kết quả]), TUYỆT ĐỐI BỎ QUA quá trình thay số/điền số vụn vặt vào giữa các phép tính để tránh rối mắt.
 3. MCQ: 'correctAnswer' phải là nội dung của phương án đúng (không kèm nhãn A, B, C, D). 'solution' gồm: - Áp dụng công thức: [Công thức] = [Kết quả]. - Chọn đáp án: [Phương án đúng].
 4. GROUP-TF: 
    - 'subQuestions' phải có chính xác 4 ý (a, b, c, d).
@@ -318,7 +322,7 @@ QUY TẮC KỸ THUẬT BẮT BUỘC:
         });
 
         const textOutput = response.text || "[]";
-        const rawData = JSON.parse(cleanJsonString(textOutput));
+        const rawData = safeParseJsonWithLatex(textOutput) || [];
         
         return processAIQuestions(rawData);
     } catch (error: any) {
@@ -334,6 +338,18 @@ export interface MatrixRequirementItem {
     count: number;
 }
 
+export interface MatrixProgressUpdate {
+    phase: 'fetching' | 'checking' | 'generating' | 'normalizing' | 'completed';
+    title: string;
+    description: string;
+    currentCount: number;
+    totalCount: number;
+    percent: number;
+    currentChapter?: string;
+    currentLevel?: QuestionLevel;
+    currentType?: string;
+}
+
 export interface GenerateMatrixQuizConfig {
     subject?: string;
     grade: Grade | string;
@@ -342,6 +358,7 @@ export interface GenerateMatrixQuizConfig {
     promptAdditions?: string;
     pdfBase64?: string;
     customApiKey?: string;
+    onProgress?: (progress: MatrixProgressUpdate) => void;
 }
 
 export const generateQuestionsForMatrix = async (config: GenerateMatrixQuizConfig): Promise<Question[]> => {
@@ -375,6 +392,27 @@ export const generateQuestionsForMatrix = async (config: GenerateMatrixQuizConfi
     for (let i = 0; i < chunks.length; i++) {
         const chunkReqs = chunks[i];
         const chunkTotal = chunkReqs.reduce((sum, r) => sum + r.count, 0);
+
+        const chapterNames = [...new Set(chunkReqs.map(r => r.chapterName))].join(', ');
+        const levels = [...new Set(chunkReqs.map(r => {
+            const l = r.level;
+            return l === 'B' ? 'Nhận biết' : (l === 'H' ? 'Thông hiểu' : (l === 'VD' ? 'Vận dụng' : 'Vận dụng cao'));
+        }))].join(', ');
+
+        if (config.onProgress) {
+            const pct = Math.round((i / chunks.length) * 85) + 5;
+            config.onProgress({
+                phase: 'generating',
+                title: `AI đang soạn câu hỏi mới (Đợt ${i + 1}/${chunks.length})`,
+                description: `Đang soạn ${chunkTotal} câu cho: "${chapterNames}" • Mức độ: [${levels}]`,
+                currentCount: allGeneratedQuestions.length,
+                totalCount: totalQuestions,
+                percent: pct,
+                currentChapter: chapterNames,
+                currentLevel: chunkReqs[0]?.level,
+                currentType: chunkReqs[0]?.type
+            });
+        }
 
         const reqDescription = chunkReqs.map((r, idx) => {
             const typeStr = r.type === 'mcq' ? 'Trắc nghiệm nhiều lựa chọn 4 phương án (type: "mcq")' 
@@ -416,7 +454,10 @@ QUY TẮC KỸ THUẬT BẮT BUỘC:
    - "group-tf": Cung cấp "subQuestions" gồm chính xác 4 ý (a, b, c, d), mỗi ý có "text", "correctAnswer" ("True" hoặc "False"), "level".
    - "short": "correctAnswer" là đáp số ngắn gọn (dạng số thập phân, phân số, hoặc cụm ngắn).
 3. CÔNG THỨC VÀ KÝ HIỆU TOÁN/LÝ/HÓA:
-   - BẮT BUỘC bọc trong cặp dấu $...$ (VD: $x^2 + 2x - 3 = 0$, $v = 20\\text{ m/s}$, $F = ma$).
+   - BẮT BUỘC bọc riêng từng công thức, phương trình trong cặp dấu $...$ (VD: $x^2 + 2x - 3 = 0$, $F = ma$, $m_1 = 1$ kg).
+   - TUYỆT ĐỐI KHÔNG bọc cả câu tiếng Việt vào dấu $...$.
+   - Dấu suy ra BẮT BUỘC viết là $\\Rightarrow$ (có gạch chéo và khoảng cách). Không viết 'Rightarrow' dính liền.
+   - Ký hiệu độ C viết là ^\\circ\\text{C} (VD: $10^\\circ\\text{C}$, $50^\\circ\\text{C}$, KHÔNG viết ^oC).
    - Tuyệt đối KHÔNG viết tiếng Việt có dấu trong thẻ \\text{} nếu không cần thiết.
 4. JSON: Trả về một mảng JSON các câu hỏi hợp lệ theo schema.`;
 
@@ -469,7 +510,7 @@ QUY TẮC KỸ THUẬT BẮT BUỘC:
             });
 
             const textOutput = response.text || "[]";
-            const rawData = JSON.parse(cleanJsonString(textOutput));
+            const rawData = safeParseJsonWithLatex(textOutput) || [];
             const processed = processAIQuestions(rawData);
 
             // Gán chapterId tương ứng theo chapterName nếu có trong yêu cầu
@@ -817,7 +858,7 @@ export const parseQuestionsFromText = async (rawText: string, customApiKey?: str
         });
 
         const textOutput = response.text || "[]";
-        const rawData = JSON.parse(cleanJsonString(textOutput));
+        const rawData = safeParseJsonWithLatex(textOutput) || [];
         
         return processAIQuestions(rawData);
     } catch (error: any) {
@@ -869,11 +910,13 @@ YÊU CẦU LỜI GIẢI ('solution') - BẮT BUỘC:
    - Với SHORT (Trả lời ngắn):
      - [Công thức/Định luật] = [Kết quả].
      - Đáp số: [Số].
-3. CÔNG THỨC & ĐƠN VỊ:
-   - Mọi công thức bọc trong $...$.
-   - TUYỆT ĐỐI KHÔNG dùng \\text{...}, \\mathrm{...} (để tránh lỗi JSON escape).
-   - Đơn vị viết bên ngoài dấu $ (VD: '$v = 20$ m/s', '$m = 5$ kg').
-   - Chỉ số dưới viết trực tiếp (VD: $v_{max}$, $F_{ms}$).
+3. CÔNG THỨC, KÝ HIỆU & ĐƠN VỊ:
+   - Mọi công thức, biểu thức bọc RIÊNG BIỆT trong $...$. TUYỆT ĐỐI KHÔNG bọc cả đoạn văn hoặc cả câu tiếng Việt vào $...$.
+   - Dấu suy ra BẮT BUỘC viết có dấu gạch chéo \\ và khoảng cách: $\\Rightarrow$ hoặc \\Rightarrow (TUYỆT ĐỐI KHÔNG viết Rightarrow thiếu gạch chéo hoặc viết dính liền biến số).
+   - Ký hiệu độ C viết là ^\\circ\\text{C} (VD: $10^\\circ\\text{C}$, $50^\\circ\\text{C}$, KHÔNG viết ^oC).
+   - TUYỆT ĐỐI KHÔNG dùng \\text{...}, \\mathrm{...} cho các từ tiếng Việt có dấu trong công thức.
+   - Đơn vị viết bên ngoài dấu $ (VD: '$v = 20$ m/s', '$m_1 = 1$ kg', '$Q_1 = 100$ J').
+   - Chỉ số dưới viết trực tiếp (VD: $v_{max}$, $F_{ms}$, $m_1$, $T_2$).
 4. ĐÁP ÁN ĐÚNG ('correctAnswer'): Nếu câu hỏi chưa có đáp án hoặc bạn tìm ra đáp án đúng, hãy cung cấp nội dung đáp án đúng.`;
 
     try {
@@ -894,25 +937,81 @@ YÊU CẦU LỜI GIẢI ('solution') - BẮT BUỘC:
         });
 
         const raw = safeParseJsonWithLatex(response.text || "{}") || {};
+        let sol = raw.solution || "";
+        sol = normalizeFullText(sol);
+        sol = cleanLatexTextTags(sol);
+        sol = unpackAccidentallyMathWrappedParagraph(sol);
+
+        let ans = raw.correctAnswer ? cleanLatexTextTags(normalizeFullText(raw.correctAnswer)) : undefined;
+
         return {
-            solution: normalizeFullText(raw.solution || ""),
-            correctAnswer: raw.correctAnswer ? cleanLatexTextTags(raw.correctAnswer) : undefined
+            solution: sol,
+            correctAnswer: ans
         };
     } catch (error: any) {
         throw new Error("Lỗi AI giải câu hỏi: " + formatGeminiError(error));
     }
 };
 
+export interface SolveProgressUpdate {
+    current: number;
+    total: number;
+    percent: number;
+    status: 'checking' | 'solving' | 'skipped' | 'done';
+    message: string;
+    level?: string;
+    questionTextSnippet?: string;
+}
+
 export const solveMultipleQuestionsWithAI = async (
     questions: Question[],
     subject: string = 'Toán',
     grade: string = '12',
     customApiKey?: string,
-    onProgress?: (completed: number, total: number) => void
+    onProgress?: (progress: SolveProgressUpdate) => void,
+    forceSolveAll: boolean = false
 ): Promise<Question[]> => {
     const updated: Question[] = [];
     for (let i = 0; i < questions.length; i++) {
         const q = questions[i];
+        const hasExistingSolution = Boolean(
+            q.solution && 
+            q.solution.trim().length > 0 && 
+            !q.solution.includes('Chưa có lời giải')
+        );
+
+        // NẾU CÂU HỎI ĐÃ CÓ LỜI GIẢI SẴN: Giữ nguyên từ dữ liệu gốc, không gọi AI
+        if (!forceSolveAll && hasExistingSolution) {
+            updated.push(q);
+            if (onProgress) {
+                const pct = Math.round(((i + 1) / questions.length) * 100);
+                onProgress({
+                    current: i + 1,
+                    total: questions.length,
+                    percent: pct,
+                    status: 'skipped',
+                    message: `Câu ${i + 1} (${q.level ? `Mức độ ${q.level}` : 'Có sẵn'}): Đang lấy dữ liệu - Đã có sẵn lời giải, giữ nguyên.`,
+                    level: q.level,
+                    questionTextSnippet: q.text.substring(0, 50)
+                });
+            }
+            continue;
+        }
+
+        // CÂU HỎI CHƯA CÓ LỜI GIẢI: AI phân tích và soạn lời giải mới
+        if (onProgress) {
+            const pct = Math.round((i / questions.length) * 100);
+            onProgress({
+                current: i + 1,
+                total: questions.length,
+                percent: pct,
+                status: 'solving',
+                message: `Câu ${i + 1} (${q.level ? `Mức độ ${q.level}` : 'Chưa có'}): Đang soạn lời giải mới theo chuẩn sư phạm...`,
+                level: q.level,
+                questionTextSnippet: q.text.substring(0, 50)
+            });
+        }
+
         try {
             const res = await solveQuestionWithAI(q, subject, grade, customApiKey);
             updated.push({
@@ -924,8 +1023,18 @@ export const solveMultipleQuestionsWithAI = async (
             console.error(`Lỗi giải câu ${i + 1}:`, e);
             updated.push(q);
         }
+
         if (onProgress) {
-            onProgress(i + 1, questions.length);
+            const pct = Math.round(((i + 1) / questions.length) * 100);
+            onProgress({
+                current: i + 1,
+                total: questions.length,
+                percent: pct,
+                status: 'done',
+                message: `Câu ${i + 1}: Đã hoàn tất soạn lời giải!`,
+                level: q.level,
+                questionTextSnippet: q.text.substring(0, 50)
+            });
         }
     }
     return updated;
