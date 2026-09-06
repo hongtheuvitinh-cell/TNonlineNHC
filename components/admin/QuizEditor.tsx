@@ -11,7 +11,15 @@ import {
 import { v4 as uuidv4 } from 'uuid';
 import LatexText from '../LatexText';
 import LatexEditorModal from './LatexEditorModal';
-import { parseQuestionsFromJSON, classifyQuestionsIntoChapters, QuestionChapterAssignment } from '../../services/gemini';
+import AIProgressTimelineModal, { TimelineStepItem } from './AIProgressTimelineModal';
+import { 
+    parseQuestionsFromJSON, 
+    classifyQuestionsIntoChapters, 
+    QuestionChapterAssignment,
+    solveQuestionWithAI,
+    solveMultipleQuestionsWithAI,
+    SolveProgressUpdate
+} from '../../services/gemini';
 import { STANDARD_SUBJECTS, isSameSubject } from '../../services/subjectUtils';
 import { getAcademicYearOptions, getCurrentAcademicYear } from '../../services/academicUtils';
 
@@ -91,6 +99,9 @@ interface QuestionSectionProps {
     onOpenBank: (type: QuestionType) => void;
     chapters: Chapter[];
     relevantChapters: Chapter[];
+    subject?: string;
+    grade?: string;
+    customApiKey?: string;
 }
 
 const QuestionSection: React.FC<QuestionSectionProps> = ({ 
@@ -102,7 +113,10 @@ const QuestionSection: React.FC<QuestionSectionProps> = ({
     uploadingId, 
     onOpenBank,
     chapters,
-    relevantChapters
+    relevantChapters,
+    subject,
+    grade,
+    customApiKey
 }) => {
     const [quickPoints, setQuickPoints] = useState(type === 'mcq' ? "0.25" : "1.0");
     const [batchSectionChapter, setBatchSectionChapter] = useState('');
@@ -110,6 +124,34 @@ const QuestionSection: React.FC<QuestionSectionProps> = ({
     const [batchImageSrc, setBatchImageSrc] = useState<string | null>(null);
     const [batchSelectedQIds, setBatchSelectedQIds] = useState<string[]>([]);
     const [batchFilterType, setBatchFilterType] = useState<QuestionType | 'all'>('all');
+    const [solvingQuestionId, setSolvingQuestionId] = useState<string | null>(null);
+
+    const handleSolveSingle = async (qId: string, force: boolean = false) => {
+        const targetQ = questions.find(q => q.id === qId);
+        if (!targetQ) return;
+        if (!force && targetQ.solution && targetQ.solution.trim() && !targetQ.solution.includes('Chưa có lời giải')) {
+            const confirmReSolve = window.confirm("Câu hỏi này đã có lời giải sẵn trong đề. Bạn có chắc chắn muốn AI phân tích và soạn lại lời giải mới không?");
+            if (!confirmReSolve) return;
+        }
+
+        setSolvingQuestionId(qId);
+        try {
+            const res = await solveQuestionWithAI(targetQ, subject || 'Toán', grade || '12', customApiKey);
+            const nl = [...questions];
+            const i = nl.findIndex(x => x.id === qId);
+            if (i >= 0) {
+                nl[i].solution = res.solution || nl[i].solution;
+                if (nl[i].type !== 'group-tf' && res.correctAnswer && !nl[i].correctAnswer) {
+                    nl[i].correctAnswer = res.correctAnswer;
+                }
+                setQuestions(nl);
+            }
+        } catch (e: any) {
+            alert("Không thể giải câu hỏi: " + (e?.message || e));
+        } finally {
+            setSolvingQuestionId(null);
+        }
+    };
 
     const otherChapters = useMemo(() => {
         const relevantIds = new Set(relevantChapters.map(c => c.id));
@@ -987,19 +1029,50 @@ const QuestionSection: React.FC<QuestionSectionProps> = ({
 
                     <div className="pt-8 border-t-2 border-slate-100 grid grid-cols-1 lg:grid-cols-2 gap-8">
                         <div className="space-y-3">
-                            <div className="flex items-center justify-between ml-2 mr-2">
+                            <div className="flex flex-wrap items-center justify-between gap-2 ml-2 mr-2">
                                 <div className="flex items-center gap-2">
                                     <Lightbulb size={16} className="text-orange-500"/>
                                     <label className="text-[10px] font-black text-slate-400 uppercase">Hướng dẫn giải (LaTeX: $...$)</label>
                                 </div>
-                                <button
-                                    type="button"
-                                    onClick={() => handleOpenLatexModal(q.id, 'solution', globalIndex + 1)}
-                                    className="flex items-center gap-1.5 px-3 py-1 bg-orange-50 text-orange-600 hover:bg-orange-600 hover:text-white rounded-xl text-[10px] font-black uppercase transition-all shadow-sm border border-orange-200 active:scale-95"
-                                    title="Mở bảng hỗ trợ soạn thảo công thức LaTeX cho lời giải"
-                                >
-                                    <Sparkles size={12}/> Hỗ trợ LaTeX
-                                </button>
+                                <div className="flex items-center gap-2">
+                                    {/* NÚT AI SOẠN LỜI GIẢI KHI CHƯA CÓ */}
+                                    {Boolean(q.solution && q.solution.trim().length > 0 && !q.solution.includes('Chưa có lời giải')) ? (
+                                        <div className="flex items-center gap-1.5">
+                                            <span className="flex items-center gap-1 px-2.5 py-1 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-xl text-[10px] font-bold">
+                                                <CheckCircle2 size={12} className="text-emerald-600" /> Đã có lời giải sẵn
+                                            </span>
+                                            <button
+                                                type="button"
+                                                onClick={() => handleSolveSingle(q.id, true)}
+                                                disabled={solvingQuestionId === q.id}
+                                                className="px-2 py-1 text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg text-[10px] font-bold transition-all"
+                                                title="Câu hỏi này đã có lời giải. Bấm nếu muốn AI phân tích và giải lại."
+                                            >
+                                                {solvingQuestionId === q.id ? <Loader2 size={11} className="animate-spin" /> : "AI Giải lại"}
+                                            </button>
+                                        </div>
+                                    ) : (
+                                        <button
+                                            type="button"
+                                            onClick={() => handleSolveSingle(q.id, false)}
+                                            disabled={solvingQuestionId === q.id}
+                                            className="flex items-center gap-1.5 px-3 py-1 bg-gradient-to-r from-purple-600 to-indigo-600 text-white hover:opacity-95 rounded-xl text-[10px] font-black uppercase transition-all shadow-sm active:scale-95 disabled:opacity-50"
+                                            title="AI Gemini tự động phân tích câu hỏi và soạn thảo lời giải chi tiết (chỉ giải khi chưa có)"
+                                        >
+                                            {solvingQuestionId === q.id ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} className="text-amber-300" />}
+                                            <span>{solvingQuestionId === q.id ? "Đang soạn giải..." : "AI Soạn giải (chưa có)"}</span>
+                                        </button>
+                                    )}
+
+                                    <button
+                                        type="button"
+                                        onClick={() => handleOpenLatexModal(q.id, 'solution', globalIndex + 1)}
+                                        className="flex items-center gap-1.5 px-3 py-1 bg-orange-50 text-orange-600 hover:bg-orange-600 hover:text-white rounded-xl text-[10px] font-black uppercase transition-all shadow-sm border border-orange-200 active:scale-95"
+                                        title="Mở bảng hỗ trợ soạn thảo công thức LaTeX cho lời giải"
+                                    >
+                                        <Sparkles size={12}/> Hỗ trợ LaTeX
+                                    </button>
+                                </div>
                             </div>
                             <textarea 
                                 ref={el => { textareaRefs.current[`${q.id}-solution`] = el; }}
@@ -1047,6 +1120,129 @@ export default function QuizEditor(props: QuizEditorProps) {
     }, [props.chapters, props.grade, props.subject]);
     const [showKeyInput, setShowKeyInput] = useState(false);
     const [isAssigningChapters, setIsAssigningChapters] = useState(false);
+    const [isSolvingBatch, setIsSolvingBatch] = useState(false);
+
+    // Tiến trình Timeline thời gian thực hiển thị trạng thái AI giải đề thi
+    const [solveTimelineProgress, setSolveTimelineProgress] = useState<{
+        isOpen: boolean;
+        title: string;
+        subtitle?: string;
+        percent: number;
+        currentAction: 'fetching_bank' | 'checking_matrix' | 'generating_ai' | 'solving_ai' | 'normalizing' | 'completed' | 'error';
+        currentLevel?: string;
+        currentChapter?: string;
+        detailsMessage: string;
+        steps: TimelineStepItem[];
+        logs: string[];
+    }>({
+        isOpen: false,
+        title: 'AI GIẢI CÂU HỎI CHƯA CÓ LỜI GIẢI',
+        percent: 0,
+        currentAction: 'solving_ai',
+        detailsMessage: '',
+        steps: [],
+        logs: []
+    });
+
+    // Đếm số lượng câu chưa có lời giải (hoặc chỉ có placeholder "Chưa có lời giải")
+    const missingSolutionsCount = useMemo(() => {
+        return props.questions.filter(q => !q.solution || !q.solution.trim() || q.solution.includes('Chưa có lời giải')).length;
+    }, [props.questions]);
+
+    const handleBatchSolveMissingSolutions = async () => {
+        if (!props.questions || props.questions.length === 0) {
+            alert("Đề thi chưa có câu hỏi nào để giải!");
+            return;
+        }
+
+        const missing = props.questions.filter(q => !q.solution || !q.solution.trim() || q.solution.includes('Chưa có lời giải'));
+        if (missing.length === 0) {
+            alert(`Toàn bộ ${props.questions.length} câu hỏi trong đề đã có lời giải đầy đủ! Hệ thống giữ nguyên lời giải từ câu hỏi gốc và không cần gọi AI giải.`);
+            return;
+        }
+
+        const initialSteps: TimelineStepItem[] = [
+            { id: 'step_scan', label: '1. Kiểm tra lời giải hiện có', description: `Đã có ${props.questions.length - missing.length}/${props.questions.length} câu có sẵn lời giải`, status: 'completed' },
+            { id: 'step_filter', label: '2. Lọc câu hỏi chưa có lời giải', description: `Chỉ giải ${missing.length} câu còn thiếu, bỏ qua ${props.questions.length - missing.length} câu đã có`, status: 'active' },
+            { id: 'step_solve', label: '3. AI Soạn lời giải mới theo mức độ', description: 'Gemini tự động giải chi tiết và chuẩn hóa công thức', status: 'pending' },
+            { id: 'step_normalize', label: '4. Chuẩn hóa KaTeX & Đối soát đáp án', description: 'Làm sạch cú pháp LaTeX và kiểm tra phương án đúng', status: 'pending' },
+            { id: 'step_done', label: '5. Hoàn tất cập nhật vào đề thi', description: 'Lưu toàn bộ lời giải mới', status: 'pending' }
+        ];
+
+        setSolveTimelineProgress({
+            isOpen: true,
+            title: 'AI GIẢI CÁC CÂU HỎI CHƯA CÓ LỜI GIẢI',
+            subtitle: `Tổng số: ${props.questions.length} câu • Giữ nguyên có sẵn: ${props.questions.length - missing.length} câu • Cần soạn mới: ${missing.length} câu`,
+            percent: 15,
+            currentAction: 'checking_matrix',
+            detailsMessage: `Đang lấy dữ liệu câu hỏi trong đề: ${props.questions.length - missing.length} câu đã có lời giải (giữ nguyên), ${missing.length} câu cần AI giải...`,
+            steps: initialSteps,
+            logs: [
+                `Bắt đầu quét đề thi: ${props.questions.length} câu hỏi.`,
+                `Giữ nguyên ${props.questions.length - missing.length} câu đã có sẵn lời giải (tiết kiệm tài nguyên).`,
+                `Chuẩn bị soạn lời giải cho ${missing.length} câu chưa có.`
+            ]
+        });
+
+        setIsSolvingBatch(true);
+        try {
+            // Cập nhật bước 3: AI Giải
+            setSolveTimelineProgress(prev => ({
+                ...prev,
+                percent: 25,
+                currentAction: 'solving_ai',
+                detailsMessage: `AI đang phân tích và soạn lời giải cho ${missing.length} câu hỏi chưa có...`,
+                steps: prev.steps.map(s => {
+                    if (s.id === 'step_filter') return { ...s, status: 'completed' };
+                    if (s.id === 'step_solve') return { ...s, status: 'active' };
+                    return s;
+                })
+            }));
+
+            const updated = await solveMultipleQuestionsWithAI(
+                props.questions,
+                props.subject || 'Toán',
+                props.grade || '12',
+                props.customApiKey,
+                (prog: SolveProgressUpdate) => {
+                    const timeStr = new Date().toLocaleTimeString('vi-VN');
+                    setSolveTimelineProgress(prev => ({
+                        ...prev,
+                        percent: Math.max(25, prog.percent),
+                        currentAction: prog.status === 'skipped' ? 'checking_matrix' : 'solving_ai',
+                        currentLevel: prog.level,
+                        detailsMessage: prog.message,
+                        logs: [...prev.logs, `[${timeStr}] ${prog.message}`]
+                    }));
+                },
+                false // forceSolveAll = false -> CHỈ GIẢI CÂU CHƯA CÓ LỜI GIẢI
+            );
+
+            // BƯỚC 4 & 5: Hoàn tất
+            setSolveTimelineProgress(prev => ({
+                ...prev,
+                percent: 100,
+                currentAction: 'completed',
+                detailsMessage: `Hoàn tất! Đã cập nhật đầy đủ lời giải cho toàn bộ các câu hỏi trong đề thi.`,
+                steps: prev.steps.map(s => ({ ...s, status: 'completed' })),
+                logs: [...prev.logs, `Đã hoàn tất giải và lưu vào đề thi.`]
+            }));
+
+            props.setQuestions(updated);
+            await new Promise(r => setTimeout(r, 600));
+            setSolveTimelineProgress(prev => ({ ...prev, isOpen: false }));
+        } catch (e: any) {
+            console.error("Lỗi AI giải câu hỏi:", e);
+            setSolveTimelineProgress(prev => ({
+                ...prev,
+                currentAction: 'error',
+                detailsMessage: `Lỗi: ${e?.message || 'Không thể hoàn thành giải câu hỏi.'}`,
+                logs: [...prev.logs, `Lỗi: ${e?.message || 'Thất bại'}`]
+            }));
+        } finally {
+            setIsSolvingBatch(false);
+        }
+    };
 
     const handleAiAutoAssignChapters = async () => {
         if (!props.questions || props.questions.length === 0) {
@@ -1376,6 +1572,30 @@ export default function QuizEditor(props: QuizEditorProps) {
                                 )}
                                 <span>{isAssigningChapters ? "AI ĐANG GÁN..." : "AI GÁN CHƯƠNG"}</span>
                             </button>
+
+                            {/* NÚT AI GIẢI CÂU CHƯA CÓ LỜI GIẢI (CÓ TIMELINE TIẾN TRÌNH & ĐỐI CHIẾU MỨC ĐỘ) */}
+                            <button
+                                type="button"
+                                onClick={handleBatchSolveMissingSolutions}
+                                disabled={isSolvingBatch || props.questions.length === 0}
+                                className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-[10px] font-black uppercase transition-all shadow-md active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed ${
+                                    missingSolutionsCount > 0
+                                        ? 'bg-gradient-to-r from-amber-500 via-orange-600 to-rose-600 text-white hover:opacity-95 shadow-amber-200'
+                                        : 'bg-emerald-50 text-emerald-700 border border-emerald-300 hover:bg-emerald-100'
+                                }`}
+                                title="Chỉ kích hoạt AI soạn lời giải khi câu hỏi chưa có lời giải. Nếu đã có sẵn thì giữ nguyên từ câu hỏi gốc."
+                            >
+                                {isSolvingBatch ? (
+                                    <Loader2 size={13} className="animate-spin text-white" />
+                                ) : (
+                                    <Lightbulb size={13} className={missingSolutionsCount > 0 ? "text-amber-200 animate-bounce" : "text-emerald-600"} />
+                                )}
+                                <span>
+                                    {isSolvingBatch 
+                                        ? "AI ĐANG GIẢI..." 
+                                        : (missingSolutionsCount > 0 ? `AI GIẢI CÂU CHƯA CÓ (${missingSolutionsCount})` : "LỜI GIẢI ĐÃ ĐỦ")}
+                                </span>
+                            </button>
                         </div>
 
                         <div className="flex items-center gap-2">
@@ -1386,6 +1606,17 @@ export default function QuizEditor(props: QuizEditorProps) {
                                     <span>Gán chương:</span>
                                     <span className="font-black text-indigo-700">
                                         {props.questions.filter(q => Boolean(q.chapterId || q.chapterName || q.quizCategory)).length}/{props.questions.length} câu
+                                    </span>
+                                </div>
+                            )}
+
+                            {/* Thống kê số câu đã có lời giải */}
+                            {props.questions.length > 0 && (
+                                <div className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 bg-amber-50 border border-amber-200 rounded-xl text-[10px] font-bold text-amber-900" title="Số lượng câu hỏi trong đề đã có lời giải chi tiết">
+                                    <Lightbulb size={12} className="text-amber-600" />
+                                    <span>Lời giải:</span>
+                                    <span className={`font-black ${missingSolutionsCount === 0 ? 'text-emerald-700' : 'text-amber-700'}`}>
+                                        {props.questions.length - missingSolutionsCount}/{props.questions.length} câu
                                     </span>
                                 </div>
                             )}
@@ -1978,6 +2209,9 @@ export default function QuizEditor(props: QuizEditorProps) {
                 onOpenBank={props.onOpenBank}
                 chapters={props.chapters}
                 relevantChapters={relevantChapters}
+                subject={props.subject}
+                grade={props.grade}
+                customApiKey={props.customApiKey}
             />
             <QuestionSection 
                 sectionTitle="PHẦN II. TRẮC NGHIỆM ĐÚNG SAI" 
@@ -1989,6 +2223,9 @@ export default function QuizEditor(props: QuizEditorProps) {
                 onOpenBank={props.onOpenBank}
                 chapters={props.chapters}
                 relevantChapters={relevantChapters}
+                subject={props.subject}
+                grade={props.grade}
+                customApiKey={props.customApiKey}
             />
             <QuestionSection 
                 sectionTitle="PHẦN III. TRẢ LỜI NGẮN" 
@@ -2000,6 +2237,25 @@ export default function QuizEditor(props: QuizEditorProps) {
                 onOpenBank={props.onOpenBank}
                 chapters={props.chapters}
                 relevantChapters={relevantChapters}
+                subject={props.subject}
+                grade={props.grade}
+                customApiKey={props.customApiKey}
+            />
+
+            {/* MODAL TIẾN TRÌNH TIMELINE THỜI GIAN THỰC KHI AI GIẢI ĐỀ THI */}
+            <AIProgressTimelineModal
+                isOpen={solveTimelineProgress.isOpen}
+                title={solveTimelineProgress.title}
+                subtitle={solveTimelineProgress.subtitle}
+                percent={solveTimelineProgress.percent}
+                currentAction={solveTimelineProgress.currentAction}
+                currentLevel={solveTimelineProgress.currentLevel}
+                currentChapter={solveTimelineProgress.currentChapter}
+                detailsMessage={solveTimelineProgress.detailsMessage}
+                steps={solveTimelineProgress.steps}
+                logs={solveTimelineProgress.logs}
+                canClose={solveTimelineProgress.currentAction === 'error'}
+                onClose={() => setSolveTimelineProgress(prev => ({ ...prev, isOpen: false }))}
             />
         </div>
     );
