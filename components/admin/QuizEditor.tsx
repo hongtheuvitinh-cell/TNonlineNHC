@@ -6,7 +6,7 @@ import {
   Target as TargetIcon, Plus, ImageIcon, Loader2, Lightbulb, Eye, ImageMinus, 
   ShieldAlert, ShieldCheck, Sparkles, Zap, Type as TypeIcon, X, Link as LinkIcon, 
   EyeOff, FileCode, GraduationCap, CheckSquare, Square, Users, Copy, Images, Check, Layers, ArrowRight,
-  Key, BookOpen, ClipboardPaste, PauseCircle
+  Key, BookOpen, ClipboardPaste, PauseCircle, Cloud, CloudUpload, HardDrive
 } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 import LatexText from '../LatexText';
@@ -20,6 +20,7 @@ import {
     solveMultipleQuestionsWithAI,
     SolveProgressUpdate
 } from '../../services/gemini';
+import { uploadBase64ToStorage, batchUploadQuizImagesToStorage } from '../../services/storage';
 import { STANDARD_SUBJECTS, isSameSubject } from '../../services/subjectUtils';
 import { getAcademicYearOptions, getCurrentAcademicYear } from '../../services/academicUtils';
 
@@ -125,6 +126,34 @@ const QuestionSection: React.FC<QuestionSectionProps> = ({
     const [batchSelectedQIds, setBatchSelectedQIds] = useState<string[]>([]);
     const [batchFilterType, setBatchFilterType] = useState<QuestionType | 'all'>('all');
     const [solvingQuestionId, setSolvingQuestionId] = useState<string | null>(null);
+    const [imageStorageMode, setImageStorageMode] = useState<'cloud' | 'base64'>(() => {
+        return (localStorage.getItem('eduquiz_image_storage_mode') as any) || 'cloud';
+    });
+
+    const handleStorageModeChange = (mode: 'cloud' | 'base64') => {
+        setImageStorageMode(mode);
+        localStorage.setItem('eduquiz_image_storage_mode', mode);
+    };
+
+    const [convertingId, setConvertingId] = useState<string | null>(null);
+
+    const handleConvertSingleToCloud = async (qId: string, base64Url: string) => {
+        setConvertingId(qId);
+        try {
+            const cloudUrl = await uploadBase64ToStorage(base64Url);
+            const nl = [...questions];
+            const i = nl.findIndex(x => x.id === qId);
+            if (i !== -1) {
+                nl[i].imageUrl = cloudUrl;
+                setQuestions(nl);
+            }
+            alert("🎉 Đã tải ảnh lên Firebase Cloud Storage và cập nhật link thành công!");
+        } catch (e: any) {
+            alert("Không thể tải ảnh lên Firebase Cloud Storage: " + (e?.message || e));
+        } finally {
+            setConvertingId(null);
+        }
+    };
 
     const handleSolveSingle = async (qId: string, force: boolean = false) => {
         const targetQ = questions.find(q => q.id === qId);
@@ -879,8 +908,8 @@ const QuestionSection: React.FC<QuestionSectionProps> = ({
                             ) : (
                                 <div className="w-32 h-32 bg-white border-2 border-dashed border-slate-200 hover:border-blue-400 group-hover/img:bg-blue-50/40 rounded-[1.5rem] flex flex-col items-center justify-center text-slate-400 transition-all">
                                     {uploadingId === q.id ? <Loader2 className="animate-spin text-blue-500" size={32}/> : <ImageIcon size={32} className="text-slate-300 group-hover/img:text-blue-500 transition-colors"/>}
-                                    <span className="text-[9px] font-black uppercase mt-2 text-center px-2">
-                                        {uploadingId === q.id ? 'Đang tải...' : 'Chưa có ảnh'}
+                                    <span className="text-[9px] font-black uppercase mt-2 text-center px-2 text-blue-600">
+                                        {uploadingId === q.id ? (imageStorageMode === 'cloud' ? 'Đang tải lên Store...' : 'Đang nén ảnh...') : 'Chưa có ảnh'}
                                     </span>
                                     <span className="text-[8px] font-bold text-slate-400 mt-0.5">Kéo thả / Click</span>
                                 </div>
@@ -888,14 +917,70 @@ const QuestionSection: React.FC<QuestionSectionProps> = ({
                         </div>
                         <div className="flex flex-col gap-3 flex-1">
                             <div className="flex items-center justify-between flex-wrap gap-2">
-                                <h4 className="font-black text-slate-800 text-xs uppercase tracking-tight flex items-center gap-2">
-                                    <span>Đính kèm hình ảnh minh họa</span>
-                                    {type === 'group-tf' && (
-                                        <span className="text-[9px] bg-purple-100 text-purple-700 px-2 py-0.5 rounded-md font-bold lowercase">
-                                            (ảnh dùng chung cho cả 4 ý a, b, c, d)
-                                        </span>
+                                <div className="flex items-center gap-2 flex-wrap">
+                                    <h4 className="font-black text-slate-800 text-xs uppercase tracking-tight flex items-center gap-2">
+                                        <span>Đính kèm hình ảnh minh họa</span>
+                                        {type === 'group-tf' && (
+                                            <span className="text-[9px] bg-purple-100 text-purple-700 px-2 py-0.5 rounded-md font-bold lowercase">
+                                                (ảnh dùng chung cho cả 4 ý a, b, c, d)
+                                            </span>
+                                        )}
+                                    </h4>
+
+                                    {/* THẺ TRẠNG THÁI NƠI LƯU ẢNH */}
+                                    {q.imageUrl && (
+                                        q.imageUrl.startsWith('http') ? (
+                                            <span className="inline-flex items-center gap-1 text-[9px] font-black px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300 shadow-xs" title="Ảnh đã lưu trên Firebase Cloud Storage trực tuyến">
+                                                <Cloud size={11} className="text-emerald-600"/> Cloud Store (URL Online)
+                                            </span>
+                                        ) : (
+                                            <div className="inline-flex items-center gap-1.5 flex-wrap">
+                                                <span className="inline-flex items-center gap-1 text-[9px] font-black px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-300 shadow-xs" title="Ảnh đang lưu dạng chuỗi Base64 trong đề">
+                                                    <HardDrive size={11} className="text-amber-600"/> Base64 (~{Math.round(q.imageUrl.length * 0.75 / 1024)} KB)
+                                                </span>
+                                                <button
+                                                    type="button"
+                                                    disabled={uploadingId === q.id || convertingId === q.id}
+                                                    onClick={() => handleConvertSingleToCloud(q.id, q.imageUrl!)}
+                                                    className="inline-flex items-center gap-1 text-[9px] font-black px-2.5 py-1 rounded-lg bg-blue-600 hover:bg-blue-700 text-white shadow-xs transition-all active:scale-95 disabled:opacity-50"
+                                                    title="Tải ảnh này lên Firebase Cloud Storage lấy link trực tiếp siêu nhẹ"
+                                                >
+                                                    {convertingId === q.id ? <Loader2 size={10} className="animate-spin"/> : <CloudUpload size={10}/>}
+                                                    Lưu lên Cloud Store
+                                                </button>
+                                            </div>
+                                        )
                                     )}
-                                </h4>
+                                </div>
+
+                                {/* CHỌN NƠI LƯU ẢNH */}
+                                <div className="flex items-center gap-1 bg-slate-200/70 p-0.5 rounded-xl text-[9px] font-black">
+                                    <span className="text-slate-500 uppercase px-1.5">Lưu vào:</span>
+                                    <button
+                                        type="button"
+                                        onClick={() => handleStorageModeChange('cloud')}
+                                        className={`px-2 py-0.5 rounded-lg uppercase transition-all flex items-center gap-1 ${
+                                            imageStorageMode === 'cloud' 
+                                                ? 'bg-blue-600 text-white shadow-xs' 
+                                                : 'text-slate-600 hover:bg-slate-300/50'
+                                        }`}
+                                        title="Tải lên Firebase Cloud Storage lấy link trực tiếp (Khuyên dùng)"
+                                    >
+                                        <Cloud size={10}/> Cloud Store
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => handleStorageModeChange('base64')}
+                                        className={`px-2 py-0.5 rounded-lg uppercase transition-all flex items-center gap-1 ${
+                                            imageStorageMode === 'base64' 
+                                                ? 'bg-amber-600 text-white shadow-xs' 
+                                                : 'text-slate-600 hover:bg-slate-300/50'
+                                        }`}
+                                        title="Lưu dạng chuỗi Base64 trực tiếp vào đề"
+                                    >
+                                        <HardDrive size={10}/> Base64
+                                    </button>
+                                </div>
                             </div>
 
                             <div className="flex flex-wrap gap-2">
@@ -907,14 +992,15 @@ const QuestionSection: React.FC<QuestionSectionProps> = ({
                                     className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-[10px] font-black uppercase transition-all flex items-center gap-1.5 shadow-md shadow-emerald-200 active:scale-95 disabled:opacity-50"
                                     title="Dán nhanh hình ảnh vừa cắt từ bộ nhớ tạm (phím tắt: Ctrl + V)"
                                 >
-                                    <ClipboardPaste size={14}/> Dán ảnh (Ctrl+V)
+                                    {uploadingId === q.id ? <Loader2 size={14} className="animate-spin"/> : <ClipboardPaste size={14}/>} 
+                                    {uploadingId === q.id ? 'Đang xử lý...' : (imageStorageMode === 'cloud' ? 'Dán & Tải lên Store (Ctrl+V)' : 'Dán ảnh (Ctrl+V)')}
                                 </button>
 
                                 {/* NÚT TẢI ẢNH TỪ MÁY TÍNH */}
                                 <input type="file" accept="image/*" className="hidden" id={`img-${q.id}`} onChange={(e) => e.target.files && onUploadImage(q.id, e.target.files[0])} />
                                 <label htmlFor={`img-${q.id}`} className={`px-4 py-2.5 rounded-xl text-[10px] font-black uppercase cursor-pointer flex items-center gap-1.5 transition-all ${uploadingId === q.id ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-blue-600 text-white hover:bg-black shadow-md shadow-blue-200 active:scale-95'}`}>
                                     {uploadingId === q.id ? <Loader2 className="animate-spin" size={14}/> : <ImageIcon size={14}/>} 
-                                    {uploadingId === q.id ? 'ĐANG XỬ LÝ...' : (q.imageUrl ? 'CHỌN FILE MỚI' : 'TẢI TỪ MÁY')}
+                                    {uploadingId === q.id ? (imageStorageMode === 'cloud' ? 'ĐANG TẢI LÊN STORE...' : 'ĐANG XỬ LÝ...') : (q.imageUrl ? 'CHỌN FILE MỚI' : (imageStorageMode === 'cloud' ? 'TẢI LÊN STORE' : 'TẢI TỪ MÁY'))}
                                 </label>
 
                                 {/* NÚT LẤY ẢNH TỪ CÂU TRƯỚC (NẾU CÓ) */}
@@ -1148,6 +1234,50 @@ export default function QuizEditor(props: QuizEditorProps) {
     const missingSolutionsCount = useMemo(() => {
         return props.questions.filter(q => !q.solution || !q.solution.trim() || q.solution.includes('Chưa có lời giải')).length;
     }, [props.questions]);
+
+    // Quản lý chế độ lưu trữ hình ảnh (Firebase Cloud Storage vs Base64)
+    const [imageStorageMode, setImageStorageMode] = useState<'cloud' | 'base64'>(() => {
+        return (localStorage.getItem('eduquiz_image_storage_mode') as any) || 'cloud';
+    });
+
+    const handleStorageModeChange = (mode: 'cloud' | 'base64') => {
+        setImageStorageMode(mode);
+        localStorage.setItem('eduquiz_image_storage_mode', mode);
+    };
+
+    // Đếm số lượng hình ảnh đang lưu dưới dạng Base64 trong đề thi
+    const base64ImagesCount = useMemo(() => {
+        return props.questions.filter(q => q.imageUrl && q.imageUrl.startsWith('data:image/')).length;
+    }, [props.questions]);
+
+    const [isBatchMigratingImages, setIsBatchMigratingImages] = useState(false);
+    const [batchMigrateProgress, setBatchMigrateProgress] = useState<{ current: number; total: number } | null>(null);
+
+    const handleBatchMigrateImagesToCloud = async () => {
+        if (base64ImagesCount === 0) {
+            alert("Toàn bộ hình ảnh trong đề thi đã được lưu trên Cloud Storage hoặc chưa có hình ảnh nào!");
+            return;
+        }
+
+        const confirm = window.confirm(`Phát hiện ${base64ImagesCount} hình ảnh trong đề thi đang lưu dưới dạng Base64. Bạn có muốn tải toàn bộ lên Firebase Cloud Storage để đề thi siêu nhẹ và lấy đường dẫn URL trực tiếp không?`);
+        if (!confirm) return;
+
+        setIsBatchMigratingImages(true);
+        setBatchMigrateProgress({ current: 0, total: base64ImagesCount });
+
+        try {
+            const res = await batchUploadQuizImagesToStorage(props.questions, (current, total) => {
+                setBatchMigrateProgress({ current, total });
+            });
+            props.setQuestions(res.updatedQuestions);
+            alert(`🎉 Thành công! Đã chuyển đổi ${res.successCount} ảnh lên Firebase Cloud Storage.${res.failCount > 0 ? ` (${res.failCount} ảnh chưa chuyển được do lỗi mạng)` : ''}`);
+        } catch (e: any) {
+            alert("Có lỗi khi chuyển đổi ảnh: " + (e?.message || e));
+        } finally {
+            setIsBatchMigratingImages(false);
+            setBatchMigrateProgress(null);
+        }
+    };
 
     const handleBatchSolveMissingSolutions = async () => {
         if (!props.questions || props.questions.length === 0) {
@@ -1596,6 +1726,51 @@ export default function QuizEditor(props: QuizEditorProps) {
                                         : (missingSolutionsCount > 0 ? `AI GIẢI CÂU CHƯA CÓ (${missingSolutionsCount})` : "LỜI GIẢI ĐÃ ĐỦ")}
                                 </span>
                             </button>
+
+                            {/* CẤU HÌNH LƯU ẢNH TRÊN CLOUD STORAGE VS BASE64 */}
+                            <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl border border-slate-200" title="Chọn phương thức lưu ảnh khi dán hoặc tải ảnh vào câu hỏi">
+                                <span className="text-[9px] font-black text-slate-500 uppercase px-1.5 flex items-center gap-1">
+                                    <Cloud size={11} className="text-blue-600"/> Lưu ảnh:
+                                </span>
+                                <button
+                                    type="button"
+                                    onClick={() => handleStorageModeChange('cloud')}
+                                    className={`px-2.5 py-1 rounded-lg text-[10px] font-black uppercase transition-all flex items-center gap-1 ${
+                                        imageStorageMode === 'cloud' 
+                                            ? 'bg-blue-600 text-white shadow-xs' 
+                                            : 'text-slate-600 hover:bg-slate-200'
+                                    }`}
+                                    title="Tải ảnh lên Firebase Cloud Storage và lấy URL trực tiếp (Khuyên dùng - đề thi siêu nhẹ)"
+                                >
+                                    <Cloud size={11}/> Cloud Storage
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => handleStorageModeChange('base64')}
+                                    className={`px-2.5 py-1 rounded-lg text-[10px] font-black uppercase transition-all flex items-center gap-1 ${
+                                        imageStorageMode === 'base64' 
+                                            ? 'bg-amber-600 text-white shadow-xs' 
+                                            : 'text-slate-600 hover:bg-slate-200'
+                                    }`}
+                                    title="Lưu chuỗi ảnh Base64 nén trực tiếp vào đề thi"
+                                >
+                                    <HardDrive size={11}/> Base64
+                                </button>
+                            </div>
+
+                            {/* NÚT ĐẨY HÀNG LOẠT ẢNH BASE64 LÊN CLOUD STORAGE */}
+                            {base64ImagesCount > 0 && (
+                                <button
+                                    type="button"
+                                    onClick={handleBatchMigrateImagesToCloud}
+                                    disabled={isBatchMigratingImages}
+                                    className="flex items-center gap-1.5 px-3 py-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white rounded-xl text-[10px] font-black uppercase shadow-md shadow-emerald-200 transition-all active:scale-95 disabled:opacity-50 animate-pulse"
+                                    title="Tải toàn bộ hình ảnh dạng Base64 trong đề lên Firebase Cloud Storage để tối ưu kích thước đề thi"
+                                >
+                                    {isBatchMigratingImages ? <Loader2 size={13} className="animate-spin text-white"/> : <CloudUpload size={13} className="text-emerald-100"/>}
+                                    <span>{isBatchMigratingImages ? `ĐANG TẢI LÊN (${batchMigrateProgress?.current}/${batchMigrateProgress?.total})...` : `LƯU ${base64ImagesCount} ẢNH LÊN CLOUD`}</span>
+                                </button>
+                            )}
                         </div>
 
                         <div className="flex items-center gap-2">
