@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Grade, Question, Chapter, QuestionType, QuestionLevel } from '../../types';
-import { generateQuestionsForMatrix, MatrixRequirementItem } from '../../services/gemini';
+import { generateQuestionsForMatrix, MatrixRequirementItem, MatrixProgressUpdate } from '../../services/gemini';
 import { isCurriculumChapter } from '../../services/chapterUtils';
+import AIProgressTimelineModal, { TimelineStepItem } from './AIProgressTimelineModal';
 import { 
     Sparkles, Database, LayoutTemplate, Loader2, AlertTriangle, PlusCircle, 
     FileUp, Key, Eye, EyeOff, Check, RotateCcw, ChevronDown, ChevronRight, 
@@ -188,6 +189,29 @@ export default function AIRenderer({
     const [statusMsg, setStatusMsg] = useState<string | null>(null);
     const [isInternalProcessing, setIsInternalProcessing] = useState(false);
     const [showKeyInput, setShowKeyInput] = useState(false);
+
+    // Tiến trình Timeline thời gian thực hiển thị trạng thái lấy dữ liệu hay soạn câu mới, mức độ nào
+    const [timelineProgress, setTimelineProgress] = useState<{
+        isOpen: boolean;
+        title: string;
+        subtitle?: string;
+        percent: number;
+        currentAction: 'fetching_bank' | 'checking_matrix' | 'generating_ai' | 'solving_ai' | 'normalizing' | 'completed' | 'error';
+        currentLevel?: string;
+        currentChapter?: string;
+        detailsMessage: string;
+        steps: TimelineStepItem[];
+        logs: string[];
+    }>({
+        isOpen: false,
+        title: 'TỔNG HỢP & SOẠN ĐỀ THEO MA TRẬN',
+        subtitle: 'Hệ thống tự động điều phối ngân hàng câu hỏi và AI Gemini',
+        percent: 0,
+        currentAction: 'fetching_bank',
+        detailsMessage: '',
+        steps: [],
+        logs: []
+    });
 
     // Lọc danh sách chương phù hợp với khối và môn - CHỈ GIỮ LẠI TÊN CHƯƠNG TRONG SGK
     const activeChapters = useMemo(() => {
@@ -397,6 +421,26 @@ export default function AIRenderer({
         }
 
         setIsInternalProcessing(true);
+        const startTime = Date.now();
+        const initialSteps: TimelineStepItem[] = [
+            { id: 'step_fetch', label: '1. Lấy dữ liệu từ Ngân hàng câu hỏi', description: 'Trích xuất các câu hỏi có sẵn theo chương & khối', status: activeTab === 'bank' ? 'active' : 'completed' },
+            { id: 'step_check', label: '2. Đối chiếu ma trận & mức độ nhận thức', description: 'Kiểm tra các mức độ [Biết (B), Hiểu (H), Vận dụng (VD), VDC]', status: 'pending' },
+            { id: 'step_ai', label: '3. AI Soạn câu hỏi mới', description: 'Gemini tự động soạn câu hỏi mới theo đúng mức độ còn thiếu', status: 'pending' },
+            { id: 'step_normalize', label: '4. Chuẩn hóa công thức Toán & LaTeX', description: 'Làm sạch và kiểm tra cú pháp KaTeX/LaTeX', status: 'pending' },
+            { id: 'step_done', label: '5. Hoàn tất ma trận đề thi', description: 'Tổng hợp bộ đề và nạp vào hệ thống', status: 'pending' }
+        ];
+
+        setTimelineProgress({
+            isOpen: true,
+            title: activeTab === 'bank' ? 'SOẠN ĐỀ TỪ NGÂN HÀNG & AI THEO MA TRẬN' : (activeTab === 'pdf' ? 'BÓC TÁCH & SOẠN ĐỀ THEO MA TRẬN TỪ PDF' : 'AI SOẠN ĐỀ THEO MA TRẬN TỪ PROMPT'),
+            subtitle: `Môn: ${subject} • Khối: ${grade} • Tổng số ma trận: ${matrixStats.totalCount} câu`,
+            percent: 10,
+            currentAction: activeTab === 'bank' ? 'fetching_bank' : 'checking_matrix',
+            detailsMessage: activeTab === 'bank' ? 'Đang lấy dữ liệu từ ngân hàng: Quét câu hỏi có sẵn theo từng chương...' : 'Đang phân tích cấu trúc ma trận kiến thức...',
+            steps: initialSteps,
+            logs: [`Bắt đầu khởi tạo ma trận đề thi: tổng cộng ${matrixStats.totalCount} câu hỏi.`]
+        });
+
         try {
             const finalQuestions: Question[] = [];
             const aiMissingRequirements: MatrixRequirementItem[] = [];
@@ -470,16 +514,46 @@ export default function AIRenderer({
                 });
             });
 
+            const totalNeedAi = aiMissingRequirements.reduce((sum, r) => sum + r.count, 0);
+
+            // Cập nhật bước 1 và bước 2 trong Timeline
+            setTimelineProgress(prev => ({
+                ...prev,
+                percent: 25,
+                currentAction: 'checking_matrix',
+                detailsMessage: activeTab === 'bank' 
+                    ? `Đã lấy ${finalQuestions.length} câu có sẵn trong ngân hàng. Cần soạn mới ${totalNeedAi} câu.` 
+                    : `Đã thiết lập ma trận yêu cầu ${totalNeedAi} câu hỏi cho AI.`,
+                steps: prev.steps.map(s => {
+                    if (s.id === 'step_fetch') return { ...s, status: 'completed' };
+                    if (s.id === 'step_check') return { ...s, status: 'active' };
+                    return s;
+                }),
+                logs: [
+                    ...prev.logs, 
+                    activeTab === 'bank' 
+                        ? `Đã lấy dữ liệu từ ngân hàng: ${finalQuestions.length} câu hỏi có sẵn.`
+                        : `Đã nạp ma trận yêu cầu ${totalNeedAi} câu.`
+                ]
+            }));
+
             // Nếu có câu hỏi cần AI tự soạn theo mức độ
             if (aiMissingRequirements.length > 0) {
-                const totalNeedAi = aiMissingRequirements.reduce((sum, r) => sum + r.count, 0);
-                setStatusMsg(
-                    activeTab === 'bank'
-                        ? `Đã bốc ${finalQuestions.length} câu từ ngân hàng. AI Gemini đang tự động soạn bổ sung ${totalNeedAi} câu còn thiếu theo đúng mức độ ma trận...`
-                        : (activeTab === 'pdf'
-                            ? `AI Gemini đang đọc file PDF và bóc tách ${totalNeedAi} câu theo ma trận kiến thức...`
-                            : `AI Gemini đang phân tích Prompt và sinh ${totalNeedAi} câu hỏi mới chất lượng cao chuẩn GDPT 2018...`)
-                );
+                setTimelineProgress(prev => ({
+                    ...prev,
+                    percent: 35,
+                    currentAction: 'generating_ai',
+                    detailsMessage: `AI Gemini đang soạn ${totalNeedAi} câu hỏi mới theo các mức độ còn thiếu...`,
+                    steps: prev.steps.map(s => {
+                        if (s.id === 'step_check') return { ...s, status: 'completed' };
+                        if (s.id === 'step_ai') return { ...s, status: 'active' };
+                        return s;
+                    }),
+                    logs: [
+                        ...prev.logs,
+                        `Bắt đầu sinh câu hỏi bằng AI: ${totalNeedAi} câu (chia theo từng nhóm mức độ nhận thức).`
+                    ]
+                }));
 
                 const generatedByAi = await generateQuestionsForMatrix({
                     subject,
@@ -488,11 +562,46 @@ export default function AIRenderer({
                     topic: `${subject} ${grade}`,
                     promptAdditions: activeTab === 'prompt' ? promptAdditions : undefined,
                     pdfBase64: activeTab === 'pdf' ? (pdfBase64 || undefined) : undefined,
-                    customApiKey
+                    customApiKey,
+                    onProgress: (prog) => {
+                        const levelNames: Record<string, string> = {
+                            'B': 'Nhận biết',
+                            'H': 'Thông hiểu',
+                            'VD': 'Vận dụng',
+                            'VDC': 'Vận dụng cao'
+                        };
+                        const lvlLabel = prog.currentLevel ? levelNames[prog.currentLevel] || prog.currentLevel : '';
+                        setTimelineProgress(prev => ({
+                            ...prev,
+                            percent: prog.percent,
+                            currentAction: prog.phase === 'generating' ? 'generating_ai' : 'normalizing',
+                            currentLevel: prog.currentLevel,
+                            currentChapter: prog.currentChapter,
+                            detailsMessage: prog.description || prog.title,
+                            logs: [
+                                ...prev.logs,
+                                `[${new Date().toLocaleTimeString('vi-VN')}] ${prog.title} • ${lvlLabel ? `[${lvlLabel}]` : ''}`
+                            ]
+                        }));
+                    }
                 });
 
                 finalQuestions.push(...generatedByAi);
             }
+
+            // BƯỚC 4: CHUẨN HÓA LATEX & SẮP XẾP BỘ GD&ĐT
+            setTimelineProgress(prev => ({
+                ...prev,
+                percent: 92,
+                currentAction: 'normalizing',
+                detailsMessage: 'Đang chuẩn hóa công thức toán LaTeX & sắp xếp các phần thi I, II, III theo GDPT 2018...',
+                steps: prev.steps.map(s => {
+                    if (s.id === 'step_ai') return { ...s, status: 'completed' };
+                    if (s.id === 'step_normalize') return { ...s, status: 'active' };
+                    return s;
+                }),
+                logs: [...prev.logs, 'Đang chuẩn hóa LaTeX và định dạng các phương án...']
+            }));
 
             // Sắp xếp thứ tự các câu hỏi chuẩn cấu trúc Bộ GD&ĐT:
             // Phần I: Trắc nghiệm -> Phần II: Đúng/Sai -> Phần III: Trả lời ngắn
@@ -516,6 +625,19 @@ export default function AIRenderer({
                 return (levelWeight[aLevel] || 1) - (levelWeight[bLevel] || 1);
             });
 
+            // BƯỚC 5: HOÀN TẤT
+            setTimelineProgress(prev => ({
+                ...prev,
+                percent: 100,
+                currentAction: 'completed',
+                detailsMessage: `Hoàn tất! Đã tạo thành công bộ ${finalQuestions.length} câu hỏi theo đúng ma trận.`,
+                steps: prev.steps.map(s => ({ ...s, status: 'completed' })),
+                logs: [...prev.logs, `Đã hoàn tất toàn bộ ma trận ${finalQuestions.length} câu hỏi!`]
+            }));
+
+            // Đợi 600ms để người dùng nhìn thấy trạng thái 100% hoàn tất
+            await new Promise(r => setTimeout(r, 600));
+
             if (onMatrixGenerateComplete) {
                 await onMatrixGenerateComplete({
                     title: '',
@@ -533,9 +655,17 @@ export default function AIRenderer({
                     target: targetDestination
                 });
             }
+
+            setTimelineProgress(prev => ({ ...prev, isOpen: false }));
         } catch (err: any) {
             console.error("Lỗi tạo đề theo ma trận:", err);
             setErrorMsg(err?.message || "Đã xảy ra lỗi trong quá trình tạo đề thi.");
+            setTimelineProgress(prev => ({
+                ...prev,
+                currentAction: 'error',
+                detailsMessage: `Lỗi: ${err?.message || 'Không thể tạo đề theo ma trận.'}`,
+                logs: [...prev.logs, `Lỗi: ${err?.message || 'Thất bại'}`]
+            }));
         } finally {
             setIsInternalProcessing(false);
             setStatusMsg(null);
@@ -1171,6 +1301,22 @@ export default function AIRenderer({
                     )}
                 </button>
             </div>
+
+            {/* MODAL TIẾN TRÌNH TIMELINE THỜI GIAN THỰC CHO AI */}
+            <AIProgressTimelineModal
+                isOpen={timelineProgress.isOpen}
+                title={timelineProgress.title}
+                subtitle={timelineProgress.subtitle}
+                percent={timelineProgress.percent}
+                currentAction={timelineProgress.currentAction}
+                currentLevel={timelineProgress.currentLevel}
+                currentChapter={timelineProgress.currentChapter}
+                detailsMessage={timelineProgress.detailsMessage}
+                steps={timelineProgress.steps}
+                logs={timelineProgress.logs}
+                canClose={timelineProgress.currentAction === 'error'}
+                onClose={() => setTimelineProgress(prev => ({ ...prev, isOpen: false }))}
+            />
         </div>
     );
 }
