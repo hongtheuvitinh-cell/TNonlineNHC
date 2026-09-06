@@ -161,6 +161,14 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
         const c = await getChapters(forceRefresh);
         setChapters(c);
         loadedTabsRef.current.add('chapters');
+      } else if (tab === 'ai') {
+        const [b, c] = await Promise.all([
+          getBankQuestions(forceRefresh),
+          getChapters(forceRefresh)
+        ]);
+        setBankQuestions(b);
+        setChapters(c);
+        loadedTabsRef.current.add('ai');
       }
     } catch (e) {
       console.error("Lỗi tải dữ liệu tab:", tab, e);
@@ -633,7 +641,8 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
     try {
         let fullQuiz: Quiz | null = null;
         try {
-            fullQuiz = await getQuizById(quiz.id);
+            // Luôn tải bản mới nhất trực tiếp từ Firestore (forceRefresh = true) để tránh mất câu hỏi do cache cũ
+            fullQuiz = await getQuizById(quiz.id, true);
         } catch (e) {
             console.warn("getQuizById exception, fallback to provided quiz object:", e);
         }
@@ -684,7 +693,7 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
   const handlePreviewQuiz = async (quiz: Quiz) => {
     setIsDataLoading(true);
     try {
-        const fullQuiz = await getQuizById(quiz.id);
+        const fullQuiz = await getQuizById(quiz.id, true);
         if (fullQuiz) setPreviewQuiz(fullQuiz);
     } finally {
         setIsDataLoading(false);
@@ -871,7 +880,14 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
           createdBy: currentUser?.id,
           createdByName: currentUser?.fullName
         }));
-        setQuestions([...questions, ...enriched]);
+        if (!isEditingQuiz) {
+          // Tạo đề mới: Reset editingQuizId để không ghi đè lên đề cũ
+          setEditingQuizId(null);
+          setQuestions(enriched);
+        } else {
+          // Thêm câu hỏi vào đề đang mở trong Editor
+          setQuestions(prev => [...prev, ...enriched]);
+        }
         setActiveTab('quizzes');
         setIsEditingQuiz(true);
         if (!quizTitle) setQuizTitle(config.topic.slice(0, 50).toUpperCase());
@@ -909,6 +925,9 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
         createdBy: currentUser?.id,
         createdByName: currentUser?.fullName
       }));
+      // CỰC KỲ QUAN TRỌNG: Reset editingQuizId = null để tạo đề thi MỚI hoàn toàn,
+      // tuyệt đối không giữ ID đề cũ làm ghi đè và làm mất câu hỏi của đề cũ!
+      setEditingQuizId(null);
       setQuestions(enriched);
       setQuizTitle(result.title || '');
       setDuration(result.durationMinutes || 45);
@@ -1000,6 +1019,9 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
           setQuizzes(prev => [quiz, ...prev.filter(q => q.id !== quiz.id)]);
       }
       setIsEditingQuiz(false);
+      setEditingQuizId(null);
+      setQuestions([]);
+      setQuizTitle('');
       showAlert("Thành công", "Đã lưu đề thi thành công vào Database Cloud!", "success");
     } catch (e: any) { 
       showAlert("Lỗi lưu đề thi", e.message || "Không xác định", "error");
