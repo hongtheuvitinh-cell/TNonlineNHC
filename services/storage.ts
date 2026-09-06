@@ -543,6 +543,12 @@ export const invalidateMemoryCache = (key?: 'teachers' | 'chapters' | 'classes' 
     delete memoryCache.quizDetails;
     try {
       localStorage.removeItem('eduquiz_quizzes_meta_cache');
+      for (let i = localStorage.length - 1; i >= 0; i--) {
+        const k = localStorage.key(i);
+        if (k && k.startsWith('eduquiz_quiz_detail_')) {
+          localStorage.removeItem(k);
+        }
+      }
     } catch {}
   } else if (key === 'bank') {
     delete memoryCache.bankQuestions;
@@ -841,6 +847,21 @@ export const getQuizzesMetadata = async (
       const isShared = row.isSharedWithTeachers !== undefined 
         ? Boolean(row.isSharedWithTeachers) 
         : Boolean(quiz.isSharedWithTeachers);
+
+      // Đếm số câu hỏi thực tế chính xác nhất từ mọi vị trí lưu trữ
+      let qCount = 0;
+      if (Array.isArray(row.questions) && row.questions.length > 0) {
+        qCount = row.questions.length;
+      } else if (Array.isArray(quiz.questions) && quiz.questions.length > 0) {
+        qCount = quiz.questions.length;
+      } else if (row.data && Array.isArray((row.data as any).questions) && (row.data as any).questions.length > 0) {
+        qCount = (row.data as any).questions.length;
+      } else if (row.questionCount !== undefined && row.questionCount !== null && typeof row.questionCount === 'number') {
+        qCount = row.questionCount;
+      } else if (quiz.questionCount !== undefined && quiz.questionCount !== null && typeof quiz.questionCount === 'number') {
+        qCount = quiz.questionCount;
+      }
+
       return {
         ...quiz,
         id: d.id,
@@ -857,7 +878,7 @@ export const getQuizzesMetadata = async (
         targetType: row.targetType || quiz.targetType || 'all',
         assignedClassIds: row.assignedClassIds || quiz.assignedClassIds || [],
         attemptCount: row.attemptCount !== undefined ? row.attemptCount : (quiz.attemptCount || 0),
-        questionCount: row.questionCount !== undefined ? row.questionCount : (quiz.questionCount || (quiz.questions ? quiz.questions.length : 0)),
+        questionCount: qCount,
         questions: []
       };
     });
@@ -927,8 +948,20 @@ export const getQuizzes = async (grade?: Grade): Promise<Quiz[]> => {
     return snapshot.docs.map(d => {
       const row = d.data();
       const quiz = (row.data as Quiz) || (row as Quiz);
+      let qs: Question[] = [];
+      if (Array.isArray(quiz.questions) && quiz.questions.length > 0) {
+        qs = quiz.questions;
+      } else if (Array.isArray(row.questions) && row.questions.length > 0) {
+        qs = row.questions;
+      } else if (row.data && Array.isArray((row.data as any).questions)) {
+        qs = (row.data as any).questions;
+      }
       return {
         ...quiz,
+        ...row,
+        id: d.id,
+        questions: qs,
+        questionCount: qs.length > 0 ? qs.length : (row.questionCount || quiz.questionCount || 0),
         academicYear: row.academicYear || quiz.academicYear || getQuizAcademicYear(quiz)
       };
     });
@@ -941,19 +974,19 @@ export const getQuizById = async (id: string, forceRefresh: boolean = false): Pr
   const now = Date.now();
   if (!forceRefresh && memoryCache.quizDetails?.has(id)) {
     const cached = memoryCache.quizDetails.get(id);
-    if (cached && cached.expires > now) {
+    if (cached && cached.expires > now && cached.data?.questions && cached.data.questions.length > 0) {
       return cached.data;
     }
   }
 
-  // Check localStorage cache first
+  // Check localStorage cache first - CHỈ DÙNG CACHE NẾU THỰC SỰ CÓ CÂU HỎI
   if (!forceRefresh) {
     try {
       const localCacheKey = `eduquiz_quiz_detail_${id}`;
       const local = localStorage.getItem(localCacheKey);
       if (local) {
         const parsed = JSON.parse(local);
-        if (parsed && parsed.data && parsed.expires > now) {
+        if (parsed && parsed.data && parsed.expires > now && Array.isArray(parsed.data.questions) && parsed.data.questions.length > 0) {
           if (!memoryCache.quizDetails) memoryCache.quizDetails = new Map();
           memoryCache.quizDetails.set(id, { data: parsed.data, expires: parsed.expires });
           return parsed.data;
@@ -968,10 +1001,27 @@ export const getQuizById = async (id: string, forceRefresh: boolean = false): Pr
     trackFirestoreRead('quizzes', 1);
     if (!docSnap.exists()) return null;
     const data = docSnap.data();
-    const quiz = (data.data as Quiz) || (data as Quiz);
+    const rawData = (data.data as Quiz) || {};
+    const quiz = (typeof data.data === 'object' && data.data !== null) ? (data.data as Quiz) : (data as Quiz);
+
+    // Thu thập câu hỏi từ mọi nguồn có thể có trong document Firestore (cả data.questions, quiz.questions, và rawData.questions)
+    let extractedQuestions: Question[] = [];
+    if (Array.isArray(quiz.questions) && quiz.questions.length > 0) {
+      extractedQuestions = quiz.questions;
+    } else if (Array.isArray(data.questions) && data.questions.length > 0) {
+      extractedQuestions = data.questions;
+    } else if (data.data && Array.isArray((data.data as any).questions) && (data.data as any).questions.length > 0) {
+      extractedQuestions = (data.data as any).questions;
+    }
+
     const isShared = data.isSharedWithTeachers !== undefined 
       ? Boolean(data.isSharedWithTeachers) 
       : Boolean(quiz.isSharedWithTeachers);
+
+    const actualQuestionCount = extractedQuestions.length > 0 
+      ? extractedQuestions.length 
+      : (data.questionCount !== undefined ? data.questionCount : (quiz.questionCount || 0));
+
     const resultQuiz: Quiz = {
       ...quiz,
       id: docSnap.id,
@@ -987,17 +1037,21 @@ export const getQuizById = async (id: string, forceRefresh: boolean = false): Pr
       isUnlisted: data.isUnlisted !== undefined ? Boolean(data.isUnlisted) : Boolean(quiz.isUnlisted),
       targetType: data.targetType || quiz.targetType || 'all',
       assignedClassIds: data.assignedClassIds || quiz.assignedClassIds || [],
-      questionCount: data.questionCount !== undefined ? data.questionCount : (quiz.questions ? quiz.questions.length : 0),
+      questions: extractedQuestions,
+      questionCount: actualQuestionCount,
       attemptCount: data.attemptCount !== undefined ? data.attemptCount : (quiz.attemptCount || 0)
     };
 
-    if (!memoryCache.quizDetails) memoryCache.quizDetails = new Map();
-    const expires = now + 10 * 60 * 1000; // 10 minutes cache
-    memoryCache.quizDetails.set(id, { data: resultQuiz, expires });
+    // Chỉ cache nếu câu hỏi thực sự đã được tải thành công
+    if (extractedQuestions.length > 0) {
+      if (!memoryCache.quizDetails) memoryCache.quizDetails = new Map();
+      const expires = now + 10 * 60 * 1000; // 10 minutes cache
+      memoryCache.quizDetails.set(id, { data: resultQuiz, expires });
 
-    try {
-      localStorage.setItem(`eduquiz_quiz_detail_${id}`, JSON.stringify({ data: resultQuiz, expires }));
-    } catch (e) {}
+      try {
+        localStorage.setItem(`eduquiz_quiz_detail_${id}`, JSON.stringify({ data: resultQuiz, expires }));
+      } catch (e) {}
+    }
 
     return resultQuiz;
   } catch (e) {
@@ -1009,10 +1063,12 @@ export const getQuizById = async (id: string, forceRefresh: boolean = false): Pr
 export const saveQuiz = async (quiz: Quiz): Promise<void> => {
   if (!db) throw new Error("Mất kết nối Database Cloud Firestore");
   const effectiveYear = quiz.academicYear || getQuizAcademicYear(quiz);
+  const qList = quiz.questions || [];
   const enrichedQuiz = { 
     ...quiz, 
     academicYear: effectiveYear,
-    questionCount: quiz.questions ? quiz.questions.length : 0 
+    questions: qList,
+    questionCount: qList.length 
   };
   const payload = {
     id: quiz.id,
@@ -1034,9 +1090,14 @@ export const saveQuiz = async (quiz: Quiz): Promise<void> => {
     questionCount: enrichedQuiz.questionCount,
     attemptCount: quiz.attemptCount || 0,
     createdAt: quiz.createdAt || new Date().toISOString(),
+    questions: qList,
     data: cleanUndefined(enrichedQuiz)
   };
   await setDoc(doc(db, 'quizzes', quiz.id), cleanUndefined(payload));
+  if (memoryCache.quizDetails) memoryCache.quizDetails.delete(quiz.id);
+  try {
+    localStorage.removeItem(`eduquiz_quiz_detail_${quiz.id}`);
+  } catch {}
   invalidateMemoryCache('quizzes');
   trackFirestoreWrite('quizzes', 1);
 };
@@ -1044,10 +1105,12 @@ export const saveQuiz = async (quiz: Quiz): Promise<void> => {
 export const updateQuiz = async (enrichedQuiz: Quiz): Promise<void> => {
   if (!db) throw new Error("Mất kết nối Database Cloud Firestore");
   const effectiveYear = enrichedQuiz.academicYear || getQuizAcademicYear(enrichedQuiz);
+  const qList = enrichedQuiz.questions || [];
   const quiz = { 
     ...enrichedQuiz, 
     academicYear: effectiveYear,
-    questionCount: enrichedQuiz.questions ? enrichedQuiz.questions.length : 0 
+    questions: qList,
+    questionCount: qList.length 
   };
   const payload = {
     id: quiz.id,
@@ -1068,9 +1131,14 @@ export const updateQuiz = async (enrichedQuiz: Quiz): Promise<void> => {
     assignedClassIds: quiz.assignedClassIds || [],
     questionCount: quiz.questionCount,
     attemptCount: quiz.attemptCount || 0,
+    questions: qList,
     data: cleanUndefined(quiz)
   };
   await setDoc(doc(db, 'quizzes', quiz.id), cleanUndefined(payload), { merge: true });
+  if (memoryCache.quizDetails) memoryCache.quizDetails.delete(quiz.id);
+  try {
+    localStorage.removeItem(`eduquiz_quiz_detail_${quiz.id}`);
+  } catch {}
   invalidateMemoryCache('quizzes');
   trackFirestoreWrite('quizzes', 1);
 };
@@ -1149,6 +1217,9 @@ export const assignQuizToClasses = async (
   
   const raw = docSnap.data();
   const quiz = (raw.data as Quiz) || (raw as Quiz);
+  const qList = (Array.isArray(quiz.questions) && quiz.questions.length > 0) 
+    ? quiz.questions 
+    : (Array.isArray(raw.questions) ? raw.questions : []);
   
   let finalClassIds: string[] = [];
   if (teacherManagedClassIds && teacherManagedClassIds.length > 0) {
@@ -1163,6 +1234,7 @@ export const assignQuizToClasses = async (
   
   const updatedQuiz = {
     ...quiz,
+    questions: qList,
     targetType,
     assignedClassIds: finalClassIds
   };
@@ -1170,6 +1242,7 @@ export const assignQuizToClasses = async (
   await setDoc(quizRef, {
     targetType,
     assignedClassIds: finalClassIds,
+    questions: qList,
     data: cleanUndefined(updatedQuiz)
   }, { merge: true });
 
@@ -1205,10 +1278,19 @@ export const syncAllQuizzesMetadata = async (): Promise<number> => {
     for (const docItem of snapshot.docs) {
       const row = docItem.data();
       const quiz = (row.data as Quiz) || (row as Quiz);
-      const questionCount = quiz.questions ? quiz.questions.length : 0;
-      const updatedQuiz = { ...quiz, questionCount };
+      let qs: Question[] = [];
+      if (Array.isArray(quiz.questions) && quiz.questions.length > 0) {
+        qs = quiz.questions;
+      } else if (Array.isArray(row.questions) && row.questions.length > 0) {
+        qs = row.questions;
+      } else if (row.data && Array.isArray((row.data as any).questions)) {
+        qs = (row.data as any).questions;
+      }
+      const questionCount = qs.length > 0 ? qs.length : (row.questionCount || quiz.questionCount || 0);
+      const updatedQuiz = { ...quiz, questions: qs, questionCount };
       batch.update(docItem.ref, {
         questionCount,
+        questions: qs,
         data: cleanUndefined(updatedQuiz)
       });
       count++;
