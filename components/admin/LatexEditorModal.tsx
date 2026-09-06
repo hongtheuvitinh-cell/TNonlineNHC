@@ -132,50 +132,162 @@ export default function LatexEditorModal({
   const [latexCode, setLatexCode] = useState(initialCode);
   const [activeTab, setActiveTab] = useState<TabType>('algebra');
   const [copied, setCopied] = useState(false);
+  const [insertMode, setInsertMode] = useState<'focus' | 'replace'>('focus');
+  const [selectionRange, setSelectionRange] = useState<{ start: number; end: number }>({ start: 0, end: 0 });
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     if (isOpen) {
-      setLatexCode(initialCode || '$\\dfrac{a}{b}$');
+      const code = initialCode || '$\\dfrac{a}{b}$';
+      setLatexCode(code);
       setCopied(false);
+      setSelectionRange({ start: code.length, end: code.length });
     }
   }, [isOpen, initialCode]);
 
   if (!isOpen) return null;
 
-  const insertTextAtCursor = (textToInsert: string) => {
-    const textarea = textareaRef.current;
-    if (!textarea) {
-      setLatexCode(prev => prev + textToInsert);
+  // Cập nhật vị trí con trỏ / bôi đen
+  const updateCursorPosition = (el?: HTMLTextAreaElement | null) => {
+    const target = el || textareaRef.current;
+    if (target) {
+      setSelectionRange({
+        start: target.selectionStart ?? 0,
+        end: target.selectionEnd ?? 0
+      });
+    }
+  };
+
+  // Kiểm tra xem vị trí con trỏ có đang nằm trong môi trường LaTeX ($...$) hay không
+  const checkIsInsideMath = (pos: number): boolean => {
+    if (!latexCode) return false;
+    const textBefore = latexCode.substring(0, pos);
+    const dollarsBefore = (textBefore.match(/\$/g) || []).length;
+    // Nếu số lượng dấu $ lẻ thì đang ở bên trong $...$
+    if (dollarsBefore % 2 === 1) return true;
+    // Nếu chuỗi bao trùm bởi $ và con trỏ ở giữa
+    if (latexCode.startsWith('$') && latexCode.endsWith('$') && pos > 0 && pos < latexCode.length) {
+      return true;
+    }
+    return false;
+  };
+
+  const isCursorInsideMath = checkIsInsideMath(selectionRange.start);
+
+  // Chèn thông minh tại con trỏ (Focus Insert)
+  const handleApplyTemplate = (item: FormulaTemplate, forceReplace: boolean = false) => {
+    if (forceReplace || insertMode === 'replace' || !latexCode.trim()) {
+      setLatexCode(item.code);
+      setTimeout(() => {
+        if (textareaRef.current) {
+          textareaRef.current.focus();
+          textareaRef.current.setSelectionRange(item.code.length, item.code.length);
+          updateCursorPosition();
+        }
+      }, 50);
       return;
     }
-    const start = textarea.selectionStart;
-    const end = textarea.selectionEnd;
-    const currentVal = textarea.value;
-    const newVal = currentVal.substring(0, start) + textToInsert + currentVal.substring(end);
-    setLatexCode(newVal);
+
+    const textarea = textareaRef.current;
+    const start = selectionRange.start ?? (textarea ? textarea.selectionStart : latexCode.length);
+    const end = selectionRange.end ?? (textarea ? textarea.selectionEnd : start);
+
+    const insideMath = checkIsInsideMath(start);
+
+    // Xử lý mã công thức cần chèn
+    let snippet = item.code;
+    // Nếu con trỏ đã ở bên trong $...$ thì lược bỏ dấu $ ở 2 đầu mẫu để tránh bị lồng $$
+    if (insideMath && snippet.startsWith('$') && snippet.endsWith('$')) {
+      snippet = snippet.slice(1, -1);
+    }
+
+    // Nếu người dùng đang bôi đen một đoạn text (VD: bôi đen 'a' trong \frac{a}{b})
+    const selectedText = latexCode.substring(start, end);
+    if (selectedText) {
+      // Thay thế biến đại diện mặc định bằng đoạn text đang chọn
+      if (snippet.includes('{x}')) {
+        snippet = snippet.replace('{x}', `{${selectedText}}`);
+      } else if (snippet.includes('{a}')) {
+        snippet = snippet.replace('{a}', `{${selectedText}}`);
+      } else if (snippet.startsWith('\\sqrt{')) {
+        snippet = `\\sqrt{${selectedText}}`;
+      }
+    }
+
+    // Ghép đoạn snippet vào vị trí con trỏ hiện tại
+    const newCode = latexCode.substring(0, start) + snippet + latexCode.substring(end);
+    setLatexCode(newCode);
+
+    // Tự động Focus lại Textarea và đặt con trỏ vào tham số của công thức mới chèn
     setTimeout(() => {
-      textarea.focus();
-      textarea.setSelectionRange(start + textToInsert.length, start + textToInsert.length);
-    }, 10);
+      if (textareaRef.current) {
+        textareaRef.current.focus();
+
+        let focusStart = start + snippet.length;
+        let focusEnd = focusStart;
+
+        // Nếu người dùng không bôi đen trước đó, tự động bôi đen biến số vừa chèn để gõ đè ngay
+        // Ví dụ: trong \sqrt{x}, bôi đen chữ 'x'
+        // trong \dfrac{a}{b}, bôi đen chữ 'a'
+        if (!selectedText) {
+          const curlyParamMatch = snippet.match(/\{([a-zA-Z0-9_]+)\}/);
+          if (curlyParamMatch && curlyParamMatch.index !== undefined) {
+            focusStart = start + curlyParamMatch.index + 1;
+            focusEnd = focusStart + curlyParamMatch[1].length;
+          } else if (snippet.includes('x')) {
+            const xIdx = snippet.indexOf('x');
+            focusStart = start + xIdx;
+            focusEnd = focusStart + 1;
+          }
+        }
+
+        textareaRef.current.setSelectionRange(focusStart, focusEnd);
+        setSelectionRange({ start: focusStart, end: focusEnd });
+      }
+    }, 50);
+  };
+
+  const insertTextAtCursor = (textToInsert: string) => {
+    const textarea = textareaRef.current;
+    const start = selectionRange.start ?? (textarea ? textarea.selectionStart : latexCode.length);
+    const end = selectionRange.end ?? (textarea ? textarea.selectionEnd : start);
+
+    const insideMath = checkIsInsideMath(start);
+    let snippet = textToInsert;
+
+    // Nếu là ký hiệu toán học mà con trỏ đang ở ngoài $...$ thì tự động bọc $...$
+    if (!insideMath && textToInsert.startsWith('\\')) {
+      snippet = `$${textToInsert}$`;
+    }
+
+    const newVal = latexCode.substring(0, start) + snippet + latexCode.substring(end);
+    setLatexCode(newVal);
+
+    setTimeout(() => {
+      if (textareaRef.current) {
+        textareaRef.current.focus();
+        const nextPos = start + snippet.length;
+        textareaRef.current.setSelectionRange(nextPos, nextPos);
+        setSelectionRange({ start: nextPos, end: nextPos });
+      }
+    }, 50);
   };
 
   const wrapSelectionWith = (prefix: string, suffix: string) => {
     const textarea = textareaRef.current;
-    if (!textarea) {
-      setLatexCode(prev => `${prefix}${prev}${suffix}`);
-      return;
-    }
-    const start = textarea.selectionStart;
-    const end = textarea.selectionEnd;
-    const currentVal = textarea.value;
+    const start = selectionRange.start ?? (textarea ? textarea.selectionStart : 0);
+    const end = selectionRange.end ?? (textarea ? textarea.selectionEnd : latexCode.length);
+    const currentVal = latexCode;
     const selectedText = currentVal.substring(start, end);
     const newVal = currentVal.substring(0, start) + prefix + selectedText + suffix + currentVal.substring(end);
     setLatexCode(newVal);
     setTimeout(() => {
-      textarea.focus();
-      textarea.setSelectionRange(start + prefix.length, end + prefix.length);
-    }, 10);
+      if (textareaRef.current) {
+        textareaRef.current.focus();
+        textareaRef.current.setSelectionRange(start + prefix.length, end + prefix.length);
+        updateCursorPosition();
+      }
+    }, 50);
   };
 
   const handleCopy = () => {
@@ -358,46 +470,87 @@ export default function LatexEditorModal({
             </div>
           </div>
 
-          {/* FORMULA CATEGORY TABS */}
-          <div className="flex flex-wrap gap-2 border-b border-slate-200 pb-2">
-            {[
-              { id: 'algebra' as TabType, label: 'ĐẠI SỐ & GIẢI TÍCH' },
-              { id: 'geometry' as TabType, label: 'HÌNH HỌC & VECTOR' },
-              { id: 'systems' as TabType, label: 'HỆ PT & DẤU NGOẶC' },
-              { id: 'sets' as TabType, label: 'TẬP HỢP & TỔ HỢP' }
-            ].map(tab => (
-              <button
-                key={tab.id}
-                type="button"
-                onClick={() => setActiveTab(tab.id)}
-                className={`px-4 py-2 rounded-xl font-black text-xs uppercase tracking-tight transition-all ${
-                  activeTab === tab.id
-                    ? 'bg-blue-600 text-white shadow-md'
-                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200 hover:text-slate-900'
-                }`}
-              >
-                {tab.label}
-              </button>
-            ))}
+          {/* FORMULA CATEGORY TABS & INSERT MODE */}
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 pb-2">
+            <div className="flex flex-wrap gap-2">
+              {[
+                { id: 'algebra' as TabType, label: 'ĐẠI SỐ & GIẢI TÍCH' },
+                { id: 'geometry' as TabType, label: 'HÌNH HỌC & VECTOR' },
+                { id: 'systems' as TabType, label: 'HỆ PT & DẤU NGOẶC' },
+                { id: 'sets' as TabType, label: 'TẬP HỢP & TỔ HỢP' }
+              ].map(tab => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => setActiveTab(tab.id)}
+                  className={`px-4 py-2 rounded-xl font-black text-xs uppercase tracking-tight transition-all ${
+                    activeTab === tab.id
+                      ? 'bg-blue-600 text-white shadow-md'
+                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200 hover:text-slate-900'
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+
+            {/* CHẾ ĐỘ CHÈN TẠI CON TRỎ (FOCUS) */}
+            <div className="flex items-center gap-2 bg-slate-50 px-2.5 py-1 rounded-2xl border border-slate-200">
+              <span className="text-[9px] font-black uppercase text-slate-400">Thao tác bấm mẫu:</span>
+              <div className="flex bg-white p-0.5 rounded-xl border border-slate-200 shadow-xs">
+                <button
+                  type="button"
+                  onClick={() => setInsertMode('focus')}
+                  className={`px-3 py-1 rounded-lg text-[10px] font-black uppercase transition-all flex items-center gap-1 ${
+                    insertMode === 'focus' ? 'bg-blue-600 text-white shadow-xs' : 'text-slate-500 hover:text-slate-800'
+                  }`}
+                  title="Chèn công thức tại đúng vị trí con trỏ (hoặc bọc quanh đoạn chọn)"
+                >
+                  🎯 Chèn tại con trỏ (Focus)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setInsertMode('replace')}
+                  className={`px-3 py-1 rounded-lg text-[10px] font-black uppercase transition-all flex items-center gap-1 ${
+                    insertMode === 'replace' ? 'bg-amber-600 text-white shadow-xs' : 'text-slate-500 hover:text-slate-800'
+                  }`}
+                  title="Thay thế toàn bộ ô nhập bằng mẫu này"
+                >
+                  ⟳ Thay toàn bộ
+                </button>
+              </div>
+            </div>
           </div>
 
           {/* TEMPLATE CARDS GRID */}
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
             {getActiveTabTemplates().map((item, idx) => (
-              <button
+              <div
                 key={idx}
-                type="button"
-                onClick={() => setLatexCode(item.code)}
-                className="group bg-white p-3 rounded-2xl border-2 border-slate-100 hover:border-blue-500 hover:shadow-md transition-all flex flex-col items-center justify-between min-h-[90px] text-center active:scale-95"
-                title={`Chọn mẫu: ${item.label}`}
+                onClick={() => handleApplyTemplate(item, false)}
+                className="group relative bg-white p-3 rounded-2xl border-2 border-slate-100 hover:border-blue-500 hover:shadow-md transition-all flex flex-col items-center justify-between min-h-[90px] text-center active:scale-95 cursor-pointer"
+                title={`Nhấn để chèn '${item.label}' tại con trỏ`}
               >
-                <div className="flex-1 flex items-center justify-center py-2 text-slate-800 group-hover:text-blue-600 text-sm overflow-hidden">
+                {/* Nút thay thế toàn bộ nhanh */}
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleApplyTemplate(item, true);
+                  }}
+                  className="absolute top-1.5 right-1.5 opacity-0 group-hover:opacity-100 p-1 hover:bg-amber-100 text-amber-700 rounded-md text-[9px] font-bold transition-all"
+                  title="Đặt làm công thức chính (Thay thế toàn bộ)"
+                >
+                  <RotateCcw size={11} />
+                </button>
+
+                <div className="flex-1 flex items-center justify-center py-2 text-slate-800 group-hover:text-blue-600 text-sm overflow-hidden pointer-events-none">
                   <LatexText text={item.previewLatex} />
                 </div>
-                <span className="text-[9px] font-black text-slate-400 group-hover:text-blue-600 uppercase tracking-tight mt-1 truncate w-full">
+                <span className="text-[9px] font-black text-slate-400 group-hover:text-blue-600 uppercase tracking-tight mt-1 truncate w-full pointer-events-none">
                   {item.label}
                 </span>
-              </button>
+              </div>
             ))}
           </div>
 
@@ -406,9 +559,18 @@ export default function LatexEditorModal({
             {/* LEFT: TEXTAREA INPUT */}
             <div className="space-y-2 flex flex-col">
               <div className="flex items-center justify-between">
-                <label className="text-[10px] font-black uppercase text-slate-500 tracking-wider">
-                  MÃ LATEX / HTML CÔNG THỨC:
-                </label>
+                <div className="flex items-center gap-2">
+                  <label className="text-[10px] font-black uppercase text-slate-500 tracking-wider">
+                    MÃ LATEX / HTML CÔNG THỨC:
+                  </label>
+                  <span className={`text-[9px] font-black px-2 py-0.5 rounded-md border ${
+                    isCursorInsideMath
+                      ? 'bg-blue-50 text-blue-700 border-blue-200'
+                      : 'bg-slate-100 text-slate-500 border-slate-200'
+                  }`}>
+                    Con trỏ: {selectionRange.start} {isCursorInsideMath ? '($..$)' : ''}
+                  </span>
+                </div>
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
@@ -429,7 +591,14 @@ export default function LatexEditorModal({
               <textarea
                 ref={textareaRef}
                 value={latexCode}
-                onChange={e => setLatexCode(e.target.value)}
+                onChange={e => {
+                  setLatexCode(e.target.value);
+                  updateCursorPosition(e.currentTarget);
+                }}
+                onSelect={e => updateCursorPosition(e.currentTarget)}
+                onClick={e => updateCursorPosition(e.currentTarget)}
+                onKeyUp={e => updateCursorPosition(e.currentTarget)}
+                onFocus={e => updateCursorPosition(e.currentTarget)}
                 placeholder="Nhập mã LaTeX (VD: $\dfrac{a}{b}$, $\sqrt{x}$, $x^2$...)"
                 className="w-full h-32 p-4 bg-slate-50 border-2 border-slate-200 rounded-2xl font-mono text-xs font-bold text-slate-800 outline-none focus:bg-white focus:border-blue-500 transition-all resize-none shadow-inner"
               />
