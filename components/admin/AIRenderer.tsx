@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Grade, Question, Chapter, QuestionType, QuestionLevel } from '../../types';
 import { generateQuestionsForMatrix, MatrixRequirementItem, MatrixProgressUpdate } from '../../services/gemini';
 import { isCurriculumChapter } from '../../services/chapterUtils';
+import { isSameSubject } from '../../services/subjectUtils';
 import AIProgressTimelineModal, { TimelineStepItem } from './AIProgressTimelineModal';
 import { 
     Sparkles, Database, LayoutTemplate, Loader2, AlertTriangle, PlusCircle, 
@@ -134,6 +135,46 @@ const getStandardChaptersForSubjectAndGrade = (subject: string, grade: Grade): {
     ];
 };
 
+/**
+ * Chuẩn hóa tên chương/chủ đề để so khớp thông minh:
+ * Loại bỏ các tiền tố như "Chương 1:", "Chương I -", "Bài 2.", "Chủ đề 3:"...
+ */
+const cleanChapterTopic = (name?: string | null): string => {
+    if (!name) return '';
+    let s = name.trim().toLowerCase();
+    s = s.replace(/^(chương|bài|chủ đề|phần)\s*([0-9]+|[ivxlcdm]+)\s*[:\.\-–]\s*/i, '').trim();
+    return s;
+};
+
+/**
+ * Kiểm tra xem một câu hỏi có thuộc về một chương hay không
+ */
+const isQuestionInChapter = (
+    q: Question,
+    ch: { id: string; name: string }
+): boolean => {
+    if (q.chapterId && q.chapterId === ch.id) return true;
+    
+    const qRaw = (q.chapterName || q.quizCategory || '').trim().toLowerCase();
+    const chRaw = ch.name.trim().toLowerCase();
+    if (!qRaw || !chRaw) return false;
+
+    // 1. So sánh trực tiếp nguyên bản hoặc quan hệ chuỗi con
+    if (qRaw === chRaw || qRaw.includes(chRaw) || chRaw.includes(qRaw)) return true;
+
+    // 2. So sánh thông minh sau khi loại bỏ tiền tố số thứ tự chương (VD: "chương 3: động lực học" <=> "chương 2: động lực học")
+    const qClean = cleanChapterTopic(qRaw);
+    const chClean = cleanChapterTopic(chRaw);
+    if (qClean && chClean) {
+        if (qClean === chClean) return true;
+        if (qClean.length >= 4 && chClean.length >= 4) {
+            if (qClean.includes(chClean) || chClean.includes(qClean)) return true;
+        }
+    }
+
+    return false;
+};
+
 type MatrixModeTab = 'bank' | 'prompt' | 'pdf';
 type QuestionTypeFilter = 'all' | 'mcq' | 'group-tf' | 'short';
 
@@ -220,7 +261,7 @@ export default function AIRenderer({
             // Loại bỏ hoàn toàn các mục loại đề thi (KTTX, KTGK, KTCK, LTĐH...), chỉ giữ lại chương bài học SGK
             if (!isCurriculumChapter(cName)) return false;
             if (c.grade && c.grade !== 'all' && c.grade !== grade) return false;
-            if (c.subject && subject && c.subject.trim().toLowerCase() !== subject.trim().toLowerCase()) return false;
+            if (c.subject && subject && !isSameSubject(c.subject, subject)) return false;
             return true;
         }).sort((a, b) => (a.order || 0) - (b.order || 0));
 
@@ -248,19 +289,14 @@ export default function AIRenderer({
         bankQuestions.forEach(q => {
             // Lọc theo khối nếu có
             if (q.quizGrade && q.quizGrade !== 'all' && q.quizGrade !== grade) return;
-            // Lọc theo môn nếu có
-            if (q.subject && subject && q.subject.trim().toLowerCase() !== subject.trim().toLowerCase()) return;
+            // Lọc theo môn nếu có (hỗ trợ chuẩn hóa môn học: Vật lí / Vật lý)
+            if (q.subject && subject && !isSameSubject(q.subject, subject)) return;
 
             const qType: QuestionType = (q.type as QuestionType) || 'mcq';
             const qLevel: QuestionLevel = (q.level as QuestionLevel) || 'B';
 
-            // Tìm chương tương ứng
-            const qCName = (q.chapterName || q.quizCategory || '').trim().toLowerCase();
-            const matchedChapter = activeChapters.find(c => {
-                if (q.chapterId && q.chapterId === c.id) return true;
-                const cName = c.name.trim().toLowerCase();
-                return qCName && (qCName === cName || qCName.includes(cName) || cName.includes(qCName));
-            });
+            // Tìm chương tương ứng (so khớp linh hoạt theo ID và tên chủ đề)
+            const matchedChapter = activeChapters.find(c => isQuestionInChapter(q, c));
 
             if (matchedChapter && counts[matchedChapter.id]?.[qType]?.[qLevel] !== undefined) {
                 counts[matchedChapter.id][qType][qLevel]++;
@@ -464,14 +500,11 @@ export default function AIRenderer({
                             const matchingInBank = bankQuestions.filter(q => {
                                 if (q.type !== t) return false;
                                 if (q.quizGrade && q.quizGrade !== 'all' && q.quizGrade !== grade) return false;
-                                if (q.subject && subject && q.subject.trim().toLowerCase() !== subject.trim().toLowerCase()) return false;
+                                if (q.subject && subject && !isSameSubject(q.subject, subject)) return false;
                                 const qLevel = q.level || 'B';
                                 if (qLevel !== l) return false;
 
-                                const qCName = (q.chapterName || q.quizCategory || '').trim().toLowerCase();
-                                const cName = ch.name.trim().toLowerCase();
-                                return (q.chapterId && q.chapterId === ch.id) || 
-                                       (qCName && (qCName === cName || qCName.includes(cName) || cName.includes(qCName)));
+                                return isQuestionInChapter(q, ch);
                             });
 
                             // Xáo trộn ngẫu nhiên để đề phong phú
