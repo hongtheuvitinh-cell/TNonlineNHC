@@ -14,6 +14,7 @@ interface AIRendererProps {
     grade: Grade;
     setGrade: (val: Grade) => void;
     subject?: string;
+    setSubject?: (val: string) => void;
     chapters: Chapter[];
     bankQuestions: Question[];
     onOpenEditor?: () => void;
@@ -94,7 +95,8 @@ type ChapterMatrixData = {
 export default function AIRenderer({
     grade,
     setGrade,
-    subject = 'Toán',
+    subject = 'Vật lí',
+    setSubject,
     chapters = [],
     bankQuestions = [],
     onOpenEditor,
@@ -126,6 +128,42 @@ export default function AIRenderer({
 
     // Bộ lọc loại câu hiển thị trong ma trận
     const [typeFilter, setTypeFilter] = useState<QuestionTypeFilter>('all');
+
+    // Môn học được chọn trong màn hình AI Soạn Đề
+    const [selectedSubject, setSelectedSubject] = useState<string>(() => {
+        if (subject && subject.trim()) return subject.trim();
+        const firstChWithSubj = chapters.find(c => c.subject && c.subject.trim());
+        return firstChWithSubj?.subject?.trim() || 'Vật lí';
+    });
+
+    useEffect(() => {
+        if (subject && subject.trim()) {
+            setSelectedSubject(subject.trim());
+        }
+    }, [subject]);
+
+    const currentSubject = selectedSubject || subject || 'Vật lí';
+
+    const handleSelectSubject = (newSubj: string) => {
+        setSelectedSubject(newSubj);
+        if (setSubject) {
+            setSubject(newSubj);
+        }
+    };
+
+    // Danh sách môn học hiển thị cho giáo viên chọn
+    const availableSubjects = useMemo(() => {
+        const list = new Set<string>();
+        // Các môn phổ biến
+        ['Vật lí', 'Toán', 'Hóa học', 'Sinh học', 'Ngữ văn', 'Tiếng Anh', 'Lịch sử', 'Địa lí', 'Tin học', 'GDCD', 'Công nghệ', 'KHTN'].forEach(s => list.add(s));
+        // Thêm các môn từ danh sách chương nếu có
+        chapters.forEach(c => {
+            if (c.subject && c.subject.trim()) {
+                list.add(c.subject.trim());
+            }
+        });
+        return Array.from(list);
+    }, [chapters]);
 
     // Trạng thái gập/mở từng chương trong bảng ma trận
     const [collapsedChapters, setCollapsedChapters] = useState<Record<string, boolean>>({});
@@ -167,11 +205,11 @@ export default function AIRenderer({
             if (!isCurriculumChapter(cName)) return false;
             // Lọc theo khối nếu có cấu hình
             if (c.grade && c.grade !== 'all' && String(c.grade) !== String(grade)) return false;
-            // Lọc theo môn học
-            if (c.subject && subject && !isSameSubject(c.subject, subject)) return false;
+            // Lọc theo môn học đang chọn
+            if (c.subject && currentSubject && !isSameSubject(c.subject, currentSubject)) return false;
             return true;
         }).sort((a, b) => (a.order || 0) - (b.order || 0));
-    }, [chapters, grade, subject]);
+    }, [chapters, grade, currentSubject]);
 
     // Thống kê số lượng câu hỏi hiện có trong Ngân hàng cho từng ô:
     // bankCounts[chapterId / chapterName][type][level] = count
@@ -192,7 +230,7 @@ export default function AIRenderer({
             // Lọc theo khối nếu có
             if (q.quizGrade && q.quizGrade !== 'all' && q.quizGrade !== grade) return;
             // Lọc theo môn nếu có (hỗ trợ chuẩn hóa môn học: Vật lí / Vật lý)
-            if (q.subject && subject && !isSameSubject(q.subject, subject)) return;
+            if (q.subject && currentSubject && !isSameSubject(q.subject, currentSubject)) return;
 
             const qType: QuestionType = (q.type as QuestionType) || 'mcq';
             const qLevel: QuestionLevel = (q.level as QuestionLevel) || 'B';
@@ -206,7 +244,7 @@ export default function AIRenderer({
         });
 
         return counts;
-    }, [bankQuestions, activeChapters, grade, subject]);
+    }, [bankQuestions, activeChapters, grade, currentSubject]);
 
     // Dữ liệu ma trận số lượng câu hỏi do giáo viên cấu hình
     const [matrixData, setMatrixData] = useState<Record<string, ChapterMatrixData>>({});
@@ -491,10 +529,10 @@ export default function AIRenderer({
                 }));
 
                 const generatedByAi = await generateQuestionsForMatrix({
-                    subject,
+                    subject: currentSubject,
                     grade,
                     requirements: aiMissingRequirements,
-                    topic: `${subject} ${grade}`,
+                    topic: `${currentSubject} ${grade}`,
                     promptAdditions: activeTab === 'prompt' ? promptAdditions : undefined,
                     pdfBase64: activeTab === 'pdf' ? (pdfBase64 || undefined) : undefined,
                     customApiKey,
@@ -778,63 +816,94 @@ export default function AIRenderer({
                     </div>
                 )}
 
-                {/* KHỐI LỚP & ĐÍCH ĐẾN & NÚT TRUY CẬP NHANH */}
-                <div className="flex flex-wrap items-center justify-between gap-4">
-                    {/* Chọn khối lớp */}
-                    <div className="flex items-center gap-2">
-                        {(['12', '11', '10'] as Grade[]).map(g => (
-                            <button
-                                key={g}
-                                type="button"
-                                onClick={() => setGrade(g)}
-                                className={`px-4 py-2 rounded-xl text-xs font-black uppercase transition-all shadow-sm active:scale-95 ${
-                                    grade === g
-                                        ? 'bg-purple-600 text-white shadow-purple-200'
-                                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                                }`}
-                            >
-                                KHỐI {g}
-                            </button>
-                        ))}
-                    </div>
+                {/* KHỐI LỚP & MÔN HỌC & ĐÍCH ĐẾN & NÚT TRUY CẬP NHANH */}
+                <div className="flex flex-col gap-3.5 bg-slate-50/80 p-3.5 sm:p-4 rounded-2xl border border-slate-200 shadow-sm">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                        {/* Chọn khối lớp & Môn học */}
+                        <div className="flex flex-wrap items-center gap-3">
+                            {/* Khối lớp */}
+                            <div className="flex items-center gap-1.5">
+                                <span className="text-[10px] font-black uppercase text-slate-500 tracking-wider">Khối:</span>
+                                {(['12', '11', '10'] as Grade[]).map(g => (
+                                    <button
+                                        key={g}
+                                        type="button"
+                                        onClick={() => setGrade(g)}
+                                        className={`px-3.5 py-1.5 rounded-xl text-xs font-black uppercase transition-all shadow-sm active:scale-95 ${
+                                            grade === g
+                                                ? 'bg-purple-600 text-white shadow-purple-200'
+                                                : 'bg-white text-slate-700 hover:bg-slate-100 border border-slate-200'
+                                        }`}
+                                    >
+                                        KHỐI {g}
+                                    </button>
+                                ))}
+                            </div>
 
-                    {/* Lối tắt vào Editor và Bank */}
-                    <div className="flex items-center gap-2">
-                        {onOpenEditor && (
-                            <button
-                                type="button"
-                                onClick={onOpenEditor}
-                                className="flex items-center gap-1.5 px-3 py-2 bg-slate-100 border border-slate-200 rounded-xl text-[10px] font-black uppercase text-slate-700 hover:bg-slate-200 transition-all shadow-sm active:scale-95"
-                            >
-                                <LayoutTemplate size={13} className="text-blue-600" />
-                                <span>VÀO EDITOR</span>
-                            </button>
-                        )}
-                        {onOpenBank && (
-                            <button
-                                type="button"
-                                onClick={onOpenBank}
-                                className="flex items-center gap-1.5 px-3 py-2 bg-slate-100 border border-slate-200 rounded-xl text-[10px] font-black uppercase text-slate-700 hover:bg-slate-200 transition-all shadow-sm active:scale-95"
-                            >
-                                <Database size={13} className="text-purple-600" />
-                                <span>VÀO BANK</span>
-                            </button>
-                        )}
-                        {onApiKeyChange && (
-                            <button
-                                type="button"
-                                onClick={() => setShowKeyInput(!showKeyInput)}
-                                className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-[10px] font-black uppercase border transition-all shadow-sm active:scale-95 ${
-                                    customApiKey 
-                                        ? 'bg-emerald-50 border-emerald-200 text-emerald-700' 
-                                        : 'bg-slate-100 border-slate-200 text-slate-600'
-                                }`}
-                                title="Cấu hình Gemini API Key riêng"
-                            >
-                                <Key size={13} className={customApiKey ? "text-emerald-600" : "text-slate-500"}/>
-                                <span>{customApiKey ? "Key riêng: Bật" : "Gemini Key"}</span>
-                            </button>
-                        )}
+                            {/* Vạch phân cách */}
+                            <div className="hidden sm:block h-5 w-[1px] bg-slate-200" />
+
+                            {/* Chọn Môn học */}
+                            <div className="flex flex-wrap items-center gap-1.5">
+                                <span className="text-[10px] font-black uppercase text-slate-500 tracking-wider">Môn:</span>
+                                {availableSubjects.map(s => {
+                                    const isSelected = isSameSubject(currentSubject, s);
+                                    return (
+                                        <button
+                                            key={s}
+                                            type="button"
+                                            onClick={() => handleSelectSubject(s)}
+                                            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all shadow-sm active:scale-95 ${
+                                                isSelected
+                                                    ? 'bg-blue-600 text-white shadow-blue-200'
+                                                    : 'bg-white text-slate-700 hover:bg-slate-100 border border-slate-200'
+                                            }`}
+                                        >
+                                            {s}
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                        </div>
+
+                        {/* Lối tắt vào Editor và Bank & Key */}
+                        <div className="flex items-center gap-2 shrink-0">
+                            {onOpenEditor && (
+                                <button
+                                    type="button"
+                                    onClick={onOpenEditor}
+                                    className="flex items-center gap-1.5 px-3 py-2 bg-white border border-slate-200 rounded-xl text-[10px] font-black uppercase text-slate-700 hover:bg-slate-100 transition-all shadow-sm active:scale-95"
+                                >
+                                    <LayoutTemplate size={13} className="text-blue-600" />
+                                    <span>VÀO EDITOR</span>
+                                </button>
+                            )}
+                            {onOpenBank && (
+                                <button
+                                    type="button"
+                                    onClick={onOpenBank}
+                                    className="flex items-center gap-1.5 px-3 py-2 bg-white border border-slate-200 rounded-xl text-[10px] font-black uppercase text-slate-700 hover:bg-slate-100 transition-all shadow-sm active:scale-95"
+                                >
+                                    <Database size={13} className="text-purple-600" />
+                                    <span>VÀO BANK</span>
+                                </button>
+                            )}
+                            {onApiKeyChange && (
+                                <button
+                                    type="button"
+                                    onClick={() => setShowKeyInput(!showKeyInput)}
+                                    className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-[10px] font-black uppercase border transition-all shadow-sm active:scale-95 ${
+                                        customApiKey 
+                                            ? 'bg-emerald-50 border-emerald-200 text-emerald-700' 
+                                            : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-100'
+                                    }`}
+                                    title="Cấu hình Gemini API Key riêng"
+                                >
+                                    <Key size={13} className={customApiKey ? "text-emerald-600" : "text-slate-500"}/>
+                                    <span>{customApiKey ? "Key riêng: Bật" : "Gemini Key"}</span>
+                                </button>
+                            )}
+                        </div>
                     </div>
                 </div>
 
@@ -942,7 +1011,7 @@ export default function AIRenderer({
                                             <BookOpen size={40} className="mx-auto text-slate-300" />
                                             <div className="space-y-1">
                                                 <p className="text-sm font-black uppercase text-slate-700 tracking-wider">
-                                                    Chưa có chương bài học nào trong Mục Chương cho Khối {grade} ({subject})
+                                                    Chưa có chương bài học nào trong Mục Chương cho Khối {grade} (Môn {currentSubject})
                                                 </p>
                                                 <p className="text-xs text-slate-500 font-medium leading-relaxed">
                                                     Hệ thống chỉ lấy danh sách chương bài học được tạo trong <b>Mục Chương</b> (tự động loại bỏ các mục KTTX, KTGK, KTCK).
@@ -952,14 +1021,14 @@ export default function AIRenderer({
                                                 <button
                                                     type="button"
                                                     onClick={() => {
-                                                        const newChName = prompt(`Nhập tên chương bài học mới cho Khối ${grade} (${subject}):`);
+                                                        const newChName = prompt(`Nhập tên chương bài học mới cho Khối ${grade} (Môn ${currentSubject}):`);
                                                         if (newChName && newChName.trim()) {
-                                                            onAddChapter(newChName.trim(), grade, subject);
+                                                            onAddChapter(newChName.trim(), grade, currentSubject);
                                                         }
                                                     }}
                                                     className="inline-flex items-center gap-1.5 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold shadow-sm transition"
                                                 >
-                                                    <PlusCircle size={14} /> Thêm chương mới cho Khối {grade}
+                                                    <PlusCircle size={14} /> Thêm chương mới cho Khối {grade} (Môn {currentSubject})
                                                 </button>
                                             )}
                                         </div>
