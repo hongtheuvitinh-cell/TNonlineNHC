@@ -324,24 +324,70 @@ export const verifyResultExists = async (id: string): Promise<boolean> => {
   }
 };
 
-export const getResultById = async (id: string): Promise<Result | null> => {
+export const getResultById = async (id: string, forceRefresh: boolean = false): Promise<Result | null> => {
+  if (!id) return null;
+  const now = Date.now();
+  if (!forceRefresh && memoryCache.resultDetails?.has(id)) {
+    const cached = memoryCache.resultDetails.get(id);
+    if (cached && cached.expires > now && cached.data) {
+      return cached.data;
+    }
+  }
+
+  // Kiểm tra sessionStorage / localStorage
+  if (!forceRefresh) {
+    try {
+      const localKey = `eduquiz_result_detail_${id}`;
+      const localStr = sessionStorage.getItem(localKey) || localStorage.getItem(localKey);
+      if (localStr) {
+        const parsed = JSON.parse(localStr);
+        if (parsed && parsed.data && parsed.expires > now) {
+          if (!memoryCache.resultDetails) memoryCache.resultDetails = new Map();
+          memoryCache.resultDetails.set(id, { data: parsed.data, expires: parsed.expires });
+          return parsed.data;
+        }
+      }
+    } catch {}
+  }
+
+  let result: Result | null = null;
   if (isSupabasePrimary()) {
-    return await supabaseDb.getResultById(id);
+    result = await supabaseDb.getResultById(id);
+  } else if (db) {
+    try {
+      const docSnap = await getDoc(doc(db, 'results', id));
+      trackFirestoreRead('results', 1);
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        result = (data.data as Result) || (data as Result);
+      }
+    } catch (e) {
+      console.error("Lỗi getResultById:", e);
+      return null;
+    }
   }
-  if (!db) return null;
-  try {
-    const docSnap = await getDoc(doc(db, 'results', id));
-    trackFirestoreRead('results', 1);
-    if (!docSnap.exists()) return null;
-    const data = docSnap.data();
-    return (data.data as Result) || (data as Result);
-  } catch (e) {
-    console.error("Lỗi getResultById:", e);
-    return null;
+
+  if (result) {
+    if (!memoryCache.resultDetails) memoryCache.resultDetails = new Map();
+    const expires = now + 60 * 60 * 1000; // Cache 60 phút
+    memoryCache.resultDetails.set(id, { data: result, expires });
+    try {
+      sessionStorage.setItem(`eduquiz_result_detail_${id}`, JSON.stringify({ data: result, expires }));
+    } catch {}
   }
+
+  return result;
 };
 
 export const saveResultToFirestore = async (result: Result): Promise<void> => {
+  if (result && result.id) {
+    if (!memoryCache.resultDetails) memoryCache.resultDetails = new Map();
+    const expires = Date.now() + 60 * 60 * 1000;
+    memoryCache.resultDetails.set(result.id, { data: result, expires });
+    try {
+      sessionStorage.setItem(`eduquiz_result_detail_${result.id}`, JSON.stringify({ data: result, expires }));
+    } catch {}
+  }
   if (!db) return;
   const payload = {
     id: result.id,
@@ -581,17 +627,33 @@ export const saveUsersBatch = async (users: User[]): Promise<void> => {
   return await saveUsersBatchToFirestore(users);
 };
 
-// Memory cache to drastically reduce Firebase read quota consumption
+// Memory cache to drastically reduce Firebase/Supabase read quota and bandwidth consumption
 const memoryCache: {
   teachers?: { data: User[]; expires: number };
   chapters?: { data: Chapter[]; expires: number };
   classes?: { data: ClassRoom[]; expires: number };
   quizzesMeta?: { data: Quiz[]; expires: number };
   bankQuestions?: { data: Question[]; expires: number };
+  bankByFilter?: Map<string, { data: Question[]; expires: number }>;
   quizDetails?: Map<string, { data: Quiz; expires: number }>;
+  resultDetails?: Map<string, { data: Result; expires: number }>;
 } = {};
 
-export const invalidateMemoryCache = (key?: 'teachers' | 'chapters' | 'classes' | 'quizzes' | 'bank') => {
+export const cacheResultDetails = (results: Result[]): void => {
+  if (!Array.isArray(results) || results.length === 0) return;
+  if (!memoryCache.resultDetails) memoryCache.resultDetails = new Map();
+  const expires = Date.now() + 60 * 60 * 1000; // 60 phút
+  for (const r of results) {
+    if (r && r.id) {
+      memoryCache.resultDetails.set(r.id, { data: r, expires });
+      try {
+        sessionStorage.setItem(`eduquiz_result_detail_${r.id}`, JSON.stringify({ data: r, expires }));
+      } catch {}
+    }
+  }
+};
+
+export const invalidateMemoryCache = (key?: 'teachers' | 'chapters' | 'classes' | 'quizzes' | 'bank' | 'results') => {
   if (!key) {
     delete memoryCache.teachers;
     delete memoryCache.chapters;
@@ -599,6 +661,7 @@ export const invalidateMemoryCache = (key?: 'teachers' | 'chapters' | 'classes' 
     delete memoryCache.quizzesMeta;
     delete memoryCache.bankQuestions;
     delete memoryCache.quizDetails;
+    delete memoryCache.resultDetails;
     try {
       localStorage.removeItem('eduquiz_quizzes_meta_cache');
     } catch {}
@@ -622,6 +685,9 @@ export const invalidateMemoryCache = (key?: 'teachers' | 'chapters' | 'classes' 
     } catch {}
   } else if (key === 'bank') {
     delete memoryCache.bankQuestions;
+    delete memoryCache.bankByFilter;
+  } else if (key === 'results') {
+    delete memoryCache.resultDetails;
   }
 };
 
@@ -1085,9 +1151,7 @@ export const getQuizzes = async (grade?: Grade): Promise<Quiz[]> => {
 };
 
 export const getQuizById = async (id: string, forceRefresh: boolean = false): Promise<Quiz | null> => {
-  if (isSupabasePrimary()) {
-    return await supabaseDb.getQuizById(id);
-  }
+  if (!id) return null;
   const now = Date.now();
   if (!forceRefresh && memoryCache.quizDetails?.has(id)) {
     const cached = memoryCache.quizDetails.get(id);
@@ -1110,6 +1174,19 @@ export const getQuizById = async (id: string, forceRefresh: boolean = false): Pr
         }
       }
     } catch (e) {}
+  }
+
+  if (isSupabasePrimary()) {
+    const sbQuiz = await supabaseDb.getQuizById(id);
+    if (sbQuiz && Array.isArray(sbQuiz.questions) && sbQuiz.questions.length > 0) {
+      if (!memoryCache.quizDetails) memoryCache.quizDetails = new Map();
+      const expires = now + 15 * 60 * 1000; // 15 phút cache
+      memoryCache.quizDetails.set(id, { data: sbQuiz, expires });
+      try {
+        localStorage.setItem(`eduquiz_quiz_detail_${id}`, JSON.stringify({ data: sbQuiz, expires }));
+      } catch (e) {}
+    }
+    return sbQuiz;
   }
 
   if (!db) return null;
@@ -1412,6 +1489,11 @@ export const saveQuiz = async (quiz: Quiz): Promise<void> => {
 
   if (isSupabasePrimary()) {
     const res = await supabaseDb.saveQuiz(enrichedQuiz);
+    if (memoryCache.quizDetails) memoryCache.quizDetails.delete(enrichedQuiz.id);
+    try {
+      localStorage.removeItem(`eduquiz_quiz_detail_${enrichedQuiz.id}`);
+    } catch {}
+    invalidateMemoryCache('quizzes');
     if (isDualSyncActive()) {
       saveQuizToFirestore(enrichedQuiz).catch((err) => {
         console.warn("Dual sync quiz to Firestore skipped/failed (non-fatal):", err);
@@ -1713,6 +1795,11 @@ export const deleteQuizFromFirestore = async (id: string): Promise<void> => {
 };
 
 export const deleteQuiz = async (id: string): Promise<void> => {
+  if (memoryCache.quizDetails) memoryCache.quizDetails.delete(id);
+  try {
+    localStorage.removeItem(`eduquiz_quiz_detail_${id}`);
+  } catch {}
+  invalidateMemoryCache('quizzes');
   if (isSupabasePrimary()) {
     const res = await supabaseDb.deleteQuiz(id);
     if (isDualSyncActive()) {
@@ -2094,13 +2181,34 @@ export const getQuestionFingerprint = (q: Partial<Question>): string => {
   return `${normSubject}__${normGrade}__${type}__${normText}__${optionsSig}`;
 };
 
-export const getBankQuestions = async (forceRefresh: boolean = false): Promise<Question[]> => {
-  if (isSupabasePrimary()) {
-    return await supabaseDb.getBankQuestions();
-  }
+export const getBankQuestions = async (
+  forceRefresh: boolean = false,
+  filters?: { subject?: string; grade?: string; limit?: number }
+): Promise<Question[]> => {
+  const isFiltered = !!(filters && ((filters.subject && filters.subject !== 'all') || (filters.grade && filters.grade !== 'all')));
+  const filterKey = isFiltered ? `${filters?.subject || 'all'}__${filters?.grade || 'all'}` : 'all';
   const now = Date.now();
-  if (!forceRefresh && memoryCache.bankQuestions && memoryCache.bankQuestions.expires > now) {
-    return memoryCache.bankQuestions.data;
+
+  if (!forceRefresh) {
+    if (isFiltered && memoryCache.bankByFilter?.has(filterKey)) {
+      const cached = memoryCache.bankByFilter.get(filterKey);
+      if (cached && cached.expires > now) {
+        return cached.data;
+      }
+    } else if (!isFiltered && memoryCache.bankQuestions && memoryCache.bankQuestions.expires > now) {
+      return memoryCache.bankQuestions.data;
+    }
+  }
+
+  if (isSupabasePrimary()) {
+    const questions = await supabaseDb.getBankQuestions(filters);
+    if (isFiltered) {
+      if (!memoryCache.bankByFilter) memoryCache.bankByFilter = new Map();
+      memoryCache.bankByFilter.set(filterKey, { data: questions, expires: now + 5 * 60 * 1000 });
+    } else {
+      memoryCache.bankQuestions = { data: questions, expires: now + 5 * 60 * 1000 };
+    }
+    return questions;
   }
 
   if (!db) {
@@ -2116,15 +2224,27 @@ export const getBankQuestions = async (forceRefresh: boolean = false): Promise<Q
   try {
     const snapshot = await getDocs(collection(db, 'bank_questions'));
     trackFirestoreRead('bank_questions', snapshot.docs.length);
-    const questions = snapshot.docs.map(d => {
+    let questions = snapshot.docs.map(d => {
       const row = d.data();
       return (row.data as Question) || (row as Question);
     });
 
-    memoryCache.bankQuestions = { data: questions, expires: now + 5 * 60 * 1000 };
-    try {
-      localStorage.setItem('eduquiz_bank_questions_cache', JSON.stringify(questions));
-    } catch {}
+    if (filters?.grade && filters.grade !== 'all') {
+      questions = questions.filter(q => String(q.quizGrade || '') === String(filters.grade));
+    }
+    if (filters?.subject && filters.subject !== 'all') {
+      questions = questions.filter(q => q.subject && isSameSubject(q.subject, filters.subject!));
+    }
+
+    if (isFiltered) {
+      if (!memoryCache.bankByFilter) memoryCache.bankByFilter = new Map();
+      memoryCache.bankByFilter.set(filterKey, { data: questions, expires: now + 5 * 60 * 1000 });
+    } else {
+      memoryCache.bankQuestions = { data: questions, expires: now + 5 * 60 * 1000 };
+      try {
+        localStorage.setItem('eduquiz_bank_questions_cache', JSON.stringify(questions));
+      } catch {}
+    }
 
     return questions;
   } catch (e) {
@@ -2154,7 +2274,7 @@ export const syncQuizzesToBank = async (targetSubject?: string): Promise<SyncBan
     // 1. Tải toàn bộ câu hỏi hiện có trong Ngân hàng (từ Supabase hoặc Firestore)
     let existingBankList: Question[] = [];
     if (isSupabasePrimary()) {
-      existingBankList = await supabaseDb.getBankQuestions();
+      existingBankList = await supabaseDb.getBankQuestions(isFiltered ? { subject: targetSubject } : undefined);
     } else if (db) {
       const existingBankSnap = await getDocs(collection(db, 'bank_questions'));
       trackFirestoreRead('bank_questions', existingBankSnap.docs.length);
@@ -2332,7 +2452,7 @@ export const deduplicateBankQuestions = async (targetSubject?: string): Promise<
     let allBankQuestions: Question[] = [];
 
     if (isSupabasePrimary()) {
-      allBankQuestions = await supabaseDb.getBankQuestions();
+      allBankQuestions = await supabaseDb.getBankQuestions(isFiltered ? { subject: targetSubject } : undefined);
     } else if (db) {
       const snapshot = await getDocs(collection(db, 'bank_questions'));
       trackFirestoreRead('bank_questions', snapshot.docs.length);
