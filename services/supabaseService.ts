@@ -579,6 +579,12 @@ export const supabaseDb = {
     await client.from('quizzes').update({ academic_year: academicYear }).eq('id', quizId);
   },
 
+  async updateQuizSchedule(quizId: string, startTime: string | null, endTime: string | null): Promise<void> {
+    const client = getSupabase();
+    if (!client) return;
+    await client.from('quizzes').update({ start_time: startTime, end_time: endTime }).eq('id', quizId);
+  },
+
   async assignQuizToClasses(
     quizId: string, 
     assignedClassIds: string[], 
