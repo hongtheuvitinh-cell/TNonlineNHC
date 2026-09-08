@@ -9,7 +9,7 @@ import {
 } from 'lucide-react';
 import { isSameSubject, STANDARD_SUBJECTS, normalizeSubject, getDisplaySubject } from '../../services/subjectUtils';
 import { getCurrentAcademicYear, getQuizAcademicYear, getAcademicYearOptions } from '../../services/academicUtils';
-import { updateQuizAcademicYear, updateQuizShareStatus, updateQuizSchedule, formatToDatetimeLocal } from '../../services/storage';
+import { updateQuizAcademicYear, updateQuizShareStatus, updateQuizSchedule, formatToDatetimeLocal, normalizeDateTimeForStorage } from '../../services/storage';
 
 interface QuizListProps {
     quizzes: Quiz[];
@@ -731,8 +731,8 @@ export default function QuizList({
         if (!schedulingQuiz) return;
         setIsSavingSchedule(true);
         try {
-            const cleanStart = scheduleStartTime ? scheduleStartTime.trim() : null;
-            const cleanEnd = scheduleEndTime ? scheduleEndTime.trim() : null;
+            const cleanStart = normalizeDateTimeForStorage(scheduleStartTime);
+            const cleanEnd = normalizeDateTimeForStorage(scheduleEndTime);
             if (onUpdateSchedule) {
                 await onUpdateSchedule(schedulingQuiz.id, cleanStart, cleanEnd);
             } else {
@@ -1316,7 +1316,7 @@ export default function QuizList({
                                         type="button"
                                         onClick={() => {
                                             const now = new Date();
-                                            const formatted = formatToDatetimeLocal(now.toISOString());
+                                            const formatted = formatToDatetimeLocal(now);
                                             setScheduleStartTime(formatted);
                                             setScheduleEndTime(formatted);
                                         }}
@@ -1342,7 +1342,7 @@ export default function QuizList({
                                         onClick={() => {
                                             const d = new Date(scheduleStartTime || Date.now());
                                             d.setMinutes(d.getMinutes() + 30);
-                                            setScheduleEndTime(formatToDatetimeLocal(d.toISOString()));
+                                            setScheduleEndTime(formatToDatetimeLocal(d));
                                         }}
                                         className="px-3 py-1.5 bg-white border border-slate-200 text-slate-600 hover:bg-slate-100 rounded-xl text-[10px] font-black uppercase transition-all disabled:opacity-40 cursor-pointer"
                                     >
@@ -1354,7 +1354,7 @@ export default function QuizList({
                                         onClick={() => {
                                             const d = new Date(scheduleStartTime || Date.now());
                                             d.setHours(d.getHours() + 1);
-                                            setScheduleEndTime(formatToDatetimeLocal(d.toISOString()));
+                                            setScheduleEndTime(formatToDatetimeLocal(d));
                                         }}
                                         className="px-3 py-1.5 bg-white border border-slate-200 text-slate-600 hover:bg-slate-100 rounded-xl text-[10px] font-black uppercase transition-all disabled:opacity-40 cursor-pointer"
                                     >
@@ -1366,7 +1366,7 @@ export default function QuizList({
                                         onClick={() => {
                                             const d = new Date(scheduleStartTime || Date.now());
                                             d.setHours(d.getHours() + 2);
-                                            setScheduleEndTime(formatToDatetimeLocal(d.toISOString()));
+                                            setScheduleEndTime(formatToDatetimeLocal(d));
                                         }}
                                         className="px-3 py-1.5 bg-white border border-slate-200 text-slate-600 hover:bg-slate-100 rounded-xl text-[10px] font-black uppercase transition-all disabled:opacity-40 cursor-pointer"
                                     >
@@ -1378,7 +1378,7 @@ export default function QuizList({
                                         onClick={() => {
                                             const d = new Date(scheduleStartTime || Date.now());
                                             d.setHours(23, 59, 0, 0);
-                                            setScheduleEndTime(formatToDatetimeLocal(d.toISOString()));
+                                            setScheduleEndTime(formatToDatetimeLocal(d));
                                         }}
                                         className="px-3 py-1.5 bg-white border border-slate-200 text-slate-600 hover:bg-slate-100 rounded-xl text-[10px] font-black uppercase transition-all disabled:opacity-40 cursor-pointer"
                                     >
