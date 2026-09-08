@@ -1,6 +1,7 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { User, Quiz, Result, Chapter, Question, ExamSession, PublishedResult, Grade, ClassRoom } from '../types';
 import { getSavedSupabaseConfig } from './supabaseMigration';
+import { normalizeDateTimeForStorage } from './dateUtils';
 import { v4 as uuidv4 } from 'uuid';
 
 let _supabaseClient: SupabaseClient | null = null;
@@ -228,8 +229,8 @@ export function mapQuizToDb(q: Quiz): any {
     grade: q.grade || '12',
     category: q.category || null,
     subject: q.subject || null,
-    start_time: q.startTime || null,
-    end_time: q.endTime || null,
+    start_time: normalizeDateTimeForStorage(q.startTime),
+    end_time: normalizeDateTimeForStorage(q.endTime),
     duration_minutes: q.durationMinutes || 45,
     questions: questionsList,
     question_count: q.questionCount || questionsList.length,
@@ -582,7 +583,9 @@ export const supabaseDb = {
   async updateQuizSchedule(quizId: string, startTime: string | null, endTime: string | null): Promise<void> {
     const client = getSupabase();
     if (!client) return;
-    await client.from('quizzes').update({ start_time: startTime, end_time: endTime }).eq('id', quizId);
+    const cleanStart = normalizeDateTimeForStorage(startTime);
+    const cleanEnd = normalizeDateTimeForStorage(endTime);
+    await client.from('quizzes').update({ start_time: cleanStart, end_time: cleanEnd }).eq('id', quizId);
   },
 
   async assignQuizToClasses(
