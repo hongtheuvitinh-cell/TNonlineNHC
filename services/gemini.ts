@@ -205,16 +205,94 @@
 
     const formatGeminiError = (error: any): string => {
         const errorStr = error?.message || (typeof error === 'object' ? JSON.stringify(error) : String(error));
+        if (errorStr.includes('503') || errorStr.includes('UNAVAILABLE') || errorStr.includes('high demand') || errorStr.includes('overloaded') || errorStr.includes('temporary')) {
+            return "Máy chủ AI của Google đang chịu tải cao tạm thời (Lỗi 503 - High Demand).\n• Khắc phục: Hệ thống đã tự động thử các kênh dự phòng. Vui lòng bấm 'Tạo Đề' lại sau vài giây, hoặc cấu hình Gemini API Key riêng ở góc trên để được ưu tiên xử lý tốt nhất.";
+        }
         if (errorStr.includes('403') || errorStr.includes('PERMISSION_DENIED') || errorStr.includes('permission')) {
             return "Lỗi 403 (Không có quyền truy cập): API Key chưa được cấp quyền gọi Gemini API.\n• Khắc phục: Bạn vui lòng vào https://aistudio.google.com/app/apikey tạo một API Key mới (miễn phí), hoặc nếu tạo trong Google Cloud Console thì cần bật (Enable) API 'Generative Language API' và kiểm tra API Key restrictions.";
         }
         if (errorStr.includes('429') || errorStr.includes('RESOURCE_EXHAUSTED') || errorStr.includes('quota')) {
-            return "Lỗi 429 (Vượt quá hạn mức): API Key này đã hết lượt gọi tạm thời hoặc bị giới hạn tốc độ. Vui lòng đợi khoảng 1 phút rồi thử lại, hoặc nhập một API Key khác.";
+            return "Lỗi 429 (Vượt quá hạn mức): Tốc độ gọi AI bị giới hạn tạm thời. Vui lòng đợi khoảng 5-10 giây rồi bấm thử lại, hoặc nhập một API Key khác.";
         }
         if (errorStr.includes('API_KEY_INVALID') || errorStr.includes('API key not valid') || errorStr.includes('400')) {
             return "Lỗi 400: API Key không hợp lệ hoặc dữ liệu gửi đi không đúng định dạng. Vui lòng kiểm tra lại mã API Key.";
         }
         return errorStr;
+    };
+
+    const CANDIDATE_MODELS = [
+        'gemini-2.5-flash',
+        'gemini-flash-latest',
+        'gemini-3.8-flash',
+        'gemini-2.5-pro'
+    ];
+
+    /**
+     * Gọi Gemini API với cơ chế tự động thử lại (Retry with Exponential Backoff)
+     * và tự động chuyển đổi sang các mô hình dự phòng (Fallback Models) khi gặp lỗi 503 / 429 / Quá tải.
+     */
+    export const callGeminiWithRetryAndFallback = async (
+        ai: GoogleGenAI,
+        params: {
+            contents: any;
+            config?: any;
+        },
+        preferredModels: string[] = CANDIDATE_MODELS
+    ): Promise<any> => {
+        let lastError: any = null;
+
+        for (let mIdx = 0; mIdx < preferredModels.length; mIdx++) {
+            const model = preferredModels[mIdx];
+            const maxRetries = 2;
+
+            for (let attempt = 0; attempt <= maxRetries; attempt++) {
+                try {
+                    const response = await ai.models.generateContent({
+                        model,
+                        contents: params.contents,
+                        config: params.config
+                    });
+                    return response;
+                } catch (err: any) {
+                    lastError = err;
+                    const errStr = err?.message || (typeof err === 'object' ? JSON.stringify(err) : String(err));
+                    const isOverloadedOrUnavailable = 
+                        errStr.includes('503') || 
+                        errStr.includes('UNAVAILABLE') || 
+                        errStr.includes('high demand') || 
+                        errStr.includes('RESOURCE_EXHAUSTED') || 
+                        errStr.includes('429') ||
+                        errStr.includes('500') ||
+                        errStr.includes('502') ||
+                        errStr.includes('504') ||
+                        errStr.includes('overloaded');
+
+                    console.warn(`[Gemini API] Model ${model} (lần ${attempt + 1}/${maxRetries + 1}) gặp lỗi:`, errStr);
+
+                    // Nếu là lỗi sai Key (400, 403 không phải 503), throw ngay không retry
+                    if (errStr.includes('API_KEY_INVALID') || errStr.includes('API key not valid') || (errStr.includes('403') && !errStr.includes('503'))) {
+                        throw err;
+                    }
+
+                    // Nếu lỗi do máy chủ quá tải và còn lượt retry của model này
+                    if (isOverloadedOrUnavailable && attempt < maxRetries) {
+                        const delayMs = (attempt + 1) * 1200;
+                        await new Promise(res => setTimeout(res, delayMs));
+                        continue;
+                    }
+
+                    // Nếu đã hết lượt retry cho model này nhưng còn model dự phòng khác trong danh sách
+                    if (isOverloadedOrUnavailable && mIdx < preferredModels.length - 1) {
+                        console.log(`[Gemini API] Tự động chuyển đổi sang model dự phòng: ${preferredModels[mIdx + 1]}`);
+                        break; // chuyển sang model tiếp theo
+                    }
+
+                    throw err;
+                }
+            }
+        }
+
+        throw lastError;
     };
 
     const getAiClient = (overrideApiKey?: string): GoogleGenAI => {
@@ -284,8 +362,7 @@
                 }
                 : prompt;
 
-            const response = await ai.models.generateContent({
-                model: 'gemini-2.5-flash',
+            const response = await callGeminiWithRetryAndFallback(ai, {
                 contents: contents,
                 config: {
                     responseMimeType: "application/json",
@@ -471,8 +548,7 @@
                     }
                     : prompt;
 
-                const response = await ai.models.generateContent({
-                    model: 'gemini-2.5-flash',
+                const response = await callGeminiWithRetryAndFallback(ai, {
                     contents: contents,
                     config: {
                         responseMimeType: "application/json",
@@ -545,46 +621,45 @@
     const ai = getAiClient(customApiKey);
     
     try {
-        const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: {
-            parts: [
-                { inlineData: { mimeType: "application/pdf", data: base64Data } },
-                { text: EXTRACTION_INSTRUCTION }
-            ]
-        },
-        config: { 
-            responseMimeType: "application/json",
-            responseSchema: {
-                type: Type.ARRAY,
-                items: {
-                    type: Type.OBJECT,
-                    properties: {
-                        type: { type: Type.STRING },
-                        text: { type: Type.STRING },
-                        level: { type: Type.STRING, nullable: true },
-                        points: { type: Type.NUMBER },
-                        options: { type: Type.ARRAY, items: { type: Type.STRING }, nullable: true },
-                        correctAnswer: { type: Type.STRING, nullable: true },
-                        solution: { type: Type.STRING },
-                        subQuestions: {
-                            type: Type.ARRAY,
-                            nullable: true,
-                            items: {
-                                type: Type.OBJECT,
-                                properties: {
-                                    text: { type: Type.STRING },
-                                    correctAnswer: { type: Type.STRING },
-                                    level: { type: Type.STRING, nullable: true }
-                                },
-                                required: ["text", "correctAnswer"]
+        const response = await callGeminiWithRetryAndFallback(ai, {
+            contents: {
+                parts: [
+                    { inlineData: { mimeType: "application/pdf", data: base64Data } },
+                    { text: EXTRACTION_INSTRUCTION }
+                ]
+            },
+            config: { 
+                responseMimeType: "application/json",
+                responseSchema: {
+                    type: Type.ARRAY,
+                    items: {
+                        type: Type.OBJECT,
+                        properties: {
+                            type: { type: Type.STRING },
+                            text: { type: Type.STRING },
+                            level: { type: Type.STRING, nullable: true },
+                            points: { type: Type.NUMBER },
+                            options: { type: Type.ARRAY, items: { type: Type.STRING }, nullable: true },
+                            correctAnswer: { type: Type.STRING, nullable: true },
+                            solution: { type: Type.STRING },
+                            subQuestions: {
+                                type: Type.ARRAY,
+                                nullable: true,
+                                items: {
+                                    type: Type.OBJECT,
+                                    properties: {
+                                        text: { type: Type.STRING },
+                                        correctAnswer: { type: Type.STRING },
+                                        level: { type: Type.STRING, nullable: true }
+                                    },
+                                    required: ["text", "correctAnswer"]
+                                }
                             }
-                        }
-                    },
-                    required: ["type", "text", "solution"]
+                        },
+                        required: ["type", "text", "solution"]
+                    }
                 }
             }
-        }
         });
 
         const textOutput = response.text || "[]";
@@ -822,8 +897,7 @@
         const ai = getAiClient(customApiKey);
         
         try {
-            const response = await ai.models.generateContent({
-                model: 'gemini-2.5-flash',
+            const response = await callGeminiWithRetryAndFallback(ai, {
                 contents: `${EXTRACTION_INSTRUCTION}\n\nNỘI DUNG VĂN BẢN CẦN TRÍCH XUẤT:\n${rawText}`,
                 config: {
                     responseMimeType: "application/json",
@@ -920,8 +994,7 @@
     4. ĐÁP ÁN ĐÚNG ('correctAnswer'): Nếu câu hỏi chưa có đáp án hoặc bạn tìm ra đáp án đúng, hãy cung cấp nội dung đáp án đúng.`;
 
         try {
-            const response = await ai.models.generateContent({
-                model: 'gemini-2.5-flash',
+            const response = await callGeminiWithRetryAndFallback(ai, {
                 contents: prompt,
                 config: {
                     responseMimeType: "application/json",
@@ -1098,9 +1171,9 @@
     - "chapterName": Tên chính xác của chương được gán
     Tuyệt đối không bỏ sót bất kỳ câu hỏi nào.`;
 
-        const runCall = async (modelName: string) => {
-            const response = await ai.models.generateContent({
-                model: modelName,
+        let rawAssignments: any[] = [];
+        try {
+            const response = await callGeminiWithRetryAndFallback(ai, {
                 contents: prompt,
                 config: {
                     responseMimeType: "application/json",
@@ -1120,19 +1193,9 @@
             });
 
             const textOutput = response.text || "[]";
-            return safeParseJsonWithLatex(textOutput) || [];
-        };
-
-        let rawAssignments: any[] = [];
-        try {
-            rawAssignments = await runCall('gemini-3.8-flash');
+            rawAssignments = safeParseJsonWithLatex(textOutput) || [];
         } catch (err: any) {
-            console.warn("Thử model gemini-3.8-flash không thành công, thử lại với gemini-2.5-flash:", err);
-            try {
-                rawAssignments = await runCall('gemini-2.5-flash');
-            } catch (secondErr: any) {
-                throw new Error("Lỗi AI phân loại chương: " + formatGeminiError(secondErr));
-            }
+            throw new Error("Lỗi AI phân loại chương: " + formatGeminiError(err));
         }
 
         if (!Array.isArray(rawAssignments)) {
