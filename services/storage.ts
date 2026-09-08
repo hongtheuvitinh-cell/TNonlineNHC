@@ -81,25 +81,8 @@ export function cleanUndefined<T>(obj: T): T {
   return obj;
 }
 
-export const formatToDatetimeLocal = (value?: string | null): string => {
-  if (!value) return '';
-  const str = String(value).trim();
-  if (!str) return '';
-  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(str)) return str;
-  try {
-    const d = new Date(str);
-    if (isNaN(d.getTime())) return '';
-    const pad = (n: number) => String(n).padStart(2, '0');
-    const YYYY = d.getFullYear();
-    const MM = pad(d.getMonth() + 1);
-    const DD = pad(d.getDate());
-    const HH = pad(d.getHours());
-    const mm = pad(d.getMinutes());
-    return `${YYYY}-${MM}-${DD}T${HH}:${mm}`;
-  } catch {
-    return '';
-  }
-};
+import { formatToDatetimeLocal, normalizeDateTimeForStorage } from './dateUtils';
+export { formatToDatetimeLocal, normalizeDateTimeForStorage };
 
 // --- Database Usage Stats Helpers ---
 export interface DailyFirestoreStats {
@@ -1366,8 +1349,8 @@ export const saveQuizToFirestore = async (enrichedQuiz: Quiz): Promise<void> => 
     showResultAnswers: enrichedQuiz.showResultAnswers !== false,
     durationMinutes: enrichedQuiz.durationMinutes || 45,
     orderIndex: enrichedQuiz.orderIndex || 0,
-    startTime: enrichedQuiz.startTime || null,
-    endTime: enrichedQuiz.endTime || null,
+    startTime: normalizeDateTimeForStorage(enrichedQuiz.startTime),
+    endTime: normalizeDateTimeForStorage(enrichedQuiz.endTime),
     createdBy: enrichedQuiz.createdBy || '',
     createdByName: enrichedQuiz.createdByName || '',
     isSharedWithTeachers: enrichedQuiz.isSharedWithTeachers ?? false,
@@ -1474,8 +1457,8 @@ export const updateQuiz = async (enrichedQuiz: Quiz): Promise<void> => {
     showResultAnswers: quiz.showResultAnswers !== false,
     durationMinutes: quiz.durationMinutes || 45,
     orderIndex: quiz.orderIndex || 0,
-    startTime: quiz.startTime || null,
-    endTime: quiz.endTime || null,
+    startTime: normalizeDateTimeForStorage(quiz.startTime),
+    endTime: normalizeDateTimeForStorage(quiz.endTime),
     createdBy: quiz.createdBy || '',
     createdByName: quiz.createdByName || '',
     isSharedWithTeachers: quiz.isSharedWithTeachers ?? false,
@@ -1611,8 +1594,8 @@ export const updateQuizShareStatus = async (quizId: string, isShared: boolean): 
 };
 
 export const updateQuizSchedule = async (quizId: string, startTime: string | null, endTime: string | null): Promise<void> => {
-  const cleanStartTime = startTime && startTime.trim() ? startTime.trim() : null;
-  const cleanEndTime = endTime && endTime.trim() ? endTime.trim() : null;
+  const cleanStartTime = normalizeDateTimeForStorage(startTime);
+  const cleanEndTime = normalizeDateTimeForStorage(endTime);
 
   if (isSupabasePrimary()) {
     await supabaseDb.updateQuizSchedule(quizId, cleanStartTime, cleanEndTime);
