@@ -42,103 +42,8 @@ interface AIRendererProps {
     onAddChapter?: (name: string, grade: Grade, subject?: string) => Promise<void>;
 }
 
-// Danh mục chương chuẩn GDPT 2018 dự phòng khi môn/khối chưa được tạo chương trong DB
-const getStandardChaptersForSubjectAndGrade = (subject: string, grade: Grade): { id: string; name: string }[] => {
-    const s = subject.toLowerCase().trim();
-    if (s.includes('lý') || s.includes('vật lí') || s.includes('vật lý') || s.includes('physics')) {
-        if (grade === '12') {
-            return [
-                { id: 'std_vl12_c1', name: 'Chương 1: Vật lý nhiệt' },
-                { id: 'std_vl12_c2', name: 'Chương 2: Khí lí tưởng' },
-                { id: 'std_vl12_c3', name: 'Chương 3: Từ trường' },
-                { id: 'std_vl12_c4', name: 'Chương 4: Vật lí hạt nhân' }
-            ];
-        }
-        if (grade === '11') {
-            return [
-                { id: 'std_vl11_c1', name: 'Chương 1: Dao động' },
-                { id: 'std_vl11_c2', name: 'Chương 2: Sóng' },
-                { id: 'std_vl11_c3', name: 'Chương 3: Điện trường' },
-                { id: 'std_vl11_c4', name: 'Chương 4: Dòng điện không đổi & Mạch điện' }
-            ];
-        }
-        return [
-            { id: 'std_vl10_c1', name: 'Chương 1: Mở đầu & Động học' },
-            { id: 'std_vl10_c2', name: 'Chương 2: Động lực học' },
-            { id: 'std_vl10_c3', name: 'Chương 3: Năng lượng, công, công suất' },
-            { id: 'std_vl10_c4', name: 'Chương 4: Động lượng' }
-        ];
-    }
-
-    if (s.includes('toán') || s.includes('math')) {
-        if (grade === '12') {
-            return [
-                { id: 'std_m12_c1', name: 'Chương 1: Ứng dụng đạo hàm để khảo sát và vẽ đồ thị hàm số' },
-                { id: 'std_m12_c2', name: 'Chương 2: Vectơ và hệ tọa độ trong không gian' },
-                { id: 'std_m12_c3', name: 'Chương 3: Các số đặc trưng đo mức độ phân tán của mẫu số liệu' },
-                { id: 'std_m12_c4', name: 'Chương 4: Nguyên hàm và Tích phân' },
-                { id: 'std_m12_c5', name: 'Chương 5: Phương pháp tọa độ trong không gian' },
-                { id: 'std_m12_c6', name: 'Chương 6: Xác suất có điều kiện' }
-            ];
-        }
-        if (grade === '11') {
-            return [
-                { id: 'std_m11_c1', name: 'Chương 1: Hàm số lượng giác và phương trình lượng giác' },
-                { id: 'std_m11_c2', name: 'Chương 2: Dãy số. Cấp số cộng và cấp số nhân' },
-                { id: 'std_m11_c3', name: 'Chương 3: Giới hạn. Hàm số liên tục' },
-                { id: 'std_m11_c4', name: 'Chương 4: Quan hệ song song trong không gian' },
-                { id: 'std_m11_c5', name: 'Chương 5: Đạo hàm' }
-            ];
-        }
-        return [
-            { id: 'std_m10_c1', name: 'Chương 1: Mệnh đề và tập hợp' },
-            { id: 'std_m10_c2', name: 'Chương 2: Bất phương trình bậc nhất hai ẩn' },
-            { id: 'std_m10_c3', name: 'Chương 3: Hàm số bậc hai và đồ thị' },
-            { id: 'std_m10_c4', name: 'Chương 4: Hệ thức lượng trong tam giác' },
-            { id: 'std_m10_c5', name: 'Chương 5: Vectơ' }
-        ];
-    }
-
-    if (s.includes('hóa') || s.includes('chem')) {
-        if (grade === '12') {
-            return [
-                { id: 'std_h12_c1', name: 'Chương 1: Este - Lipit' },
-                { id: 'std_h12_c2', name: 'Chương 2: Cacbohiđrat' },
-                { id: 'std_h12_c3', name: 'Chương 3: Hợp chất chứa nitơ (Amin, Amino axit, Peptit, Protein)' },
-                { id: 'std_h12_c4', name: 'Chương 4: Polime và vật liệu polime' },
-                { id: 'std_h12_c5', name: 'Chương 5: Pin điện và điện phân' },
-                { id: 'std_h12_c6', name: 'Chương 6: Đại cương kim loại' }
-            ];
-        }
-        return [
-            { id: 'std_h10_c1', name: 'Chương 1: Cấu tạo nguyên tử' },
-            { id: 'std_h10_c2', name: 'Chương 2: Bảng tuần hoàn các nguyên tố hoá học' },
-            { id: 'std_h10_c3', name: 'Chương 3: Liên kết hoá học' },
-            { id: 'std_h10_c4', name: 'Chương 4: Phản ứng oxi hoá - khử' }
-        ];
-    }
-
-    if (s.includes('sinh') || s.includes('bio')) {
-        return [
-            { id: 'std_bio_c1', name: 'Chương 1: Di truyền phân tử và di truyền nhiễm sắc thể' },
-            { id: 'std_bio_c2', name: 'Chương 2: Tính quy luật của hiện tượng di truyền' },
-            { id: 'std_bio_c3', name: 'Chương 3: Thuyết tiến hóa' },
-            { id: 'std_bio_c4', name: 'Chương 4: Sinh thái học và môi trường' }
-        ];
-    }
-
-    return [
-        { id: 'std_gen_c1', name: 'Chương 1: Kiến thức trọng tâm phần 1' },
-        { id: 'std_gen_c2', name: 'Chương 2: Kiến thức trọng tâm phần 2' },
-        { id: 'std_gen_c3', name: 'Chương 3: Kiến thức trọng tâm phần 3' },
-        { id: 'std_gen_c4', name: 'Chương 4: Kiến thức trọng tâm phần 4' }
-    ];
-};
-
-/**
- * Chuẩn hóa tên chương/chủ đề để so khớp thông minh:
- * Loại bỏ các tiền tố như "Chương 1:", "Chương I -", "Bài 2.", "Chủ đề 3:"...
- */
+// Chuẩn hóa tên chương/chủ đề để so khớp thông minh:
+// Loại bỏ các tiền tố như "Chương 1:", "Chương I -", "Bài 2.", "Chủ đề 3:"...
 const cleanChapterTopic = (name?: string | null): string => {
     if (!name) return '';
     let s = name.trim().toLowerCase();
@@ -254,21 +159,18 @@ export default function AIRenderer({
         logs: []
     });
 
-    // Lọc danh sách chương phù hợp với khối và môn - CHỈ GIỮ LẠI TÊN CHƯƠNG TRONG SGK
+    // Lọc danh sách chương phù hợp với khối và môn - LẤY TRỰC TIẾP TỪ MỤC CHƯƠNG (loại bỏ hoàn toàn KTTX, KTGK, KTCK)
     const activeChapters = useMemo(() => {
-        const filtered = chapters.filter(c => {
+        return chapters.filter(c => {
             const cName = c.name || (c as any).title || '';
-            // Loại bỏ hoàn toàn các mục loại đề thi (KTTX, KTGK, KTCK, LTĐH...), chỉ giữ lại chương bài học SGK
+            // Loại bỏ hoàn toàn các mục loại đề thi (KTTX, KTGK, KTCK, LTĐH...), chỉ giữ lại chương bài học
             if (!isCurriculumChapter(cName)) return false;
-            if (c.grade && c.grade !== 'all' && c.grade !== grade) return false;
+            // Lọc theo khối nếu có cấu hình
+            if (c.grade && c.grade !== 'all' && String(c.grade) !== String(grade)) return false;
+            // Lọc theo môn học
             if (c.subject && subject && !isSameSubject(c.subject, subject)) return false;
             return true;
         }).sort((a, b) => (a.order || 0) - (b.order || 0));
-
-        if (filtered.length > 0) return filtered;
-
-        // Nếu DB chưa có chương nào cho khối & môn này, dùng danh mục chương chuẩn
-        return getStandardChaptersForSubjectAndGrade(subject, grade);
     }, [chapters, grade, subject]);
 
     // Thống kê số lượng câu hỏi hiện có trong Ngân hàng cho từng ô:
@@ -1033,6 +935,38 @@ export default function AIRenderer({
                         </thead>
 
                         <tbody className="divide-y divide-slate-200 text-xs font-bold text-slate-700">
+                            {activeChapters.length === 0 && (
+                                <tr>
+                                    <td colSpan={7} className="py-12 px-6 text-center bg-slate-50/70">
+                                        <div className="max-w-md mx-auto space-y-3">
+                                            <BookOpen size={40} className="mx-auto text-slate-300" />
+                                            <div className="space-y-1">
+                                                <p className="text-sm font-black uppercase text-slate-700 tracking-wider">
+                                                    Chưa có chương bài học nào trong Mục Chương cho Khối {grade} ({subject})
+                                                </p>
+                                                <p className="text-xs text-slate-500 font-medium leading-relaxed">
+                                                    Hệ thống chỉ lấy danh sách chương bài học được tạo trong <b>Mục Chương</b> (tự động loại bỏ các mục KTTX, KTGK, KTCK).
+                                                </p>
+                                            </div>
+                                            {onAddChapter && (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        const newChName = prompt(`Nhập tên chương bài học mới cho Khối ${grade} (${subject}):`);
+                                                        if (newChName && newChName.trim()) {
+                                                            onAddChapter(newChName.trim(), grade, subject);
+                                                        }
+                                                    }}
+                                                    className="inline-flex items-center gap-1.5 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold shadow-sm transition"
+                                                >
+                                                    <PlusCircle size={14} /> Thêm chương mới cho Khối {grade}
+                                                </button>
+                                            )}
+                                        </div>
+                                    </td>
+                                </tr>
+                            )}
+
                             {activeChapters.map(ch => {
                                 const chData = matrixData[ch.id] || {
                                     mcq: { B: 0, H: 0, VD: 0, VDC: 0 },
