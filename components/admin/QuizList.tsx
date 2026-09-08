@@ -5,11 +5,11 @@ import {
   Edit, Trash2, Eye, Users, Filter, FileText, ChevronDown, Link as LinkIcon, 
   EyeOff, ShieldCheck, GraduationCap, Share2, User as UserIcon, Lock, BookOpen,
   Check, X, CheckSquare, Square, Info, Sparkles, Send, Layers, AlertCircle, PauseCircle,
-  Calendar, CalendarDays, CheckCircle2
+  Calendar, CalendarDays, CheckCircle2, Clock, Zap, Timer
 } from 'lucide-react';
 import { isSameSubject, STANDARD_SUBJECTS, normalizeSubject, getDisplaySubject } from '../../services/subjectUtils';
 import { getCurrentAcademicYear, getQuizAcademicYear, getAcademicYearOptions } from '../../services/academicUtils';
-import { updateQuizAcademicYear, updateQuizShareStatus } from '../../services/storage';
+import { updateQuizAcademicYear, updateQuizShareStatus, updateQuizSchedule, formatToDatetimeLocal } from '../../services/storage';
 
 interface QuizListProps {
     quizzes: Quiz[];
@@ -23,6 +23,7 @@ interface QuizListProps {
     onPreview: (quiz: Quiz) => void;
     onAssignClasses?: (quiz: Quiz, selectedClassIds: string[]) => Promise<void>;
     onToggleShare?: (quizId: string, newShareStatus: boolean) => void;
+    onUpdateSchedule?: (quizId: string, startTime: string | null, endTime: string | null) => Promise<void>;
     qSearch: string;
     setQSearch: (val: string) => void;
     qGradeFilter: Grade | 'all';
@@ -95,6 +96,7 @@ interface QuizCardItemProps {
     onEdit: (q: Quiz) => void;
     onDelete: (id: string) => void;
     openAssignModal: (q: Quiz) => void;
+    openScheduleModal: (q: Quiz) => void;
     copyQuizLink: (id: string) => void;
     handleSetAcademicYear: (id: string, yr: string) => void;
     handleToggleShare: (id: string, newShare: boolean) => void;
@@ -115,6 +117,7 @@ const QuizCardItem = React.memo(function QuizCardItem({
     onEdit,
     onDelete,
     openAssignModal,
+    openScheduleModal,
     copyQuizLink,
     handleSetAcademicYear,
     handleToggleShare
@@ -248,6 +251,31 @@ const QuizCardItem = React.memo(function QuizCardItem({
                     {q.title}
                 </h3>
 
+                {/* Thông tin lịch thi trực quan */}
+                {(q.startTime || q.endTime) ? (
+                    <div className="flex items-center gap-2 flex-wrap text-[10px] font-bold">
+                        <span className="px-2 py-0.5 rounded-lg bg-blue-50 border border-blue-200 text-blue-800 flex items-center gap-1 shadow-2xs">
+                            <Clock size={11} className="text-blue-600 shrink-0"/>
+                            <span>{q.startTime ? `Mở: ${new Date(q.startTime).toLocaleString('vi-VN', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit' })}` : 'Mở tự do'}</span>
+                        </span>
+                        <span className="text-slate-400 font-bold">➔</span>
+                        <span className={`px-2 py-0.5 rounded-lg border flex items-center gap-1 shadow-2xs ${isExpired ? 'bg-amber-100 border-amber-300 text-amber-900' : 'bg-indigo-50 border-indigo-200 text-indigo-800'}`}>
+                            <Timer size={11} className={isExpired ? "text-amber-700 shrink-0" : "text-indigo-600 shrink-0"}/>
+                            <span>{q.endTime ? `Đóng: ${new Date(q.endTime).toLocaleString('vi-VN', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit' })}` : (q.startTime ? `Sau ${q.durationMinutes || 45}p` : 'Không giới hạn')}</span>
+                        </span>
+                        {canManage && (
+                            <button
+                                type="button"
+                                onClick={(e) => { e.stopPropagation(); openScheduleModal(q); }}
+                                className="text-[9px] font-black text-blue-600 hover:text-blue-800 underline ml-1 cursor-pointer"
+                                title="Thay đổi giờ mở / đóng phòng thi"
+                            >
+                                Đổi lịch
+                            </button>
+                        )}
+                    </div>
+                ) : null}
+
                 {/* Thông tin phụ: Tác giả, Thời lượng, Niên khóa */}
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[10px] text-slate-500 font-bold pt-0.5">
                     {q.createdByName ? (
@@ -335,6 +363,14 @@ const QuizCardItem = React.memo(function QuizCardItem({
                         {canManage && (
                             <>
                                 <button 
+                                    onClick={(e) => { e.stopPropagation(); openScheduleModal(q); }} 
+                                    className="px-2 py-1.5 bg-blue-50 border border-blue-200 text-blue-700 rounded-lg hover:bg-blue-600 hover:text-white shadow-xs transition-all flex items-center gap-1 text-[9px] font-black cursor-pointer" 
+                                    title="Hẹn giờ mở / đóng phòng thi"
+                                >
+                                    <Clock size={11}/>
+                                    <span>Hẹn giờ</span>
+                                </button>
+                                <button 
                                     onClick={(e) => { e.stopPropagation(); onEdit(q); }} 
                                     className="px-2 py-1.5 bg-slate-900 text-white rounded-lg hover:bg-blue-600 shadow-xs transition-all flex items-center gap-1 text-[9px] font-black" 
                                     title="Sửa đề thi"
@@ -382,7 +418,7 @@ const QuizCardItem = React.memo(function QuizCardItem({
 
 export default function QuizList({ 
     quizzes, results, chapters, classes = [], currentUser, teachers = [],
-    onEdit, onDelete, onPreview, onAssignClasses, onToggleShare,
+    onEdit, onDelete, onPreview, onAssignClasses, onToggleShare, onUpdateSchedule,
     qSearch, setQSearch, qGradeFilter, setQGradeFilter,
     qChapterFilter, setQChapterFilter,
     qSubjectFilter: propSubjectFilter,
@@ -678,6 +714,46 @@ export default function QuizList({
         setAssignSearchClass('');
     }, []);
 
+    const [schedulingQuiz, setSchedulingQuiz] = useState<Quiz | null>(null);
+    const [scheduleStartTime, setScheduleStartTime] = useState<string>('');
+    const [scheduleEndTime, setScheduleEndTime] = useState<string>('');
+    const [isSavingSchedule, setIsSavingSchedule] = useState<boolean>(false);
+    const [scheduleSuccessMsg, setScheduleSuccessMsg] = useState<string | null>(null);
+
+    const openScheduleModal = useCallback((q: Quiz) => {
+        setSchedulingQuiz(q);
+        setScheduleStartTime(formatToDatetimeLocal(q.startTime));
+        setScheduleEndTime(formatToDatetimeLocal(q.endTime));
+        setScheduleSuccessMsg(null);
+    }, []);
+
+    const handleSaveSchedule = async () => {
+        if (!schedulingQuiz) return;
+        setIsSavingSchedule(true);
+        try {
+            const cleanStart = scheduleStartTime ? scheduleStartTime.trim() : null;
+            const cleanEnd = scheduleEndTime ? scheduleEndTime.trim() : null;
+            if (onUpdateSchedule) {
+                await onUpdateSchedule(schedulingQuiz.id, cleanStart, cleanEnd);
+            } else {
+                await updateQuizSchedule(schedulingQuiz.id, cleanStart, cleanEnd);
+            }
+            // Update quiz reference in place so card badge updates immediately
+            schedulingQuiz.startTime = cleanStart || '';
+            schedulingQuiz.endTime = cleanEnd || '';
+            setScheduleSuccessMsg("Đã lưu khung thời gian mở đề thi thành công!");
+            setTimeout(() => {
+                setSchedulingQuiz(null);
+                setScheduleSuccessMsg(null);
+            }, 800);
+        } catch (err: any) {
+            console.error("Lỗi khi lưu thời gian mở đề:", err);
+            alert("Lỗi khi lưu thời gian mở đề: " + (err.message || "Không thể cập nhật"));
+        } finally {
+            setIsSavingSchedule(false);
+        }
+    };
+
     const handleSaveAssignment = async () => {
         if (!assigningQuiz) return;
         setIsSavingAssign(true);
@@ -946,6 +1022,7 @@ export default function QuizList({
                             onEdit={onEdit}
                             onDelete={onDelete}
                             openAssignModal={openAssignModal}
+                            openScheduleModal={openScheduleModal}
                             copyQuizLink={copyQuizLink}
                             handleSetAcademicYear={handleSetAcademicYear}
                             handleToggleShare={handleToggleShare}
@@ -1180,6 +1257,232 @@ export default function QuizList({
                                     <>
                                         <Check size={16}/>
                                         <span>Lưu Phân Công Giao Đề</span>
+                                    </>
+                                )}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Modal Hẹn giờ Mở / Đóng Đề Thi */}
+            {schedulingQuiz && (
+                <div className="fixed inset-0 z-[5500] bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4">
+                    <div className="bg-white rounded-3xl max-w-xl w-full max-h-[90vh] flex flex-col shadow-2xl overflow-hidden border border-slate-200 animate-in fade-in zoom-in-95 duration-200">
+                        {/* Header Modal */}
+                        <div className="p-5 bg-slate-900 text-white flex items-center justify-between shrink-0">
+                            <div className="flex items-center gap-3">
+                                <div className="p-3 rounded-2xl bg-blue-600 text-white shadow-lg">
+                                    <Clock size={24}/>
+                                </div>
+                                <div>
+                                    <h3 className="text-base font-black uppercase tracking-tight leading-tight">
+                                        HẸN GIỜ MỞ / ĐÓNG ĐỀ THI
+                                    </h3>
+                                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-0.5">
+                                        {schedulingQuiz.type === 'test' ? 'Chế độ Làm bài tính điểm' : 'Chế độ Luyện tập'} • {schedulingQuiz.durationMinutes || 45} phút
+                                    </p>
+                                </div>
+                            </div>
+                            <button 
+                                onClick={() => setSchedulingQuiz(null)}
+                                className="p-2.5 bg-slate-800 hover:bg-rose-600 rounded-xl text-slate-400 hover:text-white transition-colors cursor-pointer"
+                            >
+                                <X size={20}/>
+                            </button>
+                        </div>
+
+                        {/* Body Modal */}
+                        <div className="p-6 overflow-y-auto space-y-5 custom-scrollbar">
+                            {/* Quiz info banner */}
+                            <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-2xl">
+                                <span className="text-xs font-black uppercase text-slate-800 line-clamp-1">
+                                    {schedulingQuiz.title}
+                                </span>
+                                <div className="flex items-center gap-2 text-[10px] text-slate-500 font-bold mt-1">
+                                    <span>Khối {schedulingQuiz.grade}</span>
+                                    {schedulingQuiz.subject && <span>• Môn {schedulingQuiz.subject}</span>}
+                                    <span>• {schedulingQuiz.questionCount || 0} câu</span>
+                                </div>
+                            </div>
+
+                            {/* Nút bấm nhanh (Presets) */}
+                            <div className="space-y-2">
+                                <label className="text-[10px] font-black text-slate-500 uppercase tracking-wider">
+                                    ⚡ Thiết lập nhanh khung giờ
+                                </label>
+                                <div className="flex flex-wrap gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            const now = new Date();
+                                            const formatted = formatToDatetimeLocal(now.toISOString());
+                                            setScheduleStartTime(formatted);
+                                            setScheduleEndTime(formatted);
+                                        }}
+                                        className="px-3 py-1.5 bg-blue-50 border border-blue-200 text-blue-700 hover:bg-blue-100 rounded-xl text-[10px] font-black uppercase transition-all flex items-center gap-1 cursor-pointer"
+                                    >
+                                        <Zap size={12}/> Bắt đầu ngay
+                                    </button>
+                                    <button
+                                        type="button"
+                                        disabled={!scheduleStartTime}
+                                        onClick={() => setScheduleEndTime(scheduleStartTime)}
+                                        className={`px-3 py-1.5 rounded-xl text-[10px] font-black uppercase transition-all cursor-pointer ${
+                                            scheduleEndTime && scheduleEndTime === scheduleStartTime
+                                                ? 'bg-blue-600 text-white shadow-md'
+                                                : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100 disabled:opacity-40'
+                                        }`}
+                                    >
+                                        🎯 Đặt X = Y (Thi đồng loạt)
+                                    </button>
+                                    <button
+                                        type="button"
+                                        disabled={!scheduleStartTime}
+                                        onClick={() => {
+                                            const d = new Date(scheduleStartTime || Date.now());
+                                            d.setMinutes(d.getMinutes() + 30);
+                                            setScheduleEndTime(formatToDatetimeLocal(d.toISOString()));
+                                        }}
+                                        className="px-3 py-1.5 bg-white border border-slate-200 text-slate-600 hover:bg-slate-100 rounded-xl text-[10px] font-black uppercase transition-all disabled:opacity-40 cursor-pointer"
+                                    >
+                                        +30 phút
+                                    </button>
+                                    <button
+                                        type="button"
+                                        disabled={!scheduleStartTime}
+                                        onClick={() => {
+                                            const d = new Date(scheduleStartTime || Date.now());
+                                            d.setHours(d.getHours() + 1);
+                                            setScheduleEndTime(formatToDatetimeLocal(d.toISOString()));
+                                        }}
+                                        className="px-3 py-1.5 bg-white border border-slate-200 text-slate-600 hover:bg-slate-100 rounded-xl text-[10px] font-black uppercase transition-all disabled:opacity-40 cursor-pointer"
+                                    >
+                                        +1 giờ
+                                    </button>
+                                    <button
+                                        type="button"
+                                        disabled={!scheduleStartTime}
+                                        onClick={() => {
+                                            const d = new Date(scheduleStartTime || Date.now());
+                                            d.setHours(d.getHours() + 2);
+                                            setScheduleEndTime(formatToDatetimeLocal(d.toISOString()));
+                                        }}
+                                        className="px-3 py-1.5 bg-white border border-slate-200 text-slate-600 hover:bg-slate-100 rounded-xl text-[10px] font-black uppercase transition-all disabled:opacity-40 cursor-pointer"
+                                    >
+                                        +2 giờ
+                                    </button>
+                                    <button
+                                        type="button"
+                                        disabled={!scheduleStartTime}
+                                        onClick={() => {
+                                            const d = new Date(scheduleStartTime || Date.now());
+                                            d.setHours(23, 59, 0, 0);
+                                            setScheduleEndTime(formatToDatetimeLocal(d.toISOString()));
+                                        }}
+                                        className="px-3 py-1.5 bg-white border border-slate-200 text-slate-600 hover:bg-slate-100 rounded-xl text-[10px] font-black uppercase transition-all disabled:opacity-40 cursor-pointer"
+                                    >
+                                        Hết ngày (23:59)
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            setScheduleStartTime('');
+                                            setScheduleEndTime('');
+                                        }}
+                                        className="px-3 py-1.5 bg-rose-50 border border-rose-200 text-rose-600 hover:bg-rose-100 rounded-xl text-[10px] font-black uppercase transition-all cursor-pointer"
+                                    >
+                                        ✕ Mở tự do (Xóa giờ)
+                                    </button>
+                                </div>
+                            </div>
+
+                            {/* Inputs datetime */}
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                <div className="space-y-1.5">
+                                    <label className="text-[10px] font-black text-blue-600 uppercase flex items-center gap-1.5">
+                                        <Clock size={12}/> Giờ mở phòng thi (Mốc X)
+                                    </label>
+                                    <input 
+                                        type="datetime-local" 
+                                        className="w-full border-2 border-blue-200 rounded-2xl p-3 text-xs font-black bg-white focus:border-blue-500 outline-none shadow-xs" 
+                                        value={formatToDatetimeLocal(scheduleStartTime)} 
+                                        onChange={e => {
+                                            setScheduleStartTime(e.target.value);
+                                            if (!scheduleEndTime) setScheduleEndTime(e.target.value);
+                                        }} 
+                                    />
+                                    <p className="text-[9px] text-slate-400 font-bold">Học sinh bắt đầu được vào làm bài từ giờ này.</p>
+                                </div>
+                                <div className="space-y-1.5">
+                                    <label className="text-[10px] font-black text-indigo-600 uppercase flex items-center gap-1.5">
+                                        <Timer size={12}/> Giờ đóng phòng thi (Mốc Y)
+                                    </label>
+                                    <input 
+                                        type="datetime-local" 
+                                        className="w-full border-2 border-indigo-200 rounded-2xl p-3 text-xs font-black bg-white focus:border-indigo-500 outline-none shadow-xs" 
+                                        value={formatToDatetimeLocal(scheduleEndTime)} 
+                                        onChange={e => setScheduleEndTime(e.target.value)} 
+                                    />
+                                    <p className="text-[9px] text-slate-400 font-bold">Sau giờ này học sinh không thể vào làm bài mới.</p>
+                                </div>
+                            </div>
+
+                            {/* Giải thích trạng thái thời gian */}
+                            {scheduleStartTime ? (
+                                scheduleEndTime && scheduleStartTime !== scheduleEndTime && new Date(scheduleEndTime) > new Date(scheduleStartTime) ? (
+                                    <div className="bg-emerald-50 border border-emerald-200 p-3.5 rounded-2xl text-xs text-emerald-900 leading-relaxed font-medium">
+                                        <p className="font-black uppercase text-[11px] text-emerald-800 mb-0.5">
+                                            ✅ Khung giờ mở linh hoạt
+                                        </p>
+                                        Học sinh có thể vào thi bất kỳ lúc nào từ <b>{new Date(scheduleStartTime).toLocaleString('vi-VN')}</b> đến <b>{new Date(scheduleEndTime).toLocaleString('vi-VN')}</b> và đều có trọn vẹn <b>{schedulingQuiz.durationMinutes || 45} phút</b> làm bài.
+                                    </div>
+                                ) : (
+                                    <div className="bg-amber-50 border border-amber-200 p-3.5 rounded-2xl text-xs text-amber-900 leading-relaxed font-medium">
+                                        <p className="font-black uppercase text-[11px] text-amber-800 mb-0.5">
+                                            🎯 Thi đồng loạt (X = Y)
+                                        </p>
+                                        Phòng thi mở lúc <b>{new Date(scheduleStartTime).toLocaleString('vi-VN')}</b>. Tất cả học sinh nộp bài trước hạn chót sau <b>{schedulingQuiz.durationMinutes || 45} phút</b>. Vào trễ sẽ bị trừ thời gian làm bài.
+                                    </div>
+                                )
+                            ) : (
+                                <div className="bg-slate-50 border border-slate-200 p-3.5 rounded-2xl text-xs text-slate-600 font-medium">
+                                    💡 <b>Mở tự do:</b> Đề thi sẽ mở liên tục cho học sinh sau khi công khai, không bị giới hạn giờ mở hay đóng.
+                                </div>
+                            )}
+
+                            {scheduleSuccessMsg && (
+                                <div className="p-3 bg-emerald-100 border border-emerald-300 text-emerald-800 rounded-xl text-xs font-bold flex items-center gap-2">
+                                    <CheckCircle2 size={16} className="text-emerald-600"/>
+                                    <span>{scheduleSuccessMsg}</span>
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Footer Modal */}
+                        <div className="p-4 bg-slate-50 border-t border-slate-200 flex justify-end items-center gap-3 shrink-0">
+                            <button
+                                type="button"
+                                onClick={() => setSchedulingQuiz(null)}
+                                className="px-5 py-2.5 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-xl text-xs font-black uppercase transition-all cursor-pointer"
+                            >
+                                Hủy bỏ
+                            </button>
+                            <button
+                                type="button"
+                                disabled={isSavingSchedule}
+                                onClick={handleSaveSchedule}
+                                className="px-6 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-black uppercase transition-all shadow-lg active:scale-95 disabled:opacity-50 flex items-center gap-2 cursor-pointer"
+                            >
+                                {isSavingSchedule ? (
+                                    <>
+                                        <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"/>
+                                        <span>Đang lưu...</span>
+                                    </>
+                                ) : (
+                                    <>
+                                        <Check size={16}/>
+                                        <span>Lưu Thời Gian Mở Đề</span>
                                     </>
                                 )}
                             </button>
