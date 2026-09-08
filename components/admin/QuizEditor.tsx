@@ -2017,7 +2017,7 @@ export default function QuizEditor(props: QuizEditorProps) {
                                     onClick={() => {
                                         const d = new Date(props.startTime);
                                         d.setMinutes(d.getMinutes() + 30);
-                                        props.setEndTime(formatToDatetimeLocal(d.toISOString()));
+                                        props.setEndTime(formatToDatetimeLocal(d));
                                     }}
                                     className="px-3 py-1.5 bg-white border border-slate-200 text-slate-600 hover:bg-slate-100 rounded-xl text-[10px] font-black uppercase transition-all"
                                 >
@@ -2028,7 +2028,7 @@ export default function QuizEditor(props: QuizEditorProps) {
                                     onClick={() => {
                                         const d = new Date(props.startTime);
                                         d.setHours(d.getHours() + 1);
-                                        props.setEndTime(formatToDatetimeLocal(d.toISOString()));
+                                        props.setEndTime(formatToDatetimeLocal(d));
                                     }}
                                     className="px-3 py-1.5 bg-white border border-slate-200 text-slate-600 hover:bg-slate-100 rounded-xl text-[10px] font-black uppercase transition-all"
                                 >
@@ -2039,7 +2039,7 @@ export default function QuizEditor(props: QuizEditorProps) {
                                     onClick={() => {
                                         const d = new Date(props.startTime);
                                         d.setHours(d.getHours() + 2);
-                                        props.setEndTime(formatToDatetimeLocal(d.toISOString()));
+                                        props.setEndTime(formatToDatetimeLocal(d));
                                     }}
                                     className="px-3 py-1.5 bg-white border border-slate-200 text-slate-600 hover:bg-slate-100 rounded-xl text-[10px] font-black uppercase transition-all"
                                 >
@@ -2050,7 +2050,7 @@ export default function QuizEditor(props: QuizEditorProps) {
                                     onClick={() => {
                                         const d = new Date(props.startTime);
                                         d.setHours(23, 59, 0, 0);
-                                        props.setEndTime(formatToDatetimeLocal(d.toISOString()));
+                                        props.setEndTime(formatToDatetimeLocal(d));
                                     }}
                                     className="px-3 py-1.5 bg-white border border-slate-200 text-slate-600 hover:bg-slate-100 rounded-xl text-[10px] font-black uppercase transition-all"
                                 >
