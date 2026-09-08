@@ -7,7 +7,7 @@ import AIProgressTimelineModal, { TimelineStepItem } from './AIProgressTimelineM
 import { 
     Sparkles, Database, LayoutTemplate, Loader2, AlertTriangle, PlusCircle, 
     FileUp, Key, Eye, EyeOff, Check, RotateCcw, ChevronDown, ChevronRight, 
-    BookOpen, Layers, Info, FileText, CheckCircle2
+    BookOpen, Layers, Info, FileText, CheckCircle2, X
 } from 'lucide-react';
 
 interface AIRendererProps {
@@ -693,6 +693,29 @@ export default function AIRenderer({
 
             {/* KHUNG NỘI DUNG CHÍNH */}
             <div className="bg-white p-6 sm:p-8 rounded-[2.5rem] border border-slate-200 shadow-sm space-y-8">
+                {/* THÔNG BÁO LỖI (NẾU CÓ) */}
+                {errorMsg && (
+                    <div className="p-4 bg-red-50 border border-red-200 rounded-2xl flex items-start justify-between gap-3 text-red-800 text-xs shadow-sm animate-fade-in">
+                        <div className="flex items-start gap-2.5">
+                            <AlertTriangle size={18} className="text-red-600 shrink-0 mt-0.5" />
+                            <div className="space-y-1">
+                                <p className="font-bold whitespace-pre-line leading-relaxed">{errorMsg}</p>
+                                <p className="text-[11px] text-red-600 font-medium">
+                                    💡 Gợi ý: Nếu hệ thống báo tải cao (503/429), bạn có thể đợi 5-10 giây rồi bấm tạo lại, hoặc bấm <b>"Gemini Key"</b> ở góc trên để cấu hình API Key riêng cho mình.
+                                </p>
+                            </div>
+                        </div>
+                        <button
+                            type="button"
+                            onClick={() => setErrorMsg(null)}
+                            className="text-red-400 hover:text-red-700 p-1 rounded-lg hover:bg-red-100 transition"
+                            title="Đóng thông báo"
+                        >
+                            <X size={16} />
+                        </button>
+                    </div>
+                )}
+
                 {/* HEADER TỪNG TAB */}
                 <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6 pb-6 border-b border-slate-100">
                     <div className="space-y-2">
