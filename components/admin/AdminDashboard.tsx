@@ -1845,7 +1845,8 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
                 <AIRenderer 
                     grade={quizGrade} 
                     setGrade={setQuizGrade} 
-                    subject={quizSubject || currentUser?.subject || 'Toán'}
+                    subject={quizSubject || currentUser?.subject || 'Vật lí'}
+                    setSubject={setQuizSubject}
                     chapters={accessibleChapters}
                     bankQuestions={accessibleBankQuestions}
                     onOpenEditor={() => { setActiveTab('quizzes'); setIsEditingQuiz(true); }}
