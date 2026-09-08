@@ -14,7 +14,8 @@ import {
   deduplicateBankQuestions,
   assignQuizToClasses,
   updateQuizSchedule,
-  formatToDatetimeLocal
+  formatToDatetimeLocal,
+  normalizeDateTimeForStorage
 } from '../../services/storage';
 import { generateQuizFromPrompt, parseQuestionsFromPDF, parseQuestionsFromText } from '../../services/gemini';
 import { normalizeFullText } from '../../services/vietnameseFixer';
@@ -736,13 +737,15 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
 
   const handleUpdateQuizSchedule = async (quizId: string, newStartTime: string | null, newEndTime: string | null) => {
     try {
-      await updateQuizSchedule(quizId, newStartTime, newEndTime);
+      const cleanStart = normalizeDateTimeForStorage(newStartTime) || '';
+      const cleanEnd = normalizeDateTimeForStorage(newEndTime) || '';
+      await updateQuizSchedule(quizId, cleanStart, cleanEnd);
       setQuizzes(prev => prev.map(q => {
         if (q.id === quizId) {
           return {
             ...q,
-            startTime: newStartTime || '',
-            endTime: newEndTime || ''
+            startTime: cleanStart,
+            endTime: cleanEnd
           };
         }
         return q;
@@ -1022,8 +1025,8 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
       durationMinutes: duration, 
       orderIndex, 
       category, 
-      startTime, 
-      endTime,
+      startTime: normalizeDateTimeForStorage(startTime) || '', 
+      endTime: normalizeDateTimeForStorage(endTime) || '',
       targetType: finalTargetType, 
       assignedClassIds: finalTargetType === 'all' ? [] : (assignedClassIds || []),
       questions: questions.map(q => ({
