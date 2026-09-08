@@ -2,6 +2,7 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { User, Quiz, Result, Chapter, Question, ExamSession, PublishedResult, Grade, ClassRoom } from '../types';
 import { getSavedSupabaseConfig } from './supabaseMigration';
 import { normalizeDateTimeForStorage } from './dateUtils';
+import { normalizeSubject } from './subjectUtils';
 import { v4 as uuidv4 } from 'uuid';
 
 let _supabaseClient: SupabaseClient | null = null;
@@ -463,11 +464,41 @@ export const supabaseDb = {
   },
 
   // BANK QUESTIONS
-  async getBankQuestions(): Promise<Question[]> {
+  async getBankQuestions(filters?: { subject?: string; grade?: string; limit?: number; offset?: number }): Promise<Question[]> {
     const client = getSupabase();
     if (!client) return [];
-    const { data, error } = await client.from('bank_questions').select('*').order('created_at', { ascending: false });
-    if (error || !data) return [];
+    let query = client.from('bank_questions').select('*');
+
+    if (filters?.grade && filters.grade !== 'all') {
+      query = query.eq('quiz_grade', filters.grade);
+    }
+
+    if (filters?.subject && filters.subject !== 'all') {
+      const norm = normalizeSubject(filters.subject);
+      if (norm === 'vật lý') {
+        query = query.or('subject.ilike.%vật lí%,subject.ilike.%vật lý%');
+      } else if (norm === 'địa lý') {
+        query = query.or('subject.ilike.%địa lí%,subject.ilike.%địa lý%');
+      } else if (norm === 'hóa học') {
+        query = query.or('subject.ilike.%hóa%,subject.ilike.%hoá%');
+      } else {
+        query = query.ilike('subject', `%${filters.subject.trim()}%`);
+      }
+    }
+
+    if (filters?.limit) {
+      if (filters.offset !== undefined) {
+        query = query.range(filters.offset, filters.offset + filters.limit - 1);
+      } else {
+        query = query.limit(filters.limit);
+      }
+    }
+
+    const { data, error } = await query.order('created_at', { ascending: false });
+    if (error || !data) {
+      if (error) console.error("Lỗi Supabase getBankQuestions:", error);
+      return [];
+    }
     return data.map(mapBankQuestionFromDb);
   },
 
