@@ -12,7 +12,9 @@ import {
   syncAllQuizzesMetadata,
   syncQuizzesToBank,
   deduplicateBankQuestions,
-  assignQuizToClasses
+  assignQuizToClasses,
+  updateQuizSchedule,
+  formatToDatetimeLocal
 } from '../../services/storage';
 import { generateQuizFromPrompt, parseQuestionsFromPDF, parseQuestionsFromText } from '../../services/gemini';
 import { normalizeFullText } from '../../services/vietnameseFixer';
@@ -670,8 +672,8 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
         setDuration(qData.durationMinutes || 45); 
         setOrderIndex(qData.orderIndex || 1); 
         setCategory(qData.category || ''); 
-        setStartTime(qData.startTime || '');
-        setEndTime(qData.endTime || ''); 
+        setStartTime(formatToDatetimeLocal(qData.startTime));
+        setEndTime(formatToDatetimeLocal(qData.endTime)); 
         setQuestions(qData.questions || []); 
         setIsEditingQuiz(true);
         setActiveTab('quizzes');
@@ -684,6 +686,8 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
         setQuizSubject(quiz.subject || mySubject || currentUser?.subject || 'Toán');
         setQuizMaxAttempts(quiz.maxAttempts !== undefined ? quiz.maxAttempts : (quiz.type === 'test' ? 1 : 0));
         setShowResultAnswers(quiz.showResultAnswers !== false);
+        setStartTime(formatToDatetimeLocal(quiz.startTime));
+        setEndTime(formatToDatetimeLocal(quiz.endTime));
         setQuestions(quiz.questions || []);
         setIsEditingQuiz(true);
         setActiveTab('quizzes');
@@ -727,6 +731,30 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
     } catch (e: any) {
         console.error("Lỗi phân công giao đề:", e);
         showAlert("Lỗi giao đề", e.message || "Không thể lưu phân công đề thi cho lớp học.", "error");
+    }
+  };
+
+  const handleUpdateQuizSchedule = async (quizId: string, newStartTime: string | null, newEndTime: string | null) => {
+    try {
+      await updateQuizSchedule(quizId, newStartTime, newEndTime);
+      setQuizzes(prev => prev.map(q => {
+        if (q.id === quizId) {
+          return {
+            ...q,
+            startTime: newStartTime || '',
+            endTime: newEndTime || ''
+          };
+        }
+        return q;
+      }));
+      showAlert(
+        "Cập nhật lịch thi thành công",
+        "Đã lưu khung thời gian mở/đóng phòng thi cho đề thi!",
+        "success"
+      );
+    } catch (e: any) {
+      console.error("Lỗi cập nhật thời gian mở đề:", e);
+      showAlert("Lỗi cập nhật thời gian", e.message || "Không thể lưu thời gian mở đề thi.", "error");
     }
   };
 
@@ -1732,6 +1760,7 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
                         onEdit={handleEditQuiz} onDelete={handleDeleteQuiz} onPreview={handlePreviewQuiz}
                         onAssignClasses={handleAssignClasses}
                         onToggleShare={handleToggleQuizShare}
+                        onUpdateSchedule={handleUpdateQuizSchedule}
                         qSearch={qSearch} setQSearch={setQSearch} qGradeFilter={qGradeFilter} setQGradeFilter={setQGradeFilter}
                         qChapterFilter={qChapterFilter} setQChapterFilter={setQChapterFilter}
                         qSubjectFilter={qSubjectFilter} setQSubjectFilter={setQSubjectFilter}
