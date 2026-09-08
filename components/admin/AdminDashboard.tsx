@@ -154,8 +154,10 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
         setChapters(c);
         loadedTabsRef.current.add('results');
       } else if (tab === 'bank') {
+        const sub = currentUser?.subject || (bSubjectFilter !== 'all' ? bSubjectFilter : undefined);
+        const gr = (currentUser?.grade as Grade) || (bGradeFilter !== 'all' ? bGradeFilter : '12');
         const [b, c] = await Promise.all([
-          getBankQuestions(forceRefresh),
+          getBankQuestions(forceRefresh, { subject: sub, grade: gr }),
           getChapters(forceRefresh)
         ]);
         setBankQuestions(b);
@@ -320,11 +322,21 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
     return () => clearTimeout(timer);
   }, [sSearch, activeTab]);
 
-  const [bGradeFilter, setBGradeFilter] = useState<Grade | 'all'>('all');
+  const [bGradeFilter, setBGradeFilter] = useState<Grade | 'all'>(() => (currentUser?.grade as Grade) || '12');
   const [bChapterFilter, setBChapterFilter] = useState('all');
   const [bTypeFilter, setBTypeFilter] = useState<QuestionType | 'all'>('all');
   const [bSearch, setBSearch] = useState('');
-  const [bSubjectFilter, setBSubjectFilter] = useState<string>('all');
+  const [bSubjectFilter, setBSubjectFilter] = useState<string>(() => currentUser?.subject || 'Toán');
+
+  // Thông minh nhận diện môn & khối từ thông tin giáo viên đang đăng nhập
+  useEffect(() => {
+    if (currentUser?.subject && (!bSubjectFilter || bSubjectFilter === 'all')) {
+      setBSubjectFilter(currentUser.subject);
+    }
+    if (currentUser?.grade && (!bGradeFilter || bGradeFilter === 'all')) {
+      setBGradeFilter(currentUser.grade as Grade);
+    }
+  }, [currentUser?.subject, currentUser?.grade]);
 
   const isSuperAdmin = currentUser?.role === 'superadmin';
 
@@ -545,28 +557,41 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
   const [isBankOpen, setIsBankOpen] = useState(false);
   const [isBankLoading, setIsBankLoading] = useState(false);
 
-  const loadBankDataIfNeeded = useCallback(async () => {
+  const loadBankDataIfNeeded = useCallback(async (targetSub?: string, targetG?: string) => {
     if (!isDatabaseConnected()) return;
-    if (bankQuestions.length === 0) {
-      setIsBankLoading(true);
-      try {
-        const [b, c] = await Promise.all([
-          getBankQuestions(),
-          getChapters()
-        ]);
-        setBankQuestions(b);
-        if (c && c.length > 0) setChapters(c);
-      } catch (e) {
-        console.error("Lỗi tải ngân hàng câu hỏi:", e);
-      } finally {
-        setIsBankLoading(false);
-      }
+    setIsBankLoading(true);
+    try {
+      const sub = targetSub || (bSubjectFilter !== 'all' ? bSubjectFilter : (currentUser?.subject || 'Toán'));
+      const gr = targetG || (bGradeFilter !== 'all' ? bGradeFilter : ((currentUser?.grade as Grade) || '12'));
+      const [b, c] = await Promise.all([
+        getBankQuestions(false, { subject: sub, grade: gr }),
+        getChapters()
+      ]);
+      setBankQuestions(b);
+      if (c && c.length > 0) setChapters(c);
+    } catch (e) {
+      console.error("Lỗi tải ngân hàng câu hỏi:", e);
+    } finally {
+      setIsBankLoading(false);
     }
-  }, [bankQuestions.length]);
+  }, [bSubjectFilter, bGradeFilter, currentUser?.subject, currentUser?.grade]);
+
+  // Tự động nạp câu hỏi ngân hàng khi GV đổi Môn hoặc Khối (tận dụng RAM cache 0 bytes mạng)
+  useEffect(() => {
+    if ((activeTab === 'bank' || isBankOpen) && isDatabaseConnected()) {
+      const sub = bSubjectFilter !== 'all' ? bSubjectFilter : (currentUser?.subject || 'Toán');
+      const gr = bGradeFilter !== 'all' ? bGradeFilter : undefined;
+      getBankQuestions(false, { subject: sub, grade: gr }).then(res => {
+        setBankQuestions(res);
+      }).catch(err => {
+        console.error("Lỗi cập nhật câu hỏi ngân hàng theo bộ lọc:", err);
+      });
+    }
+  }, [bSubjectFilter, bGradeFilter, activeTab, isBankOpen, currentUser?.subject]);
 
   const allAvailableQuestions = useMemo(() => {
-    return bankQuestions;
-  }, [bankQuestions]);
+    return accessibleBankQuestions;
+  }, [accessibleBankQuestions]);
 
   // Hỗ trợ phím mũi tên Lên / Xuống / PageUp / PageDown để cuộn trang mượt mà trên mọi môi trường (cả Vercel & Studio)
   useEffect(() => {
@@ -1574,6 +1599,14 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
                     showAlert("Quyền hạn", `Chức năng "${tab.label}" chỉ dành riêng cho Tổng Quản Trị (SuperAdmin).`, "warning");
                     return;
                   }
+                  if (tab.id === 'bank') {
+                    if (currentUser?.subject && (!bSubjectFilter || bSubjectFilter === 'all')) {
+                      setBSubjectFilter(currentUser.subject);
+                    }
+                    if (currentUser?.grade && (!bGradeFilter || bGradeFilter === 'all')) {
+                      setBGradeFilter(currentUser.grade as Grade);
+                    }
+                  }
                   setActiveTab(tab.id as AdminTab);
                   setIsEditingQuiz(false);
                 }}
@@ -1700,8 +1733,11 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
                     onCleanLabels={handleCleanLabels}
                     onOpenBank={(type) => { 
                         setBTypeFilter(type); 
-                        setBGradeFilter(quizGrade); 
-                        loadBankDataIfNeeded();
+                        const targetG = quizGrade || (currentUser?.grade as Grade) || '12';
+                        const targetS = quizSubject || currentUser?.subject || 'Toán';
+                        setBGradeFilter(targetG); 
+                        setBSubjectFilter(targetS);
+                        loadBankDataIfNeeded(targetS, targetG);
                         setIsBankOpen(true); 
                     }}
                     onPdfExtract={handlePdfExtract} onTextExtract={handleTextExtract} onUploadImage={handleUploadImage} uploadingId={uploadingId} isAiLoading={isAiLoading}
