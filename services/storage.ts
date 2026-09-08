@@ -81,6 +81,26 @@ export function cleanUndefined<T>(obj: T): T {
   return obj;
 }
 
+export const formatToDatetimeLocal = (value?: string | null): string => {
+  if (!value) return '';
+  const str = String(value).trim();
+  if (!str) return '';
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(str)) return str;
+  try {
+    const d = new Date(str);
+    if (isNaN(d.getTime())) return '';
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const YYYY = d.getFullYear();
+    const MM = pad(d.getMonth() + 1);
+    const DD = pad(d.getDate());
+    const HH = pad(d.getHours());
+    const mm = pad(d.getMinutes());
+    return `${YYYY}-${MM}-${DD}T${HH}:${mm}`;
+  } catch {
+    return '';
+  }
+};
+
 // --- Database Usage Stats Helpers ---
 export interface DailyFirestoreStats {
   date: string;
@@ -968,6 +988,15 @@ export const getQuizzesMetadata = async (
         grade: row.grade || quiz.grade || '12',
         subject: row.subject || quiz.subject || '',
         academicYear: computedYear,
+        type: row.type || quiz.type || 'test',
+        durationMinutes: row.durationMinutes || quiz.durationMinutes || 45,
+        maxAttempts: row.maxAttempts !== undefined ? row.maxAttempts : (quiz.maxAttempts !== undefined ? quiz.maxAttempts : (row.type === 'practice' || quiz.type === 'practice' ? 0 : 1)),
+        startTime: row.startTime !== undefined ? (row.startTime || '') : (quiz.startTime || ''),
+        endTime: row.endTime !== undefined ? (row.endTime || '') : (quiz.endTime || ''),
+        showResultAnswers: row.showResultAnswers !== undefined ? Boolean(row.showResultAnswers) : (quiz.showResultAnswers !== undefined ? Boolean(quiz.showResultAnswers) : true),
+        disablePractice: row.disablePractice !== undefined ? Boolean(row.disablePractice) : Boolean(quiz.disablePractice),
+        category: row.category || quiz.category || '',
+        orderIndex: row.orderIndex !== undefined ? row.orderIndex : (quiz.orderIndex || 0),
         createdBy: row.createdBy || quiz.createdBy || '',
         createdByName: row.createdByName || quiz.createdByName || '',
         isSharedWithTeachers: isShared,
@@ -1149,6 +1178,15 @@ export const getQuizById = async (id: string, forceRefresh: boolean = false): Pr
       grade: data.grade || quiz.grade || '12',
       subject: data.subject || quiz.subject || '',
       academicYear: data.academicYear || quiz.academicYear || getQuizAcademicYear(quiz),
+      type: data.type || quiz.type || 'test',
+      durationMinutes: data.durationMinutes || quiz.durationMinutes || 45,
+      maxAttempts: data.maxAttempts !== undefined ? data.maxAttempts : (quiz.maxAttempts !== undefined ? quiz.maxAttempts : (data.type === 'practice' || quiz.type === 'practice' ? 0 : 1)),
+      startTime: data.startTime !== undefined ? (data.startTime || '') : (quiz.startTime || ''),
+      endTime: data.endTime !== undefined ? (data.endTime || '') : (quiz.endTime || ''),
+      showResultAnswers: data.showResultAnswers !== undefined ? Boolean(data.showResultAnswers) : (quiz.showResultAnswers !== undefined ? Boolean(quiz.showResultAnswers) : true),
+      disablePractice: data.disablePractice !== undefined ? Boolean(data.disablePractice) : Boolean(quiz.disablePractice),
+      category: data.category || quiz.category || '',
+      orderIndex: data.orderIndex !== undefined ? data.orderIndex : (quiz.orderIndex || 0),
       createdBy: data.createdBy || quiz.createdBy || '',
       createdByName: data.createdByName || quiz.createdByName || '',
       isSharedWithTeachers: isShared,
@@ -1499,6 +1537,9 @@ export const updateQuiz = async (enrichedQuiz: Quiz): Promise<void> => {
     localStorage.removeItem(`eduquiz_quiz_detail_${quiz.id}`);
   } catch {}
   invalidateMemoryCache('quizzes');
+  try {
+    localStorage.removeItem('eduquiz_quizzes_meta_cache');
+  } catch {}
   trackFirestoreWrite('quizzes', 1);
 };
 
@@ -1567,6 +1608,57 @@ export const updateQuizShareStatus = async (quizId: string, isShared: boolean): 
   } catch {}
 
   trackFirestoreWrite('quizzes', 1);
+};
+
+export const updateQuizSchedule = async (quizId: string, startTime: string | null, endTime: string | null): Promise<void> => {
+  const cleanStartTime = startTime && startTime.trim() ? startTime.trim() : null;
+  const cleanEndTime = endTime && endTime.trim() ? endTime.trim() : null;
+
+  if (isSupabasePrimary()) {
+    await supabaseDb.updateQuizSchedule(quizId, cleanStartTime, cleanEndTime);
+  }
+  if (db) {
+    const quizRef = doc(db, 'quizzes', quizId);
+    await updateDoc(quizRef, {
+      startTime: cleanStartTime,
+      endTime: cleanEndTime,
+      'data.startTime': cleanStartTime,
+      'data.endTime': cleanEndTime,
+      updatedAt: new Date().toISOString()
+    });
+    trackFirestoreWrite('quizzes', 1);
+  }
+
+  // Cập nhật ngay lập tức trong MemoryCache và localStorage
+  if (memoryCache.quizzesMeta?.data) {
+    memoryCache.quizzesMeta.data = memoryCache.quizzesMeta.data.map(q => 
+      q.id === quizId ? { ...q, startTime: cleanStartTime || '', endTime: cleanEndTime || '' } : q
+    );
+    try {
+      localStorage.setItem('eduquiz_quizzes_meta_cache', JSON.stringify(memoryCache.quizzesMeta.data));
+    } catch {}
+  }
+
+  if (memoryCache.quizDetails?.has(quizId)) {
+    const cached = memoryCache.quizDetails.get(quizId)!;
+    memoryCache.quizDetails.set(quizId, {
+      ...cached,
+      data: { ...cached.data, startTime: cleanStartTime || '', endTime: cleanEndTime || '' }
+    });
+  }
+
+  try {
+    const localDetailKey = `eduquiz_quiz_detail_${quizId}`;
+    const localStr = localStorage.getItem(localDetailKey);
+    if (localStr) {
+      const parsed = JSON.parse(localStr);
+      if (parsed?.data) {
+        parsed.data.startTime = cleanStartTime || '';
+        parsed.data.endTime = cleanEndTime || '';
+        localStorage.setItem(localDetailKey, JSON.stringify(parsed));
+      }
+    }
+  } catch {}
 };
 
 export const assignQuizToClasses = async (
