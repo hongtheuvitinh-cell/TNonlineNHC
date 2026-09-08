@@ -9,7 +9,7 @@ export const isCurriculumChapter = (name?: string | null): boolean => {
     const s = name.trim().toUpperCase();
     if (!s) return false;
 
-    // Danh sách từ khóa của các loại đề kiểm tra không phải là chương học
+    // Danh sách từ khóa của các loại đề kiểm tra không phải là chương học (KTTX, KTGK, KTCK, đề thi, kiểm tra định kỳ...)
     const nonCurriculumKeywords = [
         'KTTX',
         'KTGK',
@@ -26,13 +26,41 @@ export const isCurriculumChapter = (name?: string | null): boolean => {
         'THI ĐẠI HỌC',
         'LUYỆN THI ĐH',
         'THI THỬ',
-        'ĐỀ TỔNG HỢP'
+        'ĐỀ TỔNG HỢP',
+        'KIỂM TRA',
+        '15 PHÚT',
+        '15P',
+        '45 PHÚT',
+        '45P',
+        '1 TIẾT',
+        'HỌC KỲ',
+        'HỌC KÌ',
+        'HK1',
+        'HK2',
+        'GK1',
+        'GK2',
+        'CK1',
+        'CK2',
+        'TX1',
+        'TX2',
+        'TX3',
+        'TX4',
+        'ĐỀ SỐ',
+        'ĐỀ THI',
+        'ĐỀ CHÍNH THỨC',
+        'ĐỀ MINH HỌA',
+        'ĐỀ THAM KHẢO'
     ];
 
     for (const kw of nonCurriculumKeywords) {
         if (s === kw || s.includes(kw)) {
             return false;
         }
+    }
+
+    // Kiểm tra mẫu viết tắt như TX 1, GK 2, CK 1, KTTX1...
+    if (/\b(KTTX|KTGK|KTCK|TX\d+|GK\d+|CK\d+|HK\d+)\b/i.test(s)) {
+        return false;
     }
 
     return true;
