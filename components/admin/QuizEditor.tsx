@@ -21,7 +21,7 @@ import {
     solveMultipleQuestionsWithAI,
     SolveProgressUpdate
 } from '../../services/gemini';
-import { uploadBase64ToStorage, batchUploadQuizImagesToStorage } from '../../services/storage';
+import { uploadBase64ToStorage, batchUploadQuizImagesToStorage, formatToDatetimeLocal } from '../../services/storage';
 import { STANDARD_SUBJECTS, isSameSubject } from '../../services/subjectUtils';
 import { getAcademicYearOptions, getCurrentAcademicYear } from '../../services/academicUtils';
 
@@ -2002,7 +2002,7 @@ export default function QuizEditor(props: QuizEditorProps) {
                                 {props.quizType === 'test' ? 'Khung thời gian mở phòng thi & Quy chế làm bài' : 'Thời hạn Luyện tập & Xem đáp án'}
                             </h4>
                         </div>
-                        {props.quizType === 'test' && props.startTime && (
+                        {props.quizType === 'test' && props.startTime ? (
                             <div className="flex flex-wrap gap-2">
                                 <button
                                     type="button"
@@ -2017,8 +2017,7 @@ export default function QuizEditor(props: QuizEditorProps) {
                                     onClick={() => {
                                         const d = new Date(props.startTime);
                                         d.setMinutes(d.getMinutes() + 30);
-                                        const tzOffset = d.getTimezoneOffset() * 60000;
-                                        props.setEndTime(new Date(d.getTime() - tzOffset).toISOString().slice(0, 16));
+                                        props.setEndTime(formatToDatetimeLocal(d.toISOString()));
                                     }}
                                     className="px-3 py-1.5 bg-white border border-slate-200 text-slate-600 hover:bg-slate-100 rounded-xl text-[10px] font-black uppercase transition-all"
                                 >
@@ -2029,8 +2028,7 @@ export default function QuizEditor(props: QuizEditorProps) {
                                     onClick={() => {
                                         const d = new Date(props.startTime);
                                         d.setHours(d.getHours() + 1);
-                                        const tzOffset = d.getTimezoneOffset() * 60000;
-                                        props.setEndTime(new Date(d.getTime() - tzOffset).toISOString().slice(0, 16));
+                                        props.setEndTime(formatToDatetimeLocal(d.toISOString()));
                                     }}
                                     className="px-3 py-1.5 bg-white border border-slate-200 text-slate-600 hover:bg-slate-100 rounded-xl text-[10px] font-black uppercase transition-all"
                                 >
@@ -2041,8 +2039,7 @@ export default function QuizEditor(props: QuizEditorProps) {
                                     onClick={() => {
                                         const d = new Date(props.startTime);
                                         d.setHours(d.getHours() + 2);
-                                        const tzOffset = d.getTimezoneOffset() * 60000;
-                                        props.setEndTime(new Date(d.getTime() - tzOffset).toISOString().slice(0, 16));
+                                        props.setEndTime(formatToDatetimeLocal(d.toISOString()));
                                     }}
                                     className="px-3 py-1.5 bg-white border border-slate-200 text-slate-600 hover:bg-slate-100 rounded-xl text-[10px] font-black uppercase transition-all"
                                 >
@@ -2053,15 +2050,38 @@ export default function QuizEditor(props: QuizEditorProps) {
                                     onClick={() => {
                                         const d = new Date(props.startTime);
                                         d.setHours(23, 59, 0, 0);
-                                        const tzOffset = d.getTimezoneOffset() * 60000;
-                                        props.setEndTime(new Date(d.getTime() - tzOffset).toISOString().slice(0, 16));
+                                        props.setEndTime(formatToDatetimeLocal(d.toISOString()));
                                     }}
                                     className="px-3 py-1.5 bg-white border border-slate-200 text-slate-600 hover:bg-slate-100 rounded-xl text-[10px] font-black uppercase transition-all"
                                 >
                                     Hết ngày (23:59)
                                 </button>
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        props.setStartTime('');
+                                        props.setEndTime('');
+                                    }}
+                                    className="px-3 py-1.5 bg-rose-50 border border-rose-200 text-rose-600 hover:bg-rose-100 rounded-xl text-[10px] font-black uppercase transition-all"
+                                    title="Xóa giờ hẹn, phòng thi sẽ mở tự do sau khi công khai"
+                                >
+                                    ✕ Xóa hẹn giờ (Mở tự do)
+                                </button>
                             </div>
-                        )}
+                        ) : props.quizType === 'test' ? (
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    const now = new Date();
+                                    const formatted = formatToDatetimeLocal(now.toISOString());
+                                    props.setStartTime(formatted);
+                                    props.setEndTime(formatted);
+                                }}
+                                className="px-3 py-1.5 bg-blue-50 border border-blue-200 text-blue-700 hover:bg-blue-100 rounded-xl text-[10px] font-black uppercase transition-all flex items-center gap-1"
+                            >
+                                <Zap size={12}/> Bắt đầu từ bây giờ
+                            </button>
+                        ) : null}
                     </div>
 
                     {props.quizType === 'test' ? (
@@ -2074,7 +2094,7 @@ export default function QuizEditor(props: QuizEditorProps) {
                                     <input 
                                         type="datetime-local" 
                                         className="w-full border-2 border-blue-200 rounded-[1.5rem] p-4 text-xs font-black bg-white focus:border-blue-500 outline-none shadow-sm" 
-                                        value={props.startTime} 
+                                        value={formatToDatetimeLocal(props.startTime)} 
                                         onChange={e => {
                                             props.setStartTime(e.target.value);
                                             // Nếu chưa có endTime thì gán tạm endTime = startTime
@@ -2089,7 +2109,7 @@ export default function QuizEditor(props: QuizEditorProps) {
                                     <input 
                                         type="datetime-local" 
                                         className="w-full border-2 border-indigo-200 rounded-[1.5rem] p-4 text-xs font-black bg-white focus:border-indigo-500 outline-none shadow-sm" 
-                                        value={props.endTime} 
+                                        value={formatToDatetimeLocal(props.endTime)} 
                                         onChange={e => props.setEndTime(e.target.value)} 
                                     />
                                 </div>
@@ -2166,7 +2186,7 @@ export default function QuizEditor(props: QuizEditorProps) {
                                 <input 
                                     type="datetime-local" 
                                     className="w-full border-2 border-slate-200 rounded-[1.5rem] p-4 text-xs font-black bg-white focus:border-blue-300 outline-none" 
-                                    value={props.endTime} 
+                                    value={formatToDatetimeLocal(props.endTime)} 
                                     onChange={e => props.setEndTime(e.target.value)} 
                                 />
                             </div>
