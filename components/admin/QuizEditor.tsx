@@ -6,12 +6,13 @@ import {
   Target as TargetIcon, Plus, ImageIcon, Loader2, Lightbulb, Eye, ImageMinus, 
   ShieldAlert, ShieldCheck, Sparkles, Zap, Type as TypeIcon, X, Link as LinkIcon, 
   EyeOff, FileCode, GraduationCap, CheckSquare, Square, Users, Copy, Images, Check, Layers, ArrowRight,
-  Key, BookOpen, ClipboardPaste, PauseCircle, Cloud, CloudUpload, HardDrive
+  Key, BookOpen, ClipboardPaste, PauseCircle, Cloud, CloudUpload, HardDrive, Settings2
 } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 import LatexText from '../LatexText';
 import LatexEditorModal from './LatexEditorModal';
 import AIProgressTimelineModal, { TimelineStepItem } from './AIProgressTimelineModal';
+import StorageConfigModal from './StorageConfigModal';
 import { 
     parseQuestionsFromJSON, 
     classifyQuestionsIntoChapters, 
@@ -103,6 +104,7 @@ interface QuestionSectionProps {
     subject?: string;
     grade?: string;
     customApiKey?: string;
+    onOpenStorageModal?: () => void;
 }
 
 const QuestionSection: React.FC<QuestionSectionProps> = ({ 
@@ -117,7 +119,8 @@ const QuestionSection: React.FC<QuestionSectionProps> = ({
     relevantChapters,
     subject,
     grade,
-    customApiKey
+    customApiKey,
+    onOpenStorageModal
 }) => {
     const [quickPoints, setQuickPoints] = useState(type === 'mcq' ? "0.25" : "1.0");
     const [batchSectionChapter, setBatchSectionChapter] = useState('');
@@ -147,9 +150,12 @@ const QuestionSection: React.FC<QuestionSectionProps> = ({
                 nl[i].imageUrl = cloudUrl;
                 setQuestions(nl);
             }
-            alert("🎉 Đã tải ảnh lên Firebase Cloud Storage và cập nhật link thành công!");
+            alert("🎉 Đã tải ảnh lên Cloud Storage và cập nhật link thành công!");
         } catch (e: any) {
-            alert("Không thể tải ảnh lên Firebase Cloud Storage: " + (e?.message || e));
+            const msg = e?.message || '';
+            if (window.confirm(`Không thể tải ảnh lên Cloud Storage: ${msg}\n\nBạn có muốn mở bảng Cấu hình & Hướng dẫn kích hoạt Storage không?`)) {
+                onOpenStorageModal?.();
+            }
         } finally {
             setConvertingId(null);
         }
@@ -980,6 +986,16 @@ const QuestionSection: React.FC<QuestionSectionProps> = ({
                                     >
                                         <HardDrive size={10}/> Base64
                                     </button>
+                                    {onOpenStorageModal && (
+                                        <button
+                                            type="button"
+                                            onClick={onOpenStorageModal}
+                                            className="p-1 text-slate-400 hover:text-blue-600 rounded transition-colors"
+                                            title="Cấu hình & Kiểm tra kết nối Cloud Storage / ImgBB"
+                                        >
+                                            <Settings2 size={11} />
+                                        </button>
+                                    )}
                                 </div>
                             </div>
 
@@ -1239,6 +1255,18 @@ export default function QuizEditor(props: QuizEditorProps) {
     const [imageStorageMode, setImageStorageMode] = useState<'cloud' | 'base64'>(() => {
         return (localStorage.getItem('eduquiz_image_storage_mode') as any) || 'cloud';
     });
+    const [isStorageModalOpen, setIsStorageModalOpen] = useState(false);
+    const [storageWarningBanner, setStorageWarningBanner] = useState<string | null>(null);
+
+    // Lắng nghe thông báo khi upload hình ảnh bị lỗi và phải fallback về Base64
+    React.useEffect(() => {
+        const handler = (e: any) => {
+            const detail = e.detail;
+            setStorageWarningBanner(detail?.error || "Không thể tải lên Cloud Storage");
+        };
+        window.addEventListener('eduquiz_storage_upload_failed', handler);
+        return () => window.removeEventListener('eduquiz_storage_upload_failed', handler);
+    }, []);
 
     const handleStorageModeChange = (mode: 'cloud' | 'base64') => {
         setImageStorageMode(mode);
@@ -1259,7 +1287,7 @@ export default function QuizEditor(props: QuizEditorProps) {
             return;
         }
 
-        const confirm = window.confirm(`Phát hiện ${base64ImagesCount} hình ảnh trong đề thi đang lưu dưới dạng Base64. Bạn có muốn tải toàn bộ lên Firebase Cloud Storage để đề thi siêu nhẹ và lấy đường dẫn URL trực tiếp không?`);
+        const confirm = window.confirm(`Phát hiện ${base64ImagesCount} hình ảnh trong đề thi đang lưu dưới dạng Base64. Bạn có muốn tải toàn bộ lên Cloud Storage để đề thi siêu nhẹ và lấy đường dẫn URL trực tiếp không?`);
         if (!confirm) return;
 
         setIsBatchMigratingImages(true);
@@ -1270,7 +1298,13 @@ export default function QuizEditor(props: QuizEditorProps) {
                 setBatchMigrateProgress({ current, total });
             });
             props.setQuestions(res.updatedQuestions);
-            alert(`🎉 Thành công! Đã chuyển đổi ${res.successCount} ảnh lên Firebase Cloud Storage.${res.failCount > 0 ? ` (${res.failCount} ảnh chưa chuyển được do lỗi mạng)` : ''}`);
+            if (res.failCount > 0 && res.successCount === 0) {
+                if (window.confirm(`Chưa thể chuyển đổi ảnh lên Cloud Storage do lỗi: ${res.lastError || 'Storage Bucket chưa được kích hoạt trên Firebase'}.\n\nBạn có muốn mở bảng Cấu hình & Hướng dẫn kích hoạt Storage ngay không?`)) {
+                    setIsStorageModalOpen(true);
+                }
+            } else {
+                alert(`🎉 Thành công! Đã chuyển đổi ${res.successCount} ảnh lên Cloud Storage.${res.failCount > 0 ? ` (${res.failCount} ảnh chưa chuyển được)` : ''}`);
+            }
         } catch (e: any) {
             alert("Có lỗi khi chuyển đổi ảnh: " + (e?.message || e));
         } finally {
@@ -1814,6 +1848,34 @@ export default function QuizEditor(props: QuizEditorProps) {
                         </div>
                     </div>
                 </div>
+
+                {/* Cảnh báo Cloud Storage nếu có lỗi */}
+                {storageWarningBanner && (
+                    <div className="p-3 bg-amber-50 border-2 border-amber-200 rounded-2xl flex flex-wrap items-center justify-between gap-3 text-xs text-amber-900 shadow-sm animate-fade-in">
+                        <div className="flex items-center gap-2">
+                            <span className="px-2 py-0.5 bg-amber-200 text-amber-900 rounded-md font-black text-[9px] uppercase tracking-wider">Lưu ý Cloud Storage</span>
+                            <span className="font-bold text-slate-800">{storageWarningBanner}</span>
+                            <span className="text-slate-500 text-[11px] hidden md:inline">(Ảnh đã được lưu tạm an toàn dạng Base64)</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                            <button
+                                type="button"
+                                onClick={() => setIsStorageModalOpen(true)}
+                                className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-[10px] font-black uppercase transition-all shadow-sm active:scale-95"
+                            >
+                                Hướng dẫn bật Storage
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setStorageWarningBanner(null)}
+                                className="p-1 text-slate-400 hover:text-slate-700 rounded-lg"
+                                title="Đóng thông báo"
+                            >
+                                <X size={14} />
+                            </button>
+                        </div>
+                    </div>
+                )}
                 
                 {/* Lưới thông số đề thi: Gọn gàng, rõ chữ */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-7 gap-3">
@@ -2387,6 +2449,7 @@ export default function QuizEditor(props: QuizEditorProps) {
                 subject={props.subject}
                 grade={props.grade}
                 customApiKey={props.customApiKey}
+                onOpenStorageModal={() => setIsStorageModalOpen(true)}
             />
             <QuestionSection 
                 sectionTitle="PHẦN II. TRẮC NGHIỆM ĐÚNG SAI" 
@@ -2401,6 +2464,7 @@ export default function QuizEditor(props: QuizEditorProps) {
                 subject={props.subject}
                 grade={props.grade}
                 customApiKey={props.customApiKey}
+                onOpenStorageModal={() => setIsStorageModalOpen(true)}
             />
             <QuestionSection 
                 sectionTitle="PHẦN III. TRẢ LỜI NGẮN" 
@@ -2415,6 +2479,7 @@ export default function QuizEditor(props: QuizEditorProps) {
                 subject={props.subject}
                 grade={props.grade}
                 customApiKey={props.customApiKey}
+                onOpenStorageModal={() => setIsStorageModalOpen(true)}
             />
 
             {/* MODAL TIẾN TRÌNH TIMELINE THỜI GIAN THỰC KHI AI GIẢI ĐỀ THI */}
@@ -2431,6 +2496,12 @@ export default function QuizEditor(props: QuizEditorProps) {
                 logs={solveTimelineProgress.logs}
                 canClose={solveTimelineProgress.currentAction === 'error'}
                 onClose={() => setSolveTimelineProgress(prev => ({ ...prev, isOpen: false }))}
+            />
+
+            {/* MODAL CẤU HÌNH & CHẨN ĐOÁN CLOUD STORAGE */}
+            <StorageConfigModal
+                isOpen={isStorageModalOpen}
+                onClose={() => setIsStorageModalOpen(false)}
             />
         </div>
     );

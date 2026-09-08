@@ -7,6 +7,7 @@
       "dependencies": {
         "@google/genai": "^1.31.0",
         "@hungknguyen/docx-math-converter": "^1.1.4",
+        "@hungknguyen/mathml2omml": "^0.4.6",
         "@supabase/supabase-js": "^2.39.7",
         "@types/papaparse": "^5.5.2",
         "date-fns": "^4.1.0",

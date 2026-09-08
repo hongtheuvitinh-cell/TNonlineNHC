@@ -1,11 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { 
-  Database, Activity, HardDrive, RefreshCw, Download, Trash2, 
+  Database, Activity, HardDrive, RefreshCw, Download,
   CheckCircle2, AlertTriangle, ShieldCheck, Zap, Layers, 
-  ExternalLink, Server, Globe, Cpu, ArrowUpRight, Clock,
-  FileSpreadsheet, Lock, AlertCircle, BarChart3, HelpCircle,
-  Eye, TrendingUp, RotateCcw
+  Server, Cpu, BarChart3,
+  ExternalLink
 } from 'lucide-react';
+import BackupMigrationModal from './BackupMigrationModal';
 import { 
   getDatabaseMetrics, 
   pingDatabase, 
@@ -13,7 +13,6 @@ import {
   clearLocalCache,
   syncAllQuizzesMetadata,
   deduplicateBankQuestions,
-  resetDailyFirestoreStats,
   DatabaseMetrics,
   isDatabaseConnected
 } from '../../services/storage';
@@ -35,6 +34,7 @@ export default function DatabaseMonitor({
   const [isExporting, setIsExporting] = useState(false);
   const [isOptimizing, setIsOptimizing] = useState(false);
   const [lastPingTime, setLastPingTime] = useState<number | null>(null);
+  const [isBackupMigrationModalOpen, setIsBackupMigrationModalOpen] = useState(false);
 
   const fetchMetrics = async () => {
     setIsLoading(true);
@@ -54,38 +54,6 @@ export default function DatabaseMonitor({
 
   useEffect(() => {
     fetchMetrics();
-
-    // Listen to real-time firestore read/write updates
-    const handleUsageUpdate = (e: any) => {
-      const updatedDailyStats = e.detail;
-      if (updatedDailyStats) {
-        setMetrics(prev => {
-          if (!prev) return prev;
-          const readsDailyLimit = prev.quotas.readsDailyLimit || 50000;
-          const readsUsedPercent = Math.min(100, Number(((updatedDailyStats.totalReads / readsDailyLimit) * 100).toFixed(2)));
-          
-          const updatedCollections = prev.collections.map(col => ({
-            ...col,
-            readsToday: updatedDailyStats.readsByCollection[col.name] || 0
-          }));
-
-          return {
-            ...prev,
-            dailyStats: updatedDailyStats,
-            collections: updatedCollections,
-            quotas: {
-              ...prev.quotas,
-              readsUsedPercent
-            }
-          };
-        });
-      }
-    };
-
-    window.addEventListener('firestore-usage-updated', handleUsageUpdate);
-    return () => {
-      window.removeEventListener('firestore-usage-updated', handleUsageUpdate);
-    };
   }, []);
 
   const handlePingTest = async () => {
@@ -102,35 +70,13 @@ export default function DatabaseMonitor({
       }
       if (onShowAlert) {
         if (latency >= 0) {
-          onShowAlert("Kiểm tra kết nối", `Thời gian phản hồi Cloud Firestore: ${latency} ms (Trạng thái: Tốt)`, "success");
+          onShowAlert("Kiểm tra kết nối", `Thời gian phản hồi Supabase (PostgreSQL): ${latency} ms (Trạng thái: Tốt)`, "success");
         } else {
-          onShowAlert("Mất kết nối", "Không thể ping tới Cloud Firestore. Vui lòng kiểm tra mạng!", "error");
+          onShowAlert("Mất kết nối", "Không thể ping tới Supabase. Vui lòng kiểm tra mạng!", "error");
         }
       }
     } finally {
       setIsPinging(false);
-    }
-  };
-
-  const handleResetCounter = () => {
-    const doReset = () => {
-      resetDailyFirestoreStats();
-      fetchMetrics();
-      if (onShowAlert) {
-        onShowAlert("Đặt lại thành công", "Đã đặt lại bộ đếm số lượt đọc/ghi trong ngày về 0.", "success");
-      }
-    };
-
-    if (onShowConfirm) {
-      onShowConfirm(
-        "Đặt lại bộ đếm lượt đọc",
-        "Bạn có muốn đặt lại bộ đếm số lượt đọc/ghi hôm nay về 0 không?",
-        doReset
-      );
-    } else {
-      if (confirm("Bạn có muốn đặt lại bộ đếm số lượt đọc/ghi hôm nay về 0 không?")) {
-        doReset();
-      }
     }
   };
 
@@ -148,14 +94,14 @@ export default function DatabaseMonitor({
       const a = document.createElement('a');
       a.href = url;
       const dateStr = new Date().toISOString().replace(/[:.]/g, '-');
-      a.download = `eduquiz_database_backup_${dateStr}.json`;
+      a.download = `eduquiz_supabase_backup_${dateStr}.json`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
 
       if (onShowAlert) {
-        onShowAlert("Sao lưu thành công", "Đã tải xuống file bản sao lưu JSON toàn bộ Cơ sở dữ liệu EduQuiz VN!", "success");
+        onShowAlert("Sao lưu thành công", "Đã tải xuống file bản sao lưu JSON toàn bộ Cơ sở dữ liệu Supabase!", "success");
       }
     } catch (e: any) {
       if (onShowAlert) {
@@ -178,7 +124,7 @@ export default function DatabaseMonitor({
           if (onShowAlert) {
             onShowAlert(
               "Tối ưu hoàn tất",
-              `Đã tối ưu hóa CSDL:\n• Đồng bộ metadata: ${syncCount} đề thi\n• Loại bỏ câu hỏi trùng lặp trong Ngân hàng: ${dedupCount} câu\n• Giúp giảm dung lượng và tăng tốc độ tải trang!`,
+              `Đã tối ưu hóa CSDL:\n• Đồng bộ metadata: ${syncCount} đề thi\n• Loại bỏ câu hỏi trùng lặp trong Ngân hàng: ${dedupCount} câu\n• Giúp tăng tốc độ truy vấn tối đa!`,
               "success"
             );
           }
@@ -195,11 +141,11 @@ export default function DatabaseMonitor({
     if (onShowConfirm) {
       onShowConfirm(
         "Tối ưu & Dọn dẹp CSDL",
-        "Hệ thống sẽ đồng bộ lại Metadata đề thi và loại bỏ các câu hỏi trùng lặp trong Ngân hàng câu hỏi nhằm tiết kiệm dung lượng và băng thông. Tiếp tục?",
+        "Hệ thống sẽ đồng bộ lại Metadata đề thi và loại bỏ các câu hỏi trùng lặp trong Ngân hàng câu hỏi nhằm tăng tốc độ truy vấn. Tiếp tục?",
         confirmAction
       );
     } else {
-      if (confirm("Hệ thống sẽ đồng bộ lại Metadata đề thi và loại bỏ các câu hỏi trùng lặp trong Ngân hàng câu hỏi nhằm tiết kiệm dung lượng và băng thông. Tiếp tục?")) {
+      if (confirm("Hệ thống sẽ đồng bộ lại Metadata đề thi và loại bỏ các câu hỏi trùng lặp trong Ngân hàng câu hỏi. Tiếp tục?")) {
         confirmAction();
       }
     }
@@ -213,7 +159,7 @@ export default function DatabaseMonitor({
     if (onShowConfirm) {
       onShowConfirm(
         "Xóa bộ nhớ đệm (Cache)",
-        "Thao tác này sẽ xóa sạch cache tạm thời trên trình duyệt máy bạn và tải lại ứng dụng. Dữ liệu trên Cloud Firestore sẽ không bị ảnh hưởng. Bạn có muốn tiếp tục?",
+        "Thao tác này sẽ xóa sạch cache tạm thời trên trình duyệt máy bạn và tải lại ứng dụng. Dữ liệu trên Supabase sẽ không bị ảnh hưởng. Bạn có muốn tiếp tục?",
         doClear
       );
     } else {
@@ -236,19 +182,26 @@ export default function DatabaseMonitor({
 
   return (
     <div className="space-y-8 animate-fadeIn">
-      {/* Header */}
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white p-6 rounded-2xl border border-slate-200/80 shadow-sm">
+      {/* Header & Quick Actions */}
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white p-6 rounded-3xl border border-slate-200/80 shadow-sm">
         <div>
           <div className="flex items-center gap-3">
-            <div className="p-2.5 bg-blue-50 text-blue-600 rounded-xl">
+            <div className="p-2.5 bg-emerald-50 text-emerald-600 rounded-2xl">
               <Database size={24} />
             </div>
             <div>
-              <h1 className="text-xl font-black text-slate-800 uppercase tracking-tight">
-                Giám sát CSDL & Băng thông
-              </h1>
+              <div className="flex flex-wrap items-center gap-2.5">
+                <h1 className="text-xl font-black text-slate-800 uppercase tracking-tight">
+                  Quản lý CSDL Supabase
+                </h1>
+                
+                <span className="inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-black bg-emerald-600 text-white shadow-xs">
+                  <CheckCircle2 size={13} />
+                  <span>Supabase (PostgreSQL) - Không giới hạn</span>
+                </span>
+              </div>
               <p className="text-xs font-bold text-slate-500 mt-0.5">
-                Theo dõi tình trạng kết nối, dung lượng lưu trữ, lưu lượng mạng và hạn mức Cloud Firestore
+                Cơ sở dữ liệu đám mây PostgreSQL tốc độ cao, hoàn toàn không bị giới hạn lượt đọc
               </p>
             </div>
           </div>
@@ -260,9 +213,9 @@ export default function DatabaseMonitor({
             onClick={handlePingTest}
             disabled={isPinging || isLoading}
             className="flex items-center gap-2 px-3.5 py-2.5 bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 rounded-xl font-black text-[11px] uppercase transition-all shadow-sm active:scale-95 disabled:opacity-50"
-            title="Đo thời gian phản hồi thực tế tới Cloud Firestore"
+            title="Đo thời gian phản hồi thực tế tới Supabase"
           >
-            <Activity size={15} className={`text-blue-600 ${isPinging ? 'animate-spin' : ''}`} />
+            <Activity size={15} className={`text-emerald-600 ${isPinging ? 'animate-spin' : ''}`} />
             <span>{isPinging ? 'Đang Ping...' : 'Kiểm tra Ping'}</span>
           </button>
 
@@ -281,13 +234,24 @@ export default function DatabaseMonitor({
             <>
               <button
                 type="button"
+                onClick={() => setIsBackupMigrationModalOpen(true)}
+                disabled={isLoading}
+                className="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white rounded-xl font-black text-[11px] uppercase transition-all shadow-md active:scale-95 disabled:opacity-50"
+                title="Trung tâm Sao lưu JSON, Khôi phục và Nhập xuất CSDL"
+              >
+                <Server size={15} className="text-emerald-200" />
+                <span>Sao lưu & Di chuyển CSDL</span>
+              </button>
+
+              <button
+                type="button"
                 onClick={handleExportBackup}
                 disabled={isExporting || isLoading || !isConnected}
-                className="flex items-center gap-2 px-4 py-2.5 bg-emerald-600 text-white hover:bg-emerald-700 rounded-xl font-black text-[11px] uppercase transition-all shadow-md active:scale-95 disabled:opacity-50"
-                title="Tải về file sao lưu JSON toàn bộ dữ liệu"
+                className="flex items-center gap-2 px-4 py-2.5 bg-emerald-700 text-white hover:bg-emerald-800 rounded-xl font-black text-[11px] uppercase transition-all shadow-md active:scale-95 disabled:opacity-50"
+                title="Tải về file sao lưu JSON toàn bộ dữ liệu từ Supabase"
               >
                 <Download size={15} className={isExporting ? 'animate-bounce' : ''} />
-                <span>{isExporting ? 'Đang xuất...' : 'Sao lưu CSDL (JSON)'}</span>
+                <span>{isExporting ? 'Đang xuất...' : 'Xuất JSON (Backup)'}</span>
               </button>
 
               <button
@@ -305,117 +269,42 @@ export default function DatabaseMonitor({
         </div>
       </div>
 
-      {/* Daily Quota & Read Counter Banner */}
-      <div className="bg-gradient-to-r from-blue-900 via-indigo-900 to-slate-900 text-white p-6 rounded-3xl shadow-lg border border-blue-800/50 relative overflow-hidden">
-        <div className="absolute right-0 top-0 translate-x-10 -translate-y-10 w-64 h-64 bg-blue-500/10 rounded-full blur-3xl pointer-events-none" />
+      {/* Supabase PostgreSQL Status Banner */}
+      <div className="bg-gradient-to-r from-emerald-950 via-slate-900 to-teal-950 text-white p-6 rounded-3xl shadow-lg border border-emerald-800/50 relative overflow-hidden">
+        <div className="absolute right-0 top-0 translate-x-10 -translate-y-10 w-64 h-64 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
         <div className="relative z-10 flex flex-col lg:flex-row items-start lg:items-center justify-between gap-6">
-          <div className="space-y-2 max-w-xl">
-            <div className="inline-flex items-center gap-2 px-3 py-1 bg-blue-500/20 text-blue-300 rounded-full text-[11px] font-black uppercase tracking-wider border border-blue-400/30">
-              <Eye size={13} className="text-blue-400" />
-              <span>Giám sát Lượt đọc Firestore trong ngày (Real-time)</span>
+          <div className="space-y-2 max-w-2xl">
+            <div className="inline-flex items-center gap-2 px-3 py-1 bg-emerald-500/20 text-emerald-300 rounded-full text-[11px] font-black uppercase tracking-wider border border-emerald-400/30">
+              <ShieldCheck size={13} className="text-emerald-400" />
+              <span>Hệ thống vận hành 100% trên Supabase PostgreSQL</span>
             </div>
             <h2 className="text-2xl font-black tracking-tight text-white flex items-baseline gap-2">
-              <span>{(metrics?.dailyStats?.totalReads || 0).toLocaleString()}</span>
-              <span className="text-base font-normal text-blue-200">/ 50,000 lượt đọc hôm nay</span>
+              <span>Truy vấn không giới hạn (Unlimited Reads & Writes)</span>
             </h2>
-            <p className="text-xs text-blue-100/80 leading-relaxed">
-              Hạn mức miễn phí là <strong className="text-white">50,000 lượt đọc/ngày</strong> (Google Cloud tự động Reset lúc <strong className="text-amber-300">14:00 - 15:00 giờ Việt Nam</strong>). 
-              Hệ thống kích hoạt <strong>Cache bộ nhớ RAM (5 phút)</strong> và <strong>Phân trang</strong> để giảm thiểu tối đa lượt đọc không cần thiết.
+            <p className="text-xs text-emerald-100/80 leading-relaxed">
+              Toàn bộ dữ liệu đề thi, câu hỏi, tài khoản người dùng và kết quả nộp bài của học sinh được lưu trữ an toàn trên máy chủ quan hệ PostgreSQL. 
+              Bạn có thể tổ chức thi cho hàng nghìn học sinh cùng lúc với tốc độ xử lý tức thời và độ ổn định cao.
             </p>
           </div>
 
-          <div className="w-full lg:w-80 bg-white/10 backdrop-blur-md p-4 rounded-2xl border border-white/15 space-y-3 shrink-0">
+          <div className="w-full lg:w-80 bg-white/10 backdrop-blur-md p-4 rounded-2xl border border-white/15 space-y-2.5 shrink-0">
             <div className="flex justify-between items-center text-xs">
-              <span className="text-blue-200 font-bold">Hạn mức đã dùng:</span>
-              <span className="font-black text-amber-300 text-sm">
-                {metrics?.quotas?.readsUsedPercent || 0}%
+              <span className="text-emerald-200 font-bold">Trạng thái CSDL:</span>
+              <span className="font-black text-emerald-300 text-sm flex items-center gap-1.5">
+                <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
+                <span>Trực tuyến (Online)</span>
               </span>
             </div>
 
-            <div className="w-full bg-black/40 h-2.5 rounded-full overflow-hidden p-0.5 border border-white/10">
-              <div 
-                className={`h-full rounded-full transition-all duration-500 ${
-                  (metrics?.quotas?.readsUsedPercent || 0) > 80 
-                    ? 'bg-red-500' 
-                    : (metrics?.quotas?.readsUsedPercent || 0) > 50 
-                    ? 'bg-amber-400' 
-                    : 'bg-emerald-400'
-                }`}
-                style={{ width: `${Math.max(1, metrics?.quotas?.readsUsedPercent || 0)}%` }}
-              />
+            <div className="pt-2 border-t border-white/10 flex justify-between items-center text-[11px] text-emerald-100">
+              <span>Độ trễ Ping:</span>
+              <strong className="text-white font-black">{lastPingTime !== null && lastPingTime >= 0 ? `${lastPingTime} ms` : 'Tốt'}</strong>
             </div>
 
-            <div className="flex justify-between items-center text-[11px] text-blue-200/90 pt-1 border-t border-white/10 font-medium">
-              <span>Còn lại: <strong className="text-white font-black">{Math.max(0, 50000 - (metrics?.dailyStats?.totalReads || 0)).toLocaleString()}</strong></span>
-              <button
-                type="button"
-                onClick={handleResetCounter}
-                className="flex items-center gap-1 text-[10px] text-blue-300 hover:text-white underline font-bold transition-colors"
-                title="Đặt lại bộ đếm lượt đọc trong ngày"
-              >
-                <RotateCcw size={11} />
-                <span>Đặt lại đếm</span>
-              </button>
+            <div className="pt-1 flex justify-between items-center text-[11px] text-emerald-100">
+              <span>Hạ tầng CSDL:</span>
+              <strong className="text-white font-black">Supabase PostgreSQL</strong>
             </div>
-          </div>
-        </div>
-
-        {/* Real-time Operation Counters Bar */}
-        <div className="relative z-10 grid grid-cols-3 gap-3 mt-6 pt-5 border-t border-white/10">
-          <div className="bg-white/10 rounded-xl p-3 text-center border border-white/10">
-            <div className="text-[10px] font-bold uppercase tracking-wider text-blue-200">Tổng Đọc (Reads)</div>
-            <div className="text-lg font-black text-white mt-0.5">{(metrics?.dailyStats?.totalReads || 0).toLocaleString()}</div>
-            <div className="text-[9px] text-blue-300">Tự động tăng khi đọc doc</div>
-          </div>
-          <div className="bg-white/10 rounded-xl p-3 text-center border border-white/10">
-            <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-200">Tổng Ghi (Writes)</div>
-            <div className="text-lg font-black text-emerald-300 mt-0.5">{(metrics?.dailyStats?.totalWrites || 0).toLocaleString()}</div>
-            <div className="text-[9px] text-emerald-200/80">Lưu / Sửa document</div>
-          </div>
-          <div className="bg-white/10 rounded-xl p-3 text-center border border-white/10">
-            <div className="text-[10px] font-bold uppercase tracking-wider text-rose-200">Tổng Xóa (Deletes)</div>
-            <div className="text-lg font-black text-rose-300 mt-0.5">{(metrics?.dailyStats?.totalDeletes || 0).toLocaleString()}</div>
-            <div className="text-[9px] text-rose-200/80">Xóa dữ liệu Firestore</div>
-          </div>
-        </div>
-      </div>
-
-      {/* Explanation Box: Why Firestore Reads Work Like This */}
-      <div className="bg-amber-50/70 border border-amber-200/90 rounded-2xl p-5 space-y-3">
-        <div className="flex items-center gap-2 text-amber-900 font-black text-sm uppercase tracking-wide">
-          <HelpCircle size={18} className="text-amber-600 shrink-0" />
-          <span>Giải đáp: Cơ chế tính Lượt đọc (Reads) & Bộ nhớ đệm (Cache) của Firebase</span>
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs text-amber-950/90">
-          <div className="bg-white/80 p-3.5 rounded-xl border border-amber-100 space-y-1">
-            <div className="font-bold text-amber-900 flex items-center gap-1.5">
-              <span className="w-5 h-5 rounded-full bg-amber-200 text-amber-900 flex items-center justify-center text-[10px] font-black">1</span>
-              <span>1 Document = 1 Lượt đọc</span>
-            </div>
-            <p className="text-[11px] leading-relaxed text-slate-600">
-              Firebase tính 1 lượt đọc cho <strong>mỗi bản ghi (document)</strong> được tải về máy.
-              Ví dụ: Khi mở danh sách gồm 20 đề thi Metadata, hệ thống tính đúng <strong>20 reads</strong>.
-            </p>
-          </div>
-
-          <div className="bg-white/80 p-3.5 rounded-xl border border-amber-100 space-y-1">
-            <div className="font-bold text-amber-900 flex items-center gap-1.5">
-              <span className="w-5 h-5 rounded-full bg-amber-200 text-amber-900 flex items-center justify-center text-[10px] font-black">2</span>
-              <span>Bộ nhớ Cache RAM (5 phút)</span>
-            </div>
-            <p className="text-[11px] leading-relaxed text-slate-600">
-              Khi bạn bấm qua lại các Tab (Giáo viên, Lớp học, Chương mục...) trong vòng 5 phút, hệ thống <strong>lấy dữ liệu từ RAM/Cache</strong> nên <strong>tính 0 lượt đọc</strong> (tiết kiệm 100% chi phí).
-            </p>
-          </div>
-
-          <div className="bg-white/80 p-3.5 rounded-xl border border-amber-100 space-y-1">
-            <div className="font-bold text-amber-900 flex items-center gap-1.5">
-              <span className="w-5 h-5 rounded-full bg-amber-200 text-amber-900 flex items-center justify-center text-[10px] font-black">3</span>
-              <span>Phân trang danh sách lớn</span>
-            </div>
-            <p className="text-[11px] leading-relaxed text-slate-600">
-              Ví dụ trường có 1,000 học sinh: Hệ thống chỉ đọc <strong>50 học sinh/trang</strong> (50 reads), khi chuyển trang mới đọc tiếp, tránh tải đồng loạt 1,000 học sinh (1,000 reads).
-            </p>
           </div>
         </div>
       </div>
@@ -454,8 +343,8 @@ export default function DatabaseMonitor({
             </div>
           </div>
           <div className="mt-3 pt-3 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-400 font-medium">
-            <span>Firebase Firestore</span>
-            <span className="text-emerald-600 font-bold">Online</span>
+            <span>Supabase Database</span>
+            <span className="text-emerald-600 font-bold">PostgreSQL</span>
           </div>
         </div>
 
@@ -472,7 +361,7 @@ export default function DatabaseMonitor({
               {formatBytes(metrics?.totalEstimatedSizeBytes || 0)}
             </div>
             <div className="mt-2 flex items-center justify-between text-xs font-bold text-slate-500">
-              <span>Hạn mức Free: 1.0 GB</span>
+              <span>Hạn mức Free: 500 MB</span>
               <span className="text-blue-600 font-black">
                 {metrics?.quotas?.estimatedStorageUsedPercent ?? 0}%
               </span>
@@ -480,13 +369,13 @@ export default function DatabaseMonitor({
           </div>
           <div className="mt-3 w-full bg-slate-100 h-2 rounded-full overflow-hidden">
             <div 
-              className="bg-blue-600 h-full rounded-full transition-all duration-500"
+              className="bg-emerald-600 h-full rounded-full transition-all duration-500"
               style={{ width: `${Math.max(2, metrics?.quotas?.estimatedStorageUsedPercent ?? 0)}%` }}
             />
           </div>
         </div>
 
-        {/* Card 3: Tổng số bản ghi (Documents) */}
+        {/* Card 3: Tổng số bản ghi */}
         <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm">
           <div className="flex items-center justify-between">
             <span className="text-[11px] font-black uppercase tracking-wider text-slate-400">Tổng số bản ghi</span>
@@ -496,16 +385,16 @@ export default function DatabaseMonitor({
           </div>
           <div className="mt-3">
             <div className="text-2xl font-black text-slate-800">
-              {(metrics?.totalDocuments || 0).toLocaleString()} <span className="text-sm font-bold text-slate-400">docs</span>
+              {(metrics?.totalDocuments || 0).toLocaleString()} <span className="text-sm font-bold text-slate-400">records</span>
             </div>
             <div className="mt-2 flex items-center gap-1.5 text-xs font-bold text-slate-500">
               <span>Trải dài trên</span>
-              <span className="text-indigo-600 font-black">{metrics?.collections?.length || 9} Collections</span>
+              <span className="text-indigo-600 font-black">{metrics?.collections?.length || 8} Bảng PostgreSQL</span>
             </div>
           </div>
           <div className="mt-3 pt-3 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-400 font-medium">
-            <span>Dữ liệu đồng bộ</span>
-            <span className="text-slate-600 font-bold">Thời gian thực</span>
+            <span>Truy vấn</span>
+            <span className="text-emerald-600 font-bold">Không giới hạn</span>
           </div>
         </div>
 
@@ -522,7 +411,7 @@ export default function DatabaseMonitor({
               {formatBytes(metrics?.localCacheSizeBytes || 0)}
             </div>
             <div className="mt-2 flex items-center justify-between text-xs font-bold text-slate-500">
-              <span>LocalStorage & State</span>
+              <span>LocalStorage</span>
               <button 
                 onClick={handleClearCache}
                 className="text-amber-600 hover:text-amber-700 underline text-[11px] font-bold"
@@ -538,246 +427,137 @@ export default function DatabaseMonitor({
         </div>
       </div>
 
-      {/* Main Breakdown: Collections Storage & Firebase Free Quotas */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Left 2 Cols: Chi tiết từng Bảng / Collection */}
-        <div className="lg:col-span-2 bg-white rounded-2xl border border-slate-200/80 shadow-sm p-6 space-y-5">
-          <div className="flex items-center justify-between border-b border-slate-100 pb-4">
-            <div className="flex items-center gap-2.5">
-              <div className="p-2 bg-slate-100 text-slate-700 rounded-xl">
-                <BarChart3 size={20} />
-              </div>
-              <div>
-                <h3 className="text-base font-black text-slate-800 uppercase tracking-tight">
-                  Phân tích Dung lượng & Lượt đọc từng Bảng
-                </h3>
-                <p className="text-xs font-medium text-slate-500">
-                  Số lượng document, dung lượng ước tính và lượt đọc trong ngày của từng Collection
-                </p>
-              </div>
+      {/* Main Breakdown: Database Tables */}
+      <div className="bg-white rounded-3xl border border-slate-200/80 shadow-sm p-6 space-y-5">
+        <div className="flex items-center justify-between border-b border-slate-100 pb-4">
+          <div className="flex items-center gap-2.5">
+            <div className="p-2 bg-slate-100 text-slate-700 rounded-xl">
+              <BarChart3 size={20} />
             </div>
-            <span className="text-xs font-bold text-slate-400 bg-slate-50 px-2.5 py-1 rounded-lg border border-slate-200">
-              {metrics?.collections?.length || 0} bảng
-            </span>
+            <div>
+              <h3 className="text-base font-black text-slate-800 uppercase tracking-tight">
+                Chi tiết dữ liệu các Bảng trong Supabase
+              </h3>
+              <p className="text-xs font-medium text-slate-500">
+                Thống kê số lượng bản ghi và dung lượng ước tính của từng bảng PostgreSQL
+              </p>
+            </div>
           </div>
-
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
-              <thead>
-                <tr className="border-b border-slate-100 text-slate-400 font-black uppercase text-[10px] tracking-wider">
-                  <th className="pb-3 px-3">Bảng / Collection</th>
-                  <th className="pb-3 px-3">Mô tả dữ liệu</th>
-                  <th className="pb-3 px-3 text-right">Số bản ghi</th>
-                  <th className="pb-3 px-3 text-right">Dung lượng</th>
-                  <th className="pb-3 px-3 text-center">Đọc hôm nay</th>
-                  <th className="pb-3 px-3 text-right">Tỷ trọng</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {metrics?.collections?.map((col) => {
-                  const totalBytes = metrics?.totalEstimatedSizeBytes || 1;
-                  const percent = Math.round((col.estimatedSizeBytes / totalBytes) * 100) || 0;
-                  return (
-                    <tr key={col.name} className="hover:bg-slate-50/80 transition-colors">
-                      <td className="py-3.5 px-3">
-                        <div className="font-black text-slate-800">{col.label}</div>
-                        <code className="text-[10px] text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded font-mono">
-                          {col.name}
-                        </code>
-                      </td>
-                      <td className="py-3.5 px-3 text-slate-500 max-w-[200px]">
-                        <div>{col.description}</div>
-                        <div className="text-[10px] text-emerald-600 font-bold mt-0.5 flex items-center gap-1">
-                          <span>Định mức:</span>
-                          <span>{col.name === 'quizzes_metadata' ? 'Phân trang (20 đề/trang)' : col.name === 'users' ? 'Phân trang (50 user/trang)' : col.name === 'results' ? 'Phân trang (50 bài/trang)' : col.name === 'classes' || col.name === 'chapters' ? '1 lần (có Cache)' : 'Tải theo yêu cầu'}</span>
-                        </div>
-                      </td>
-                      <td className="py-3.5 px-3 text-right font-black text-slate-800">
-                        {col.count.toLocaleString()}
-                      </td>
-                      <td className="py-3.5 px-3 text-right font-bold text-slate-700">
-                        {formatBytes(col.estimatedSizeBytes)}
-                      </td>
-                      <td className="py-3.5 px-3 text-center">
-                        <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-black ${
-                          (col.readsToday || 0) > 0 
-                            ? 'bg-blue-100 text-blue-800 border border-blue-200' 
-                            : 'bg-slate-100 text-slate-500'
-                        }`}>
-                          <Eye size={12} className={col.readsToday ? 'text-blue-600' : 'text-slate-400'} />
-                          <span>{(col.readsToday || 0).toLocaleString()}</span>
-                        </span>
-                      </td>
-                      <td className="py-3.5 px-3 text-right">
-                        <div className="flex items-center justify-end gap-2">
-                          <div className="w-16 bg-slate-100 h-1.5 rounded-full overflow-hidden">
-                            <div 
-                              className="bg-blue-600 h-full rounded-full"
-                              style={{ width: `${percent}%` }}
-                            />
-                          </div>
-                          <span className="font-bold text-slate-600 text-[11px] w-7 text-right">
-                            {percent}%
-                          </span>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+          <span className="text-xs font-bold text-slate-400 bg-slate-50 px-2.5 py-1 rounded-lg border border-slate-200">
+            {metrics?.collections?.length || 0} bảng dữ liệu
+          </span>
         </div>
 
-        {/* Right Col: Hạn mức Firestore & Băng thông Spark Plan */}
-        <div className="space-y-6">
-          <div className="bg-white rounded-2xl border border-slate-200/80 shadow-sm p-6 space-y-5">
-            <div className="flex items-center gap-2.5 border-b border-slate-100 pb-4">
-              <div className="p-2 bg-emerald-50 text-emerald-600 rounded-xl">
-                <ShieldCheck size={20} />
-              </div>
-              <div>
-                <h3 className="text-base font-black text-slate-800 uppercase tracking-tight">
-                  Hạn mức Miễn phí (Free Tier)
-                </h3>
-                <p className="text-xs font-medium text-slate-500">
-                  Chỉ số hạn mức theo gói Google Cloud Firestore
-                </p>
-              </div>
-            </div>
-
-            <div className="space-y-4">
-              {/* Lượt Đọc trong ngày (Reads Quota) */}
-              <div className="p-3.5 bg-blue-50/60 rounded-xl border border-blue-200/80 space-y-2">
-                <div className="flex justify-between text-xs font-bold">
-                  <span className="text-blue-900">Lượt đọc hôm nay (Reads):</span>
-                  <span className="text-blue-900 font-black">
-                    {(metrics?.dailyStats?.totalReads || 0).toLocaleString()} / 50,000
-                  </span>
-                </div>
-                <div className="w-full bg-blue-200/80 h-2 rounded-full overflow-hidden">
-                  <div 
-                    className="bg-blue-600 h-full rounded-full transition-all duration-500"
-                    style={{ width: `${Math.max(2, metrics?.quotas?.readsUsedPercent ?? 0)}%` }}
-                  />
-                </div>
-                <div className="text-[10px] text-blue-700 flex justify-between font-medium">
-                  <span>Đã dùng: <strong className="font-bold">{metrics?.quotas?.readsUsedPercent ?? 0}%</strong></span>
-                  <span>Còn lại: <strong className="font-bold">{Math.max(0, 50000 - (metrics?.dailyStats?.totalReads || 0)).toLocaleString()}</strong></span>
-                </div>
-              </div>
-
-              {/* Dung lượng Lưu trữ */}
-              <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200/60 space-y-2">
-                <div className="flex justify-between text-xs font-bold">
-                  <span className="text-slate-600">Dung lượng lưu trữ (Storage):</span>
-                  <span className="text-slate-800 font-black">
-                    {formatBytes(metrics?.totalEstimatedSizeBytes || 0)} / 1 GiB
-                  </span>
-                </div>
-                <div className="w-full bg-slate-200 h-2 rounded-full overflow-hidden">
-                  <div 
-                    className="bg-emerald-500 h-full rounded-full"
-                    style={{ width: `${Math.max(2, metrics?.quotas?.estimatedStorageUsedPercent ?? 0)}%` }}
-                  />
-                </div>
-                <div className="text-[10px] text-slate-400 flex justify-between font-medium">
-                  <span>Trạng thái: An toàn (Dưới 1%)</span>
-                  <span>1,024 MB miễn phí</span>
-                </div>
-              </div>
-
-              {/* Băng thông ra (Egress Bandwidth) */}
-              <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200/60 space-y-2">
-                <div className="flex justify-between text-xs font-bold">
-                  <span className="text-slate-600">Băng thông mạng ra (Egress):</span>
-                  <span className="text-slate-800 font-black">10 GiB / tháng</span>
-                </div>
-                <div className="w-full bg-slate-200 h-2 rounded-full overflow-hidden">
-                  <div className="bg-blue-500 h-full rounded-full" style={{ width: '3%' }} />
-                </div>
-                <div className="text-[10px] text-slate-400 flex justify-between font-medium">
-                  <span>Miễn phí 10GB/tháng</span>
-                  <span>Đã tối ưu hóa Metadata</span>
-                </div>
-              </div>
-
-              {/* Lượt Đọc/Ghi hàng ngày */}
-              <div className="grid grid-cols-2 gap-2.5 pt-1">
-                <div className="p-3 bg-slate-50 rounded-xl border border-slate-200/60 text-center">
-                  <div className="text-[10px] font-black uppercase text-slate-400">Đọc (Reads / ngày)</div>
-                  <div className="text-base font-black text-slate-800 mt-1">50,000</div>
-                  <div className="text-[9px] text-emerald-600 font-bold mt-0.5">Reset 14:00-15:00 VN</div>
-                </div>
-                <div className="p-3 bg-slate-50 rounded-xl border border-slate-200/60 text-center">
-                  <div className="text-[10px] font-black uppercase text-slate-400">Ghi (Writes / ngày)</div>
-                  <div className="text-base font-black text-slate-800 mt-1">20,000</div>
-                  <div className="text-[9px] text-emerald-600 font-bold mt-0.5">Miễn phí mỗi ngày</div>
-                </div>
-              </div>
-            </div>
-
-            <div className="pt-2 border-t border-slate-100">
-              <a
-                href={`https://console.firebase.google.com/project/${metrics?.projectId}/firestore/usage`}
-                target="_blank"
-                rel="noreferrer"
-                className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-slate-900 hover:bg-black text-white text-xs font-black uppercase rounded-xl transition-all shadow-sm"
-              >
-                <span>Xem biểu đồ trên Firebase Console</span>
-                <ExternalLink size={14} />
-              </a>
-            </div>
-          </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-xs">
+            <thead>
+              <tr className="border-b border-slate-100 text-slate-400 font-black uppercase text-[10px] tracking-wider">
+                <th className="pb-3 px-3">Bảng (Table)</th>
+                <th className="pb-3 px-3">Mô tả dữ liệu</th>
+                <th className="pb-3 px-3 text-right">Số bản ghi</th>
+                <th className="pb-3 px-3 text-right">Dung lượng</th>
+                <th className="pb-3 px-3 text-right">Tỷ trọng</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {metrics?.collections?.map((col) => {
+                const totalBytes = metrics?.totalEstimatedSizeBytes || 1;
+                const percent = Math.round((col.estimatedSizeBytes / totalBytes) * 100) || 0;
+                return (
+                  <tr key={col.name} className="hover:bg-slate-50/80 transition-colors">
+                    <td className="py-3.5 px-3">
+                      <div className="font-black text-slate-800">{col.label}</div>
+                      <code className="text-[10px] text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded font-mono font-bold">
+                        {col.name}
+                      </code>
+                    </td>
+                    <td className="py-3.5 px-3 text-slate-500 max-w-[280px]">
+                      <div>{col.description}</div>
+                      <div className="text-[10px] text-slate-400 mt-0.5">
+                        Lưu trữ trực tiếp trên PostgreSQL Table
+                      </div>
+                    </td>
+                    <td className="py-3.5 px-3 text-right font-black text-slate-800 text-sm">
+                      {(col.count ?? (col as any).documentCount ?? 0).toLocaleString()}
+                    </td>
+                    <td className="py-3.5 px-3 text-right font-bold text-slate-700">
+                      {formatBytes(col.estimatedSizeBytes || 0)}
+                    </td>
+                    <td className="py-3.5 px-3 text-right">
+                      <div className="flex items-center justify-end gap-2">
+                        <div className="w-20 bg-slate-100 h-2 rounded-full overflow-hidden">
+                          <div 
+                            className="bg-emerald-600 h-full rounded-full"
+                            style={{ width: `${percent}%` }}
+                          />
+                        </div>
+                        <span className="font-bold text-slate-600 text-[11px] w-8 text-right">
+                          {percent}%
+                        </span>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
       </div>
 
       {/* Cloud Configuration & Technical Information */}
-      <div className="bg-white rounded-2xl border border-slate-200/80 shadow-sm p-6 space-y-4">
+      <div className="bg-white rounded-3xl border border-slate-200/80 shadow-sm p-6 space-y-4">
         <div className="flex items-center gap-2.5 border-b border-slate-100 pb-3">
-          <div className="p-2 bg-blue-50 text-blue-600 rounded-xl">
+          <div className="p-2 bg-emerald-50 text-emerald-600 rounded-xl">
             <Server size={20} />
           </div>
           <div>
             <h3 className="text-base font-black text-slate-800 uppercase tracking-tight">
-              Thông số Kỹ thuật & Hạ tầng Cloud
+              Thông số Kỹ thuật CSDL Supabase
             </h3>
             <p className="text-xs font-medium text-slate-500">
-              Chi tiết cấu hình định danh cơ sở dữ liệu đã liên kết
+              Chi tiết cấu hình định danh và hạ tầng đám mây đang kết nối
             </p>
           </div>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-          <div className="p-4 bg-slate-50 rounded-xl border border-slate-200/60">
-            <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">Project ID</span>
+          <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200/60">
+            <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">Project Reference ID</span>
             <p className="text-xs font-mono font-bold text-slate-800 mt-1 break-all select-all">
-              {metrics?.projectId || 'ai-studio-applet-webapp-7d6a6'}
+              {metrics?.projectId || 'kosgiekqtutjegalbxyq'}
             </p>
           </div>
 
-          <div className="p-4 bg-slate-50 rounded-xl border border-slate-200/60">
-            <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">Database ID</span>
+          <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200/60">
+            <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">Database Engine</span>
             <p className="text-xs font-mono font-bold text-slate-800 mt-1 break-all select-all">
-              {metrics?.databaseId || 'ai-studio-eduquizvn-...'}
+              PostgreSQL 15+ (Supabase)
             </p>
           </div>
 
-          <div className="p-4 bg-slate-50 rounded-xl border border-slate-200/60">
+          <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200/60">
             <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">Storage Bucket</span>
             <p className="text-xs font-mono font-bold text-slate-800 mt-1 break-all select-all">
-              {metrics?.storageBucket || 'ai-studio-applet-...'}
+              quiz-images (Supabase Storage)
             </p>
           </div>
 
-          <div className="p-4 bg-slate-50 rounded-xl border border-slate-200/60">
-            <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">Kiến trúc Tối ưu</span>
+          <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200/60">
+            <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">Đặc tính</span>
             <p className="text-xs font-bold text-emerald-700 mt-1">
-              Metadata Indexing + Lazy Load
+              Không giới hạn Lượt Đọc/Ghi
             </p>
           </div>
         </div>
       </div>
+
+      {/* Modal Quản lý Sao lưu & Nhập/Xuất JSON */}
+      <BackupMigrationModal
+        isOpen={isBackupMigrationModalOpen}
+        onClose={() => setIsBackupMigrationModalOpen(false)}
+        onShowAlert={onShowAlert}
+        onShowConfirm={onShowConfirm}
+      />
     </div>
   );
 }

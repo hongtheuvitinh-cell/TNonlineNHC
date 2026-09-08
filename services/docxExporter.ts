@@ -9,11 +9,284 @@ import {
     WidthType, 
     AlignmentType, 
     BorderStyle, 
-    ImageRun
+    ImageRun,
+    Math as DocxMath,
+    MathRun,
+    MathFraction,
+    MathSubScript,
+    MathSuperScript,
+    MathSubSuperScript,
+    MathRadical,
+    MathLimitUpper,
+    MathLimitLower,
+    MathSum,
+    MathIntegral,
+    MathRoundBrackets,
+    MathSquareBrackets,
+    MathCurlyBrackets
 } from 'docx';
-import { convertLatex2Math, mathJaxReady } from '@hungknguyen/docx-math-converter';
+import { mml2omml } from '@hungknguyen/mathml2omml';
+import { mathJaxReady } from '@hungknguyen/docx-math-converter';
 import { Quiz, Question } from '../types';
 import { normalizeFullText } from './vietnameseFixer';
+
+// Chuẩn hóa và làm sạch mã LaTeX trước khi chuyển sang MathML/OMML
+function cleanLatexForDocx(latex: string): string {
+    if (!latex) return '';
+    return latex
+        .replace(/\\dfrac/g, '\\frac')
+        .replace(/\\tfrac/g, '\\frac')
+        .replace(/\\displaystyle/g, '')
+        .replace(/\\textstyle/g, '')
+        .replace(/\\scriptstyle/g, '')
+        .replace(/\\scriptscriptstyle/g, '')
+        .replace(/\\quad/g, ' ')
+        .replace(/\\qquad/g, ' ')
+        .replace(/\\enspace/g, ' ')
+        .replace(/\\[,;:!]/g, ' ')
+        .trim();
+}
+
+// Chuyển đổi danh sách phần tử con trong cây OMML XML
+function convertOmmlChildren(children: HTMLCollection | Element[] | NodeListOf<Element>): any[] {
+    const result: any[] = [];
+    for (let i = 0; i < children.length; i++) {
+        const child = children[i] as Element;
+        const converted = convertOmmlItem(child);
+        if (converted) {
+            if (Array.isArray(converted)) {
+                result.push(...converted);
+            } else {
+                result.push(converted);
+            }
+        }
+    }
+    return result;
+}
+
+// Chuyển đổi từng thẻ OMML (Office Math ML) sang thành phần docx Math tương ứng
+// Bỏ qua các thẻ thuộc tính để tuyệt đối KHÔNG sinh ký tự rác hoặc ô vuông "口"
+function convertOmmlItem(item: Element): any {
+    if (!item || !item.tagName) return null;
+    const tagName = item.tagName.toLowerCase();
+
+    // Các thẻ cấu hình / thuộc tính Office Math - BỎ QUA AN TOÀN (Không bao giờ tạo MathRun("口"))
+    if (
+        tagName.endsWith('pr') ||
+        tagName === 'm:deghide' ||
+        tagName === 'm:type' ||
+        tagName === 'm:scrlvl' ||
+        tagName === 'm:ctrlpr' ||
+        tagName === 'm:lit' ||
+        tagName === 'm:nor' ||
+        tagName === 'm:pos' ||
+        tagName === 'm:aln' ||
+        tagName === 'm:val' ||
+        tagName === 'w:rpr'
+    ) {
+        return null;
+    }
+
+    // 1. Phân số (Fraction: m:f)
+    if (tagName === 'm:f') {
+        const num = item.getElementsByTagName('m:num')[0];
+        const den = item.getElementsByTagName('m:den')[0];
+        return new MathFraction({
+            numerator: num ? convertOmmlChildren(num.children) : [],
+            denominator: den ? convertOmmlChildren(den.children) : []
+        });
+    }
+
+    // 2. Chuỗi ký tự (Run: m:r)
+    if (tagName === 'm:r') {
+        const t = item.getElementsByTagName('m:t')[0];
+        const text = t ? (t.textContent || '') : '';
+        return new MathRun(text);
+    }
+
+    // 3. Chỉ số dưới (Subscript: m:ssub)
+    if (tagName === 'm:ssub') {
+        const e = item.getElementsByTagName('m:e')[0];
+        const sub = item.getElementsByTagName('m:sub')[0];
+        return new MathSubScript({
+            children: e ? convertOmmlChildren(e.children) : [],
+            subScript: sub ? convertOmmlChildren(sub.children) : []
+        });
+    }
+
+    // 4. Chỉ số trên (Superscript: m:ssup)
+    if (tagName === 'm:ssup') {
+        const e = item.getElementsByTagName('m:e')[0];
+        const sup = item.getElementsByTagName('m:sup')[0];
+        return new MathSuperScript({
+            children: e ? convertOmmlChildren(e.children) : [],
+            superScript: sup ? convertOmmlChildren(sup.children) : []
+        });
+    }
+
+    // 5. Cả chỉ số trên và dưới (Sub-Superscript: m:ssubsup)
+    if (tagName === 'm:ssubsup') {
+        const e = item.getElementsByTagName('m:e')[0];
+        const sub = item.getElementsByTagName('m:sub')[0];
+        const sup = item.getElementsByTagName('m:sup')[0];
+        return new MathSubSuperScript({
+            children: e ? convertOmmlChildren(e.children) : [],
+            superScript: sup ? convertOmmlChildren(sup.children) : [],
+            subScript: sub ? convertOmmlChildren(sub.children) : []
+        });
+    }
+
+    // 6. Căn thức (Radical / Căn bậc 2 / Căn bậc n: m:rad)
+    if (tagName === 'm:rad') {
+        const e = item.getElementsByTagName('m:e')[0];
+        const deg = item.getElementsByTagName('m:deg')[0];
+        let degree: any[] | undefined = undefined;
+        if (deg && deg.children && deg.children.length > 0) {
+            const degItems = convertOmmlChildren(deg.children);
+            if (degItems.length > 0) degree = degItems;
+        }
+        return new MathRadical({
+            children: e ? convertOmmlChildren(e.children) : [],
+            degree: degree
+        });
+    }
+
+    // 7. Dấu ngoặc (Delimiter: m:d)
+    if (tagName === 'm:d') {
+        const e = item.getElementsByTagName('m:e')[0];
+        const begChr = item.getElementsByTagName('m:begChr')[0]?.getAttribute('m:val') || '(';
+        const endChr = item.getElementsByTagName('m:endChr')[0]?.getAttribute('m:val') || ')';
+        const inner = e ? convertOmmlChildren(e.children) : [];
+        if (begChr === '[' && endChr === ']') {
+            return new MathSquareBrackets({ children: inner });
+        } else if (begChr === '{' && endChr === '}') {
+            return new MathCurlyBrackets({ children: inner });
+        } else {
+            return new MathRoundBrackets({ children: inner });
+        }
+    }
+
+    // 8. Giới hạn trên / dưới (Limits: m:limupp, m:limlow)
+    if (tagName === 'm:limupp') {
+        const e = item.getElementsByTagName('m:e')[0];
+        const lim = item.getElementsByTagName('m:lim')[0];
+        return new MathLimitUpper({
+            children: e ? convertOmmlChildren(e.children) : [],
+            limit: lim ? convertOmmlChildren(lim.children) : []
+        });
+    }
+    if (tagName === 'm:limlow') {
+        const e = item.getElementsByTagName('m:e')[0];
+        const lim = item.getElementsByTagName('m:lim')[0];
+        return new MathLimitLower({
+            children: e ? convertOmmlChildren(e.children) : [],
+            limit: lim ? convertOmmlChildren(lim.children) : []
+        });
+    }
+
+    // 9. Phép toán tích phân / tổng (N-Ary: m:nary)
+    if (tagName === 'm:nary') {
+        const char = item.getElementsByTagName('m:chr')[0];
+        const charVal = char?.getAttribute('m:val');
+        const e = item.getElementsByTagName('m:e')[0];
+        const sub = item.getElementsByTagName('m:sub')[0];
+        const sup = item.getElementsByTagName('m:sup')[0];
+        const inner = e ? convertOmmlChildren(e.children) : [];
+        const subChildren = sub ? convertOmmlChildren(sub.children) : [];
+        const supChildren = sup ? convertOmmlChildren(sup.children) : [];
+        if (charVal === '∫') {
+            return new MathIntegral({
+                children: inner,
+                superScript: supChildren,
+                subScript: subChildren
+            });
+        }
+        return new MathSum({
+            children: inner,
+            superScript: supChildren,
+            subScript: subChildren
+        });
+    }
+
+    // 10. Các phần tử chứa phần tử con (m:e, m:box, m:acc, m:bar, m:groupChr, v.v.): duyệt tiếp qua các con
+    if (item.children && item.children.length > 0) {
+        return convertOmmlChildren(item.children);
+    }
+
+    // Nếu là lá có nội dung text
+    if (item.textContent && item.textContent.trim()) {
+        return new MathRun(item.textContent);
+    }
+
+    return null;
+}
+
+// Chuyển đổi chuỗi XML OMML sang đối tượng DocxMath
+function convertOmmlToDocxMath(ommlString: string): DocxMath | null {
+    if (!ommlString) return null;
+    try {
+        if (typeof window !== 'undefined' && typeof DOMParser !== 'undefined') {
+            const parser = new DOMParser();
+            const xmlDoc = parser.parseFromString(ommlString, 'text/xml');
+            const mathElement = xmlDoc.getElementsByTagName('m:oMath')[0] || xmlDoc.documentElement;
+            if (!mathElement) return null;
+            const children = convertOmmlChildren(mathElement.children);
+            if (children.length === 0) return null;
+            return new DocxMath({ children });
+        }
+    } catch (err) {
+        console.warn('Lỗi phân tích cú pháp OMML XML:', err);
+    }
+    return null;
+}
+
+// Chuyển đổi LaTeX sang DocxMath mà không bị lỗi ký tự ô vuông
+function convertLatexToDocxMath(latex: string): DocxMath | null {
+    const clean = cleanLatexForDocx(latex);
+    if (!clean) return null;
+
+    let mathml: string | null = null;
+
+    // 1. Ưu tiên MathJax nếu đã sẵn sàng
+    if (typeof window !== 'undefined' && (window as any).MathJax?.tex2mml) {
+        try {
+            const mml = (window as any).MathJax.tex2mml(clean);
+            if (mml && !mml.includes('merror')) {
+                mathml = mml;
+            }
+        } catch (e) {
+            // bỏ qua
+        }
+    }
+
+    // 2. Dự phòng bằng KaTeX nếu MathJax chưa sẵn sàng
+    if (!mathml && typeof window !== 'undefined' && (window as any).katex?.renderToString) {
+        try {
+            const rendered = (window as any).katex.renderToString(clean, {
+                output: 'mathml',
+                throwOnError: false,
+                displayMode: false
+            });
+            const match = rendered.match(/<math[\s\S]*?<\/math>/);
+            if (match) {
+                mathml = match[0];
+            }
+        } catch (e) {
+            // bỏ qua
+        }
+    }
+
+    if (!mathml) return null;
+
+    try {
+        const omml = mml2omml(mathml, { disableDecode: true });
+        if (!omml) return null;
+        return convertOmmlToDocxMath(omml);
+    } catch (e) {
+        console.warn('Lỗi chuyển đổi OMML sang Docx Math:', e);
+        return null;
+    }
+}
 
 // Chuyển đổi chuỗi base64 hoặc URL ảnh thành Uint8Array cho ImageRun
 async function getImageData(src: string): Promise<{ data: Uint8Array; type: 'png' | 'jpg'; width: number; height: number } | null> {
@@ -81,9 +354,18 @@ function parseMixedTextToDocxRuns(
             const latex = part.slice(1, -1).trim();
             if (!latex) continue;
             try {
-                // Chuyển LaTeX sang đối tượng Office Math (Word Equation)
-                const mathElement = convertLatex2Math(latex);
-                runs.push(mathElement);
+                // Chuyển LaTeX sang đối tượng Office Math (Word Equation) chất lượng cao
+                const mathElement = convertLatexToDocxMath(latex);
+                if (mathElement) {
+                    runs.push(mathElement);
+                } else {
+                    runs.push(new TextRun({
+                        text: `$${latex}$`,
+                        font: fontName,
+                        size: fontSize,
+                        italics: true
+                    }));
+                }
             } catch (err) {
                 // Fallback nếu công thức quá phức tạp hoặc lỗi cú pháp
                 runs.push(new TextRun({

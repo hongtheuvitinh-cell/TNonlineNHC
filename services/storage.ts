@@ -17,17 +17,48 @@ import {
   startAfter,
   DocumentSnapshot
 } from 'firebase/firestore';
-import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
-import { db, storage } from './firebase';
+import { ref, uploadBytes, getDownloadURL, getStorage, deleteObject } from 'firebase/storage';
+import app, { db, storage } from './firebase';
 import { User, Quiz, Result, Chapter, Question, ExamSession, PublishedResult, Grade, ClassRoom } from '../types';
 import { v4 as uuidv4 } from 'uuid';
 import { isSameSubject } from './subjectUtils';
 import { getCurrentAcademicYear, getQuizAcademicYear } from './academicUtils';
+import { uploadImageToSupabaseStorage } from './supabaseMigration';
+import { supabaseDb, isSupabaseConnected } from './supabaseService';
 
 import firebaseConfig from '../firebase-applet-config.json';
 
+export type DatabaseProvider = 'supabase' | 'firebase' | 'dual';
+
+export const getActiveDatabaseProvider = (): DatabaseProvider => {
+  if (typeof window !== 'undefined') {
+    const saved = localStorage.getItem('eduquiz_db_provider');
+    if (saved === 'supabase') return 'supabase';
+    if (saved === 'firebase') return 'firebase';
+    if (saved === 'dual') return 'dual';
+  }
+  // Mặc định thuần túy Supabase để đạt tốc độ tối đa và không phụ thuộc Firestore, nếu chưa có thì dùng Firebase
+  return isSupabaseConnected() ? 'supabase' : 'firebase';
+};
+
+export const setActiveDatabaseProvider = (provider: DatabaseProvider): void => {
+  if (typeof window !== 'undefined') {
+    localStorage.setItem('eduquiz_db_provider', provider);
+    window.dispatchEvent(new CustomEvent('eduquiz-provider-changed', { detail: provider }));
+  }
+};
+
+export const isSupabasePrimary = (): boolean => {
+  const p = getActiveDatabaseProvider();
+  return p === 'supabase' || p === 'dual';
+};
+
+export const isDualSyncActive = (): boolean => {
+  return getActiveDatabaseProvider() === 'dual' && !!db && isSupabaseConnected();
+};
+
 export const isDatabaseConnected = (): boolean => {
-  return !!db;
+  return isSupabaseConnected() || !!db;
 };
 
 // Deeply clean all undefined values to ensure Firestore writes never fail
@@ -50,9 +81,9 @@ export function cleanUndefined<T>(obj: T): T {
   return obj;
 }
 
-// --- Daily Firestore Usage Tracking (Reads, Writes, Deletes) ---
+// --- Database Usage Stats Helpers ---
 export interface DailyFirestoreStats {
-  date: string; // YYYY-MM-DD
+  date: string;
   totalReads: number;
   totalWrites: number;
   totalDeletes: number;
@@ -60,28 +91,9 @@ export interface DailyFirestoreStats {
   lastUpdated: string;
 }
 
-const notifyUsageUpdate = (stats: DailyFirestoreStats) => {
-  try {
-    if (typeof window !== 'undefined') {
-      window.dispatchEvent(new CustomEvent('firestore-usage-updated', { detail: stats }));
-    }
-  } catch {}
-};
-
 export const getDailyFirestoreStats = (): DailyFirestoreStats => {
-  // Use local date string YYYY-MM-DD so reset corresponds to midnight in user's timezone
-  const today = new Date().toLocaleDateString('en-CA');
-  try {
-    const raw = localStorage.getItem('eduquiz_firestore_daily_stats');
-    if (raw) {
-      const parsed: DailyFirestoreStats = JSON.parse(raw);
-      if (parsed.date === today) {
-        return parsed;
-      }
-    }
-  } catch {}
   return {
-    date: today,
+    date: new Date().toLocaleDateString('en-CA'),
     totalReads: 0,
     totalWrites: 0,
     totalDeletes: 0,
@@ -90,59 +102,19 @@ export const getDailyFirestoreStats = (): DailyFirestoreStats => {
   };
 };
 
-export const trackFirestoreRead = (collectionName: string, count: number = 1) => {
-  if (count <= 0) return;
-  try {
-    const stats = getDailyFirestoreStats();
-    stats.totalReads += count;
-    stats.readsByCollection[collectionName] = (stats.readsByCollection[collectionName] || 0) + count;
-    stats.lastUpdated = new Date().toISOString();
-    localStorage.setItem('eduquiz_firestore_daily_stats', JSON.stringify(stats));
-    notifyUsageUpdate(stats);
-  } catch {}
-};
+export const trackFirestoreRead = (_collectionName: string, _count: number = 1) => {};
+export const trackFirestoreWrite = (_collectionName: string, _count: number = 1) => {};
+export const trackFirestoreDelete = (_collectionName: string, _count: number = 1) => {};
+export const resetDailyFirestoreStats = (): DailyFirestoreStats => getDailyFirestoreStats();
 
-export const trackFirestoreWrite = (collectionName: string, count: number = 1) => {
-  if (count <= 0) return;
-  try {
-    const stats = getDailyFirestoreStats();
-    stats.totalWrites += count;
-    stats.lastUpdated = new Date().toISOString();
-    localStorage.setItem('eduquiz_firestore_daily_stats', JSON.stringify(stats));
-    notifyUsageUpdate(stats);
-  } catch {}
-};
-
-export const trackFirestoreDelete = (collectionName: string, count: number = 1) => {
-  if (count <= 0) return;
-  try {
-    const stats = getDailyFirestoreStats();
-    stats.totalDeletes += count;
-    stats.lastUpdated = new Date().toISOString();
-    localStorage.setItem('eduquiz_firestore_daily_stats', JSON.stringify(stats));
-    notifyUsageUpdate(stats);
-  } catch {}
-};
-
-export const resetDailyFirestoreStats = (): DailyFirestoreStats => {
-  const today = new Date().toLocaleDateString('en-CA');
-  const fresh: DailyFirestoreStats = {
-    date: today,
-    totalReads: 0,
-    totalWrites: 0,
-    totalDeletes: 0,
-    readsByCollection: {},
-    lastUpdated: new Date().toISOString()
-  };
-  try {
-    localStorage.setItem('eduquiz_firestore_daily_stats', JSON.stringify(fresh));
-    notifyUsageUpdate(fresh);
-  } catch {}
-  return fresh;
-};
-
-// Test Firestore Connection
+// Test Database Connection
 export const testFirebaseConnection = async (): Promise<{ success: boolean; message: string }> => {
+  if (isSupabasePrimary() || isSupabaseConnected()) {
+    const sbResult = await supabaseDb.ping();
+    if (sbResult.success) {
+      return { success: true, message: `Kết nối CSDL Supabase (PostgreSQL) thành công! (${sbResult.latencyMs}ms)` };
+    }
+  }
   if (!db) return { success: false, message: "Firebase client chưa khởi tạo" };
   try {
     const q = query(collection(db, 'users'), limit(1));
@@ -155,15 +127,17 @@ export const testFirebaseConnection = async (): Promise<{ success: boolean; mess
     if (errStr.includes('quota') || errStr.includes('resource_exhausted') || errStr.includes('limit exceeded')) {
       return { 
         success: false, 
-        message: "Hạn mức đọc CSDL miễn phí trong ngày (50.000 reads) của Firebase hôm nay đã đạt tối đa. Hệ thống sẽ tự động mở lại vào chu kỳ reset 24h tiếp theo." 
+        message: "Hạn mức đọc CSDL miễn phí trong ngày (50.000 reads) của Firebase hôm nay đã đạt tối đa. Hệ thống đã tự động chuyển hướng hoặc bạn có thể dùng Supabase." 
       };
     }
     return { success: false, message: `Lỗi kết nối Firestore: ${e.message || JSON.stringify(e)}` };
   }
 };
 
-// Aliased for backwards compatibility
-export const testSupabaseConnection = testFirebaseConnection;
+// Test Supabase Connection
+export const testSupabaseConnection = async (): Promise<{ success: boolean; message: string; latencyMs?: number }> => {
+  return await supabaseDb.ping();
+};
 
 // --- Results ---
 export const getResultsMetadataPage = async (
@@ -172,6 +146,9 @@ export const getResultsMetadataPage = async (
   quizId?: string, 
   search?: string
 ): Promise<{ data: Result[]; total: number }> => {
+  if (isSupabasePrimary()) {
+    return await supabaseDb.getResultsMetadataPage(page, pageSize, quizId, search);
+  }
   if (!db) return { data: [], total: 0 };
   try {
     let qRef = collection(db, 'results');
@@ -215,6 +192,9 @@ export const getResultsMetadataPage = async (
 };
 
 export const getResultsMetadata = async (quizId?: string, maxRecords: number = 10000): Promise<Result[]> => {
+  if (isSupabasePrimary()) {
+    return await supabaseDb.getResults(quizId, maxRecords);
+  }
   if (!db) return [];
   try {
     let qRef = collection(db, 'results');
@@ -242,6 +222,9 @@ export const getResultsMetadata = async (quizId?: string, maxRecords: number = 1
 };
 
 export const getResultsCount = async (quizId?: string): Promise<number> => {
+  if (isSupabasePrimary()) {
+    return await supabaseDb.getResultsCount(quizId);
+  }
   if (!db) return 0;
   try {
     let qRef = collection(db, 'results');
@@ -258,6 +241,9 @@ export const getResultsCount = async (quizId?: string): Promise<number> => {
 };
 
 export const getResults = async (quizId?: string, maxRecords: number = 5000): Promise<Result[]> => {
+  if (isSupabasePrimary()) {
+    return await supabaseDb.getResults(quizId, maxRecords);
+  }
   if (!db) return [];
   try {
     let qRef = collection(db, 'results');
@@ -277,6 +263,9 @@ export const getResults = async (quizId?: string, maxRecords: number = 5000): Pr
 };
 
 export const getResultsForStudent = async (studentId: string, studentCode?: string): Promise<Result[]> => {
+  if (isSupabasePrimary()) {
+    return await supabaseDb.getResultsForStudent(studentId, studentCode);
+  }
   if (!db) return [];
   try {
     const qRef = collection(db, 'results');
@@ -318,6 +307,10 @@ export const getResultsForStudent = async (studentId: string, studentCode?: stri
 };
 
 export const verifyResultExists = async (id: string): Promise<boolean> => {
+  if (isSupabasePrimary()) {
+    const res = await supabaseDb.getResultById(id);
+    return !!res;
+  }
   if (!db) return false;
   try {
     const docSnap = await getDoc(doc(db, 'results', id));
@@ -329,6 +322,9 @@ export const verifyResultExists = async (id: string): Promise<boolean> => {
 };
 
 export const getResultById = async (id: string): Promise<Result | null> => {
+  if (isSupabasePrimary()) {
+    return await supabaseDb.getResultById(id);
+  }
   if (!db) return null;
   try {
     const docSnap = await getDoc(doc(db, 'results', id));
@@ -342,8 +338,8 @@ export const getResultById = async (id: string): Promise<Result | null> => {
   }
 };
 
-export const saveResult = async (result: Result): Promise<void> => {
-  if (!db) throw new Error("Mất kết nối Database Cloud Firestore");
+export const saveResultToFirestore = async (result: Result): Promise<void> => {
+  if (!db) return;
   const payload = {
     id: result.id,
     quizId: result.quizId,
@@ -358,14 +354,56 @@ export const saveResult = async (result: Result): Promise<void> => {
   trackFirestoreWrite('results', 1);
 };
 
-export const deleteResult = async (id: string): Promise<void> => {
+export const saveResult = async (result: Result): Promise<void> => {
+  if (isSupabasePrimary()) {
+    const res = await supabaseDb.saveResult(result);
+    if (isDualSyncActive()) {
+      saveResultToFirestore(result).catch((err) => {
+        console.warn("Dual sync result to Firestore skipped/failed (non-fatal):", err);
+      });
+    }
+    return res;
+  }
+  return await saveResultToFirestore(result);
+};
+
+export const deleteResultFromFirestore = async (id: string): Promise<void> => {
   if (db) {
     await deleteDoc(doc(db, 'results', id));
     trackFirestoreDelete('results', 1);
   }
 };
 
+export const deleteResult = async (id: string): Promise<void> => {
+  if (isSupabasePrimary()) {
+    const res = await supabaseDb.deleteResult(id);
+    if (isDualSyncActive()) {
+      deleteResultFromFirestore(id).catch(() => {});
+    }
+    return res;
+  }
+  return await deleteResultFromFirestore(id);
+};
+
 export const updateResultCode = async (id: string, code: string): Promise<void> => {
+  if (isSupabasePrimary()) {
+    const res = await supabaseDb.updateResultCode(id, code);
+    if (isDualSyncActive() && db) {
+      try {
+        const docRef = doc(db, 'results', id);
+        const docSnap = await getDoc(docRef);
+        if (docSnap.exists()) {
+          const currentData = docSnap.data();
+          const resData = { ...((currentData.data as Result) || currentData), studentCode: code.trim().toUpperCase() };
+          await updateDoc(docRef, {
+            studentCode: code.trim().toUpperCase(),
+            data: cleanUndefined(resData)
+          });
+        }
+      } catch {}
+    }
+    return res;
+  }
   if (!db) return;
   const docRef = doc(db, 'results', id);
   const docSnap = await getDoc(docRef);
@@ -386,6 +424,9 @@ export const getUsersPage = async (
   pageSize: number = 50, 
   search?: string
 ): Promise<{ data: User[]; total: number }> => {
+  if (isSupabasePrimary()) {
+    return await supabaseDb.getUsersPage(page, pageSize, search);
+  }
   if (!db) return { data: [], total: 0 };
   try {
     const qRef = collection(db, 'users');
@@ -427,6 +468,9 @@ export const getUsersPage = async (
 };
 
 export const getUsers = async (): Promise<User[]> => {
+  if (isSupabasePrimary()) {
+    return await supabaseDb.getUsers();
+  }
   if (!db) return [];
   try {
     const snapshot = await getDocs(collection(db, 'users'));
@@ -449,8 +493,8 @@ export const getUsers = async (): Promise<User[]> => {
   }
 };
 
-export const saveUser = async (user: User): Promise<void> => {
-  if (!db) throw new Error("Mất kết nối Database Cloud Firestore");
+export const saveUserToFirestore = async (user: User): Promise<void> => {
+  if (!db) return;
   const payload = {
     id: user.id,
     username: (user.username || '').toLowerCase().trim(),
@@ -474,11 +518,21 @@ export const saveUser = async (user: User): Promise<void> => {
   trackFirestoreWrite('users', 1);
 };
 
-export const saveUsersBatch = async (users: User[]): Promise<void> => {
-  if (!db) throw new Error("Mất kết nối Database Cloud Firestore");
-  if (users.length === 0) return;
+export const saveUser = async (user: User): Promise<void> => {
+  if (isSupabasePrimary()) {
+    const res = await supabaseDb.saveUser(user);
+    if (isDualSyncActive()) {
+      saveUserToFirestore(user).catch((err) => {
+        console.warn("Dual sync user to Firestore skipped/failed (non-fatal):", err);
+      });
+    }
+    return res;
+  }
+  return await saveUserToFirestore(user);
+};
 
-  // Firestore allows up to 500 writes per batch
+export const saveUsersBatchToFirestore = async (users: User[]): Promise<void> => {
+  if (!db || users.length === 0) return;
   const chunkSize = 400;
   for (let i = 0; i < users.length; i += chunkSize) {
     const chunk = users.slice(i, i + chunkSize);
@@ -509,6 +563,19 @@ export const saveUsersBatch = async (users: User[]): Promise<void> => {
     await batch.commit();
     trackFirestoreWrite('users', chunk.length);
   }
+};
+
+export const saveUsersBatch = async (users: User[]): Promise<void> => {
+  if (isSupabasePrimary()) {
+    const res = await supabaseDb.saveUsersBatch(users);
+    if (isDualSyncActive()) {
+      saveUsersBatchToFirestore(users).catch((err) => {
+        console.warn("Dual sync users batch to Firestore skipped/failed (non-fatal):", err);
+      });
+    }
+    return res;
+  }
+  return await saveUsersBatchToFirestore(users);
 };
 
 // Memory cache to drastically reduce Firebase read quota consumption
@@ -557,6 +624,9 @@ export const invalidateMemoryCache = (key?: 'teachers' | 'chapters' | 'classes' 
 
 // --- Teachers Management (SuperAdmin) ---
 export const getTeachers = async (forceRefresh: boolean = false): Promise<User[]> => {
+  if (isSupabasePrimary()) {
+    return await supabaseDb.getTeachers();
+  }
   if (!db) return [];
   const now = Date.now();
   if (!forceRefresh && memoryCache.teachers && memoryCache.teachers.expires > now) {
@@ -664,6 +734,9 @@ export const deleteTeacher = async (id: string): Promise<void> => {
 };
 
 export const addPointsToUser = async (userId: string, points: number): Promise<void> => {
+  if (isSupabasePrimary()) {
+    return await supabaseDb.addPointsToUser(userId, points);
+  }
   if (!db) return;
   try {
     const docRef = doc(db, 'users', userId);
@@ -685,6 +758,9 @@ export const addPointsToUser = async (userId: string, points: number): Promise<v
 };
 
 export const findUserByStudentCode = async (code: string): Promise<User | undefined> => {
+  if (isSupabasePrimary()) {
+    return await supabaseDb.findUserByStudentCode(code);
+  }
   if (!db) return undefined;
   try {
     const targetCode = code.trim().toUpperCase();
@@ -703,6 +779,9 @@ export const findUserByStudentCode = async (code: string): Promise<User | undefi
 };
 
 export const findUser = async (username: string): Promise<User | undefined> => {
+  if (isSupabasePrimary()) {
+    return await supabaseDb.findUser(username);
+  }
   if (!db) return undefined;
   try {
     const targetUser = username.trim().toLowerCase();
@@ -734,7 +813,7 @@ export const findUser = async (username: string): Promise<User | undefined> => {
   }
 };
 
-export const deleteUser = async (id: string): Promise<void> => {
+export const deleteUserFromFirestore = async (id: string): Promise<void> => {
   if (!db) return;
   try {
     // 1. Delete associated results
@@ -752,12 +831,25 @@ export const deleteUser = async (id: string): Promise<void> => {
     await deleteDoc(doc(db, 'users', id));
     trackFirestoreDelete('users', 1);
   } catch (e) {
-    console.error("Lỗi deleteUser:", e);
-    throw e;
+    console.error("Lỗi deleteUser Firestore:", e);
   }
 };
 
+export const deleteUser = async (id: string): Promise<void> => {
+  if (isSupabasePrimary()) {
+    const res = await supabaseDb.deleteUser(id);
+    if (isDualSyncActive()) {
+      deleteUserFromFirestore(id).catch(() => {});
+    }
+    return res;
+  }
+  return await deleteUserFromFirestore(id);
+};
+
 export const changePassword = async (userId: string, newPassword: string): Promise<boolean> => {
+  if (isSupabasePrimary()) {
+    return await supabaseDb.changePassword(userId, newPassword);
+  }
   if (!db) return false;
   try {
     let userRef = doc(db, 'users', userId);
@@ -807,6 +899,13 @@ export const getQuizzesMetadata = async (
   academicYear?: string, 
   forceRefresh: boolean = false
 ): Promise<Quiz[]> => {
+  if (isSupabasePrimary()) {
+    let list = await supabaseDb.getQuizzesMetadata(grade);
+    if (academicYear && academicYear !== 'all') {
+      list = list.filter(q => getQuizAcademicYear(q) === academicYear);
+    }
+    return list;
+  }
   const now = Date.now();
   if (!forceRefresh && memoryCache.quizzesMeta && memoryCache.quizzesMeta.expires > now) {
     let cached = memoryCache.quizzesMeta.data;
@@ -936,6 +1035,9 @@ export const getQuizzesMetadataPage = async (
 };
 
 export const getQuizzes = async (grade?: Grade): Promise<Quiz[]> => {
+  if (isSupabasePrimary()) {
+    return await supabaseDb.getQuizzes(grade);
+  }
   if (!db) return [];
   try {
     const qRef = collection(db, 'quizzes');
@@ -971,6 +1073,9 @@ export const getQuizzes = async (grade?: Grade): Promise<Quiz[]> => {
 };
 
 export const getQuizById = async (id: string, forceRefresh: boolean = false): Promise<Quiz | null> => {
+  if (isSupabasePrimary()) {
+    return await supabaseDb.getQuizById(id);
+  }
   const now = Date.now();
   if (!forceRefresh && memoryCache.quizDetails?.has(id)) {
     const cached = memoryCache.quizDetails.get(id);
@@ -1202,62 +1307,48 @@ export const optimizeQuizQuestions = async (questions: Question[]): Promise<Ques
   );
 };
 
-export const saveQuiz = async (quiz: Quiz): Promise<void> => {
-  if (!db) throw new Error("Mất kết nối Database Cloud Firestore");
-  const effectiveYear = quiz.academicYear || getQuizAcademicYear(quiz);
-  const rawQList = quiz.questions || [];
-  
-  // Tự động nén ảnh Base64 trong câu hỏi (nếu có)
-  const qList = await optimizeQuizQuestions(rawQList);
-  const enrichedQuiz = { 
-    ...quiz, 
-    academicYear: effectiveYear,
-    questions: qList,
-    questionCount: qList.length 
-  };
-
-  // Tách biệt metadata và questions để KHÔNG lưu trùng lặp danh sách câu hỏi 2 lần trong cùng 1 document
+export const saveQuizToFirestore = async (enrichedQuiz: Quiz): Promise<void> => {
+  if (!db) return;
+  const effectiveYear = enrichedQuiz.academicYear || getQuizAcademicYear(enrichedQuiz);
+  const qList = enrichedQuiz.questions || [];
   const { questions: _unusedQuestions, data: _unusedData, ...metaOnly } = enrichedQuiz as any;
 
   const payload: any = {
-    id: quiz.id,
-    title: quiz.title || '',
-    grade: quiz.grade || '12',
-    type: quiz.type || 'test',
-    category: quiz.category || '',
-    subject: quiz.subject || '',
+    id: enrichedQuiz.id,
+    title: enrichedQuiz.title || '',
+    grade: enrichedQuiz.grade || '12',
+    type: enrichedQuiz.type || 'test',
+    category: enrichedQuiz.category || '',
+    subject: enrichedQuiz.subject || '',
     academicYear: effectiveYear,
-    isPublished: quiz.isPublished ?? false,
-    isMonitored: quiz.isMonitored || false,
-    isUnlisted: quiz.isUnlisted || false,
-    disablePractice: quiz.disablePractice || false,
-    showResultAnswers: quiz.showResultAnswers !== false,
-    durationMinutes: quiz.durationMinutes || 45,
-    orderIndex: quiz.orderIndex || 0,
-    startTime: quiz.startTime || null,
-    endTime: quiz.endTime || null,
-    createdBy: quiz.createdBy || '',
-    createdByName: quiz.createdByName || '',
-    isSharedWithTeachers: quiz.isSharedWithTeachers ?? false,
-    targetType: quiz.targetType || 'all',
-    assignedClassIds: quiz.assignedClassIds || [],
+    isPublished: enrichedQuiz.isPublished ?? false,
+    isMonitored: enrichedQuiz.isMonitored || false,
+    isUnlisted: enrichedQuiz.isUnlisted || false,
+    disablePractice: enrichedQuiz.disablePractice || false,
+    showResultAnswers: enrichedQuiz.showResultAnswers !== false,
+    durationMinutes: enrichedQuiz.durationMinutes || 45,
+    orderIndex: enrichedQuiz.orderIndex || 0,
+    startTime: enrichedQuiz.startTime || null,
+    endTime: enrichedQuiz.endTime || null,
+    createdBy: enrichedQuiz.createdBy || '',
+    createdByName: enrichedQuiz.createdByName || '',
+    isSharedWithTeachers: enrichedQuiz.isSharedWithTeachers ?? false,
+    targetType: enrichedQuiz.targetType || 'all',
+    assignedClassIds: enrichedQuiz.assignedClassIds || [],
     questionCount: enrichedQuiz.questionCount,
-    attemptCount: quiz.attemptCount || 0,
-    createdAt: quiz.createdAt || new Date().toISOString(),
+    attemptCount: enrichedQuiz.attemptCount || 0,
+    createdAt: enrichedQuiz.createdAt || new Date().toISOString(),
     updatedAt: new Date().toISOString(),
-    // Chỉ lưu metadata vào data, KHÔNG bao gồm mảng questions để tiết kiệm 50% dung lượng
     data: cleanUndefined(metaOnly),
     questions: qList,
     isChunked: false,
     chunkCount: 0
   };
 
-  // Tính toán dung lượng document (Firestore giới hạn tối đa 1,048,576 bytes ~ 1MB)
   const estimatedSize = new Blob([JSON.stringify(payload)]).size;
-  const FIRESTORE_SAFE_LIMIT = 750 * 1024; // 750 KB ngưỡng an toàn
+  const FIRESTORE_SAFE_LIMIT = 750 * 1024; // 750 KB
 
   if (estimatedSize > FIRESTORE_SAFE_LIMIT) {
-    // Đề thi có kích thước lớn (> 750KB): Tự động chia nhỏ (chunk) câu hỏi sang subcollection
     const CHUNK_SIZE = 15;
     const chunks: Question[][] = [];
     for (let i = 0; i < qList.length; i += CHUNK_SIZE) {
@@ -1266,31 +1357,54 @@ export const saveQuiz = async (quiz: Quiz): Promise<void> => {
 
     payload.isChunked = true;
     payload.chunkCount = chunks.length;
-    payload.questions = []; // Root document chỉ giữ metadata
+    payload.questions = [];
 
-    await setDoc(doc(db, 'quizzes', quiz.id), cleanUndefined(payload));
+    await setDoc(doc(db, 'quizzes', enrichedQuiz.id), cleanUndefined(payload));
 
-    // Lưu các chunks vào subcollection 'chunks'
     const batch = writeBatch(db);
     chunks.forEach((chunk, idx) => {
-      const chunkRef = doc(db, 'quizzes', quiz.id, 'chunks', `chunk_${idx}`);
+      const chunkRef = doc(db, 'quizzes', enrichedQuiz.id, 'chunks', `chunk_${idx}`);
       batch.set(chunkRef, { index: idx, questions: cleanUndefined(chunk) });
     });
     await batch.commit();
   } else {
-    // Kích thước an toàn: Lưu trực tiếp vào root document
-    await setDoc(doc(db, 'quizzes', quiz.id), cleanUndefined(payload));
+    await setDoc(doc(db, 'quizzes', enrichedQuiz.id), cleanUndefined(payload));
   }
 
-  if (memoryCache.quizDetails) memoryCache.quizDetails.delete(quiz.id);
+  if (memoryCache.quizDetails) memoryCache.quizDetails.delete(enrichedQuiz.id);
   try {
-    localStorage.removeItem(`eduquiz_quiz_detail_${quiz.id}`);
+    localStorage.removeItem(`eduquiz_quiz_detail_${enrichedQuiz.id}`);
   } catch {}
   invalidateMemoryCache('quizzes');
   trackFirestoreWrite('quizzes', 1);
 };
 
+export const saveQuiz = async (quiz: Quiz): Promise<void> => {
+  const rawQList = quiz.questions || [];
+  const qList = await optimizeQuizQuestions(rawQList);
+  const enrichedQuiz = { 
+    ...quiz, 
+    academicYear: quiz.academicYear || getQuizAcademicYear(quiz),
+    questions: qList,
+    questionCount: qList.length 
+  };
+
+  if (isSupabasePrimary()) {
+    const res = await supabaseDb.saveQuiz(enrichedQuiz);
+    if (isDualSyncActive()) {
+      saveQuizToFirestore(enrichedQuiz).catch((err) => {
+        console.warn("Dual sync quiz to Firestore skipped/failed (non-fatal):", err);
+      });
+    }
+    return res;
+  }
+  return await saveQuizToFirestore(enrichedQuiz);
+};
+
 export const updateQuiz = async (enrichedQuiz: Quiz): Promise<void> => {
+  if (isSupabasePrimary()) {
+    return await saveQuiz(enrichedQuiz);
+  }
   if (!db) throw new Error("Mất kết nối Database Cloud Firestore");
   const effectiveYear = enrichedQuiz.academicYear || getQuizAcademicYear(enrichedQuiz);
   const rawQList = enrichedQuiz.questions || [];
@@ -1389,6 +1503,9 @@ export const updateQuiz = async (enrichedQuiz: Quiz): Promise<void> => {
 };
 
 export const updateQuizAcademicYear = async (quizId: string, academicYear: string): Promise<void> => {
+  if (isSupabasePrimary()) {
+    return await supabaseDb.updateQuizAcademicYear(quizId, academicYear);
+  }
   if (!db) throw new Error("Mất kết nối Database Cloud Firestore");
   const quizRef = doc(db, 'quizzes', quizId);
   await updateDoc(quizRef, {
@@ -1409,6 +1526,9 @@ export const updateQuizAcademicYear = async (quizId: string, academicYear: strin
 };
 
 export const updateQuizShareStatus = async (quizId: string, isShared: boolean): Promise<void> => {
+  if (isSupabasePrimary()) {
+    return await supabaseDb.updateQuizShareStatus(quizId, isShared);
+  }
   if (!db) throw new Error("Mất kết nối Database Cloud Firestore");
   const quizRef = doc(db, 'quizzes', quizId);
   await updateDoc(quizRef, {
@@ -1454,6 +1574,9 @@ export const assignQuizToClasses = async (
   assignedClassIds: string[], 
   teacherManagedClassIds?: string[]
 ): Promise<{ finalClassIds: string[]; targetType: string }> => {
+  if (isSupabasePrimary()) {
+    return await supabaseDb.assignQuizToClasses(quizId, assignedClassIds, teacherManagedClassIds);
+  }
   if (!db) throw new Error("Mất kết nối Database Cloud Firestore");
   const quizRef = doc(db, 'quizzes', quizId);
   const docSnap = await getDoc(quizRef);
@@ -1499,20 +1622,30 @@ export const assignQuizToClasses = async (
   return { finalClassIds, targetType };
 };
 
+export const deleteQuizFromFirestore = async (id: string): Promise<void> => {
+  if (!db) return;
+  try {
+    const chunksSnap = await getDocs(collection(db, 'quizzes', id, 'chunks'));
+    if (!chunksSnap.empty) {
+      const batch = writeBatch(db);
+      chunksSnap.docs.forEach(d => batch.delete(d.ref));
+      await batch.commit();
+    }
+  } catch {}
+  await deleteDoc(doc(db, 'quizzes', id));
+  invalidateMemoryCache('quizzes');
+  trackFirestoreDelete('quizzes', 1);
+};
+
 export const deleteQuiz = async (id: string): Promise<void> => {
-  if (db) {
-    try {
-      const chunksSnap = await getDocs(collection(db, 'quizzes', id, 'chunks'));
-      if (!chunksSnap.empty) {
-        const batch = writeBatch(db);
-        chunksSnap.docs.forEach(d => batch.delete(d.ref));
-        await batch.commit();
-      }
-    } catch {}
-    await deleteDoc(doc(db, 'quizzes', id));
-    invalidateMemoryCache('quizzes');
-    trackFirestoreDelete('quizzes', 1);
+  if (isSupabasePrimary()) {
+    const res = await supabaseDb.deleteQuiz(id);
+    if (isDualSyncActive()) {
+      deleteQuizFromFirestore(id).catch(() => {});
+    }
+    return res;
   }
+  return await deleteQuizFromFirestore(id);
 };
 
 export const syncAllQuizzesMetadata = async (): Promise<number> => {
@@ -1553,6 +1686,9 @@ export const syncAllQuizzesMetadata = async (): Promise<number> => {
 
 // --- Chapters ---
 export const getChapters = async (forceRefresh: boolean = false): Promise<Chapter[]> => {
+  if (isSupabasePrimary()) {
+    return await supabaseDb.getChapters();
+  }
   if (!db) return [];
   const now = Date.now();
   if (!forceRefresh && memoryCache.chapters && memoryCache.chapters.expires > now) {
@@ -1586,7 +1722,7 @@ export const getChapters = async (forceRefresh: boolean = false): Promise<Chapte
   }
 };
 
-export const saveChapter = async (c: Chapter): Promise<void> => {
+export const saveChapterToFirestore = async (c: Chapter): Promise<void> => {
   if (db) {
     invalidateMemoryCache('chapters');
     await setDoc(doc(db, 'chapters', c.id), cleanUndefined({
@@ -1603,7 +1739,20 @@ export const saveChapter = async (c: Chapter): Promise<void> => {
   }
 };
 
-export const deleteChapter = async (id: string): Promise<void> => {
+export const saveChapter = async (c: Chapter): Promise<void> => {
+  if (isSupabasePrimary()) {
+    const res = await supabaseDb.saveChapter(c);
+    if (isDualSyncActive()) {
+      saveChapterToFirestore(c).catch((err) => {
+        console.warn("Dual sync chapter to Firestore skipped/failed (non-fatal):", err);
+      });
+    }
+    return res;
+  }
+  return await saveChapterToFirestore(c);
+};
+
+export const deleteChapterFromFirestore = async (id: string): Promise<void> => {
   if (db) {
     invalidateMemoryCache('chapters');
     await deleteDoc(doc(db, 'chapters', id));
@@ -1611,7 +1760,18 @@ export const deleteChapter = async (id: string): Promise<void> => {
   }
 };
 
-export const deleteChaptersBatch = async (ids: string[]): Promise<void> => {
+export const deleteChapter = async (id: string): Promise<void> => {
+  if (isSupabasePrimary()) {
+    const res = await supabaseDb.deleteChapter(id);
+    if (isDualSyncActive()) {
+      deleteChapterFromFirestore(id).catch(() => {});
+    }
+    return res;
+  }
+  return await deleteChapterFromFirestore(id);
+};
+
+export const deleteChaptersBatchFromFirestore = async (ids: string[]): Promise<void> => {
   if (!db || ids.length === 0) return;
   invalidateMemoryCache('chapters');
   const batch = writeBatch(db);
@@ -1622,8 +1782,24 @@ export const deleteChaptersBatch = async (ids: string[]): Promise<void> => {
   trackFirestoreDelete('chapters', ids.length);
 };
 
+export const deleteChaptersBatch = async (ids: string[]): Promise<void> => {
+  if (isSupabasePrimary()) {
+    for (const id of ids) {
+      await supabaseDb.deleteChapter(id);
+    }
+    if (isDualSyncActive()) {
+      deleteChaptersBatchFromFirestore(ids).catch(() => {});
+    }
+    return;
+  }
+  return await deleteChaptersBatchFromFirestore(ids);
+};
+
 // --- Classroom & Academic Year Management ---
 export const getClasses = async (forceRefresh: boolean = false): Promise<ClassRoom[]> => {
+  if (isSupabasePrimary()) {
+    return await supabaseDb.getClasses();
+  }
   if (db) {
     const now = Date.now();
     if (!forceRefresh && memoryCache.classes && memoryCache.classes.expires > now) {
@@ -1677,7 +1853,7 @@ export const getClasses = async (forceRefresh: boolean = false): Promise<ClassRo
   return [];
 };
 
-export const saveClass = async (c: ClassRoom): Promise<void> => {
+export const saveClassToFirestore = async (c: ClassRoom): Promise<void> => {
   invalidateMemoryCache('classes');
   try {
     const list = await getClasses();
@@ -1703,7 +1879,20 @@ export const saveClass = async (c: ClassRoom): Promise<void> => {
   }
 };
 
-export const saveClassesBatch = async (classesList: ClassRoom[]): Promise<void> => {
+export const saveClass = async (c: ClassRoom): Promise<void> => {
+  if (isSupabasePrimary()) {
+    const res = await supabaseDb.saveClass(c);
+    if (isDualSyncActive()) {
+      saveClassToFirestore(c).catch((err) => {
+        console.warn("Dual sync class to Firestore skipped/failed (non-fatal):", err);
+      });
+    }
+    return res;
+  }
+  return await saveClassToFirestore(c);
+};
+
+export const saveClassesBatchToFirestore = async (classesList: ClassRoom[]): Promise<void> => {
   if (classesList.length === 0) return;
   invalidateMemoryCache('classes');
   try {
@@ -1730,7 +1919,20 @@ export const saveClassesBatch = async (classesList: ClassRoom[]): Promise<void> 
   }
 };
 
-export const deleteClass = async (id: string): Promise<void> => {
+export const saveClassesBatch = async (classesList: ClassRoom[]): Promise<void> => {
+  if (isSupabasePrimary()) {
+    const res = await supabaseDb.saveClassesBatch(classesList);
+    if (isDualSyncActive()) {
+      saveClassesBatchToFirestore(classesList).catch((err) => {
+        console.warn("Dual sync classes batch to Firestore skipped/failed (non-fatal):", err);
+      });
+    }
+    return res;
+  }
+  return await saveClassesBatchToFirestore(classesList);
+};
+
+export const deleteClassFromFirestore = async (id: string): Promise<void> => {
   invalidateMemoryCache('classes');
   try {
     const list = await getClasses();
@@ -1742,6 +1944,17 @@ export const deleteClass = async (id: string): Promise<void> => {
     await deleteDoc(doc(db, 'classes', id));
     trackFirestoreDelete('classes', 1);
   }
+};
+
+export const deleteClass = async (id: string): Promise<void> => {
+  if (isSupabasePrimary()) {
+    const res = await supabaseDb.deleteClass(id);
+    if (isDualSyncActive()) {
+      deleteClassFromFirestore(id).catch(() => {});
+    }
+    return res;
+  }
+  return await deleteClassFromFirestore(id);
 };
 
 export const assignStudentsToClass = async (
@@ -1807,6 +2020,9 @@ export const getQuestionFingerprint = (q: Partial<Question>): string => {
 };
 
 export const getBankQuestions = async (forceRefresh: boolean = false): Promise<Question[]> => {
+  if (isSupabasePrimary()) {
+    return await supabaseDb.getBankQuestions();
+  }
   const now = Date.now();
   if (!forceRefresh && memoryCache.bankQuestions && memoryCache.bankQuestions.expires > now) {
     return memoryCache.bankQuestions.data;
@@ -2091,7 +2307,7 @@ export const deduplicateBankQuestions = async (targetSubject?: string): Promise<
   }
 };
 
-export const saveBankQuestion = async (q: Question): Promise<void> => {
+export const saveBankQuestionToFirestore = async (q: Question): Promise<void> => {
   if (db) {
     await setDoc(doc(db, 'bank_questions', q.id), cleanUndefined({
       id: q.id,
@@ -2105,7 +2321,20 @@ export const saveBankQuestion = async (q: Question): Promise<void> => {
   }
 };
 
-export const deleteBankQuestion = async (id: string): Promise<void> => {
+export const saveBankQuestion = async (q: Question): Promise<void> => {
+  if (isSupabasePrimary()) {
+    const res = await supabaseDb.saveBankQuestion(q);
+    if (isDualSyncActive()) {
+      saveBankQuestionToFirestore(q).catch((err) => {
+        console.warn("Dual sync bank question to Firestore skipped/failed (non-fatal):", err);
+      });
+    }
+    return res;
+  }
+  return await saveBankQuestionToFirestore(q);
+};
+
+export const deleteBankQuestionFromFirestore = async (id: string): Promise<void> => {
   if (!id) return;
   if (db) {
     await deleteDoc(doc(db, 'bank_questions', id));
@@ -2114,10 +2343,20 @@ export const deleteBankQuestion = async (id: string): Promise<void> => {
   }
 };
 
-export const deleteBatchBankQuestions = async (ids: string[]): Promise<number> => {
-  if (!ids || ids.length === 0) return 0;
-  if (!db) return ids.length;
+export const deleteBankQuestion = async (id: string): Promise<void> => {
+  if (!id) return;
+  if (isSupabasePrimary()) {
+    const res = await supabaseDb.deleteBankQuestion(id);
+    if (isDualSyncActive()) {
+      deleteBankQuestionFromFirestore(id).catch(() => {});
+    }
+    return res;
+  }
+  return await deleteBankQuestionFromFirestore(id);
+};
 
+export const deleteBatchBankQuestionsFromFirestore = async (ids: string[]): Promise<number> => {
+  if (!ids || ids.length === 0 || !db) return 0;
   const chunkSize = 400;
   let deletedCount = 0;
   for (let i = 0; i < ids.length; i += chunkSize) {
@@ -2134,15 +2373,167 @@ export const deleteBatchBankQuestions = async (ids: string[]): Promise<number> =
   return deletedCount;
 };
 
+export const deleteBatchBankQuestions = async (ids: string[]): Promise<number> => {
+  if (!ids || ids.length === 0) return 0;
+  if (isSupabasePrimary()) {
+    for (const id of ids) {
+      await supabaseDb.deleteBankQuestion(id);
+    }
+    if (isDualSyncActive()) {
+      deleteBatchBankQuestionsFromFirestore(ids).catch(() => {});
+    }
+    return ids.length;
+  }
+  return await deleteBatchBankQuestionsFromFirestore(ids);
+};
+
 // Upload Quiz Image (supports Firebase Storage with generous timeout, or compressed Base64 fallback)
 export type ImageStorageDestination = 'cloud' | 'base64' | 'auto';
+
+// Lấy ImgBB API Key từ localStorage
+export const getImgBBKey = (): string => {
+  try {
+    return localStorage.getItem('eduquiz_imgbb_api_key') || '';
+  } catch {
+    return '';
+  }
+};
+
+export const setImgBBKey = (key: string): void => {
+  try {
+    if (key && key.trim()) {
+      localStorage.setItem('eduquiz_imgbb_api_key', key.trim());
+    } else {
+      localStorage.removeItem('eduquiz_imgbb_api_key');
+    }
+  } catch (e) {
+    console.error("Lỗi lưu ImgBB Key:", e);
+  }
+};
+
+// Tải ảnh trực tiếp lên ImgBB (miễn phí, không phụ thuộc Firebase Console)
+export const uploadBlobToImgBB = async (blob: Blob, apiKey?: string): Promise<string> => {
+  const key = apiKey || getImgBBKey();
+  if (!key) throw new Error("Chưa cấu hình ImgBB API Key");
+
+  const formData = new FormData();
+  formData.append('image', blob);
+
+  const res = await fetch(`https://api.imgbb.com/1/upload?key=${key}`, {
+    method: 'POST',
+    body: formData
+  });
+
+  const json = await res.json();
+  if (!res.ok || !json.success) {
+    throw new Error(json.error?.message || `Lỗi tải ảnh lên ImgBB (Mã: ${json.status_code || res.status})`);
+  }
+
+  return json.data.url;
+};
+
+// Định dạng lỗi Firebase Storage thành thông báo tiếng Việt dễ hiểu
+export const formatStorageError = (err: any): { 
+  type: 'not-found' | 'unauthorized' | 'unknown'; 
+  status: number; 
+  code: string; 
+  message: string; 
+} => {
+  const code = err?.code || '';
+  const status = err?.status_ || err?.customData?.serverResponse?.status || 0;
+  const rawMsg = err?.message || '';
+
+  if (status === 404 || code === 'storage/bucket-not-found' || (code === 'storage/unknown' && (rawMsg.includes('404') || status === 404))) {
+    return {
+      type: 'not-found',
+      status: 404,
+      code,
+      message: 'Lỗi 404: Storage Bucket chưa được kích hoạt trên Firebase Console. Bạn cần vào Firebase Console mục Storage bấm "Get started" (Bắt đầu).'
+    };
+  }
+
+  if (status === 403 || code === 'storage/unauthorized') {
+    return {
+      type: 'unauthorized',
+      status: 403,
+      code,
+      message: 'Lỗi 403 (Permission Denied): Chưa có quyền ghi vào Storage. Bạn cần mở tab Rules trong Firebase Storage và đổi thành "allow read, write: if true;".'
+    };
+  }
+
+  return {
+    type: 'unknown',
+    status,
+    code,
+    message: rawMsg || 'Lỗi kết nối Firebase Storage không xác định.'
+  };
+};
+
+// Lấy instance Storage tương ứng (hỗ trợ custom bucket hoặc fallback sang .appspot.com)
+export const getResolvedFirebaseStorage = (overrideBucket?: string) => {
+  try {
+    const custom = overrideBucket || localStorage.getItem('eduquiz_custom_storage_bucket') || '';
+    if (custom) {
+      const bucketUrl = custom.startsWith('gs://') ? custom : `gs://${custom}`;
+      return getStorage(app, bucketUrl);
+    }
+  } catch (e) {
+    console.warn("Lỗi đọc custom bucket:", e);
+  }
+  return storage;
+};
+
+// Hàm kiểm tra kết nối tới Firebase Storage trực tiếp
+export const testStorageConnection = async (customBucket?: string): Promise<{
+  success: boolean;
+  status: 'active' | 'not_found' | 'unauthorized' | 'error';
+  message: string;
+  bucket: string;
+  url?: string;
+}> => {
+  const targetBucket = customBucket || localStorage.getItem('eduquiz_custom_storage_bucket') || firebaseConfig.storageBucket || `${firebaseConfig.projectId}.firebasestorage.app`;
+  const currentStorage = getStorage(app, targetBucket.startsWith('gs://') ? targetBucket : `gs://${targetBucket}`);
+
+  const testFileRef = ref(currentStorage, `_healthcheck/${Date.now()}.txt`);
+  const blob = new Blob(["healthcheck"], { type: "text/plain" });
+
+  try {
+    const snap = await uploadBytes(testFileRef, blob);
+    const downloadUrl = await getDownloadURL(snap.ref);
+    // Dọn dẹp file test
+    try {
+      await deleteObject(snap.ref);
+    } catch {
+      // bỏ qua lỗi xóa
+    }
+    return {
+      success: true,
+      status: 'active',
+      bucket: targetBucket,
+      message: 'Kết nối Firebase Storage thành công! Đã sẵn sàng lưu ảnh trực tuyến.',
+      url: downloadUrl
+    };
+  } catch (err: any) {
+    const errInfo = formatStorageError(err);
+    let status: 'active' | 'not_found' | 'unauthorized' | 'error' = 'error';
+    if (errInfo.type === 'not-found') status = 'not_found';
+    else if (errInfo.type === 'unauthorized') status = 'unauthorized';
+
+    return {
+      success: false,
+      status,
+      bucket: targetBucket,
+      message: errInfo.message
+    };
+  }
+};
 
 export const uploadQuizImage = async (
   file: File | Blob, 
   mode: ImageStorageDestination = 'cloud'
 ): Promise<string> => {
   try {
-    // 1. Compress image client-side first for instant speed & lightweight footprint
+    // 1. Nén ảnh client-side trước để siêu nhẹ & tải tức thì
     const { dataUrl, blob } = await compressImageFile(file, 900, 900, 0.82);
 
     // Nếu người dùng chủ động chọn lưu Base64 cục bộ
@@ -2150,17 +2541,29 @@ export const uploadQuizImage = async (
       return dataUrl;
     }
 
-    // 2. Tải lên Firebase Cloud Storage với thời gian chờ 15s
-    if (storage) {
+    // 2. Kiểm tra nếu có cấu hình ImgBB API Key -> Tải lên ImgBB trước
+    const imgbbKey = getImgBBKey();
+    if (imgbbKey) {
       try {
-        const fileExt = (file instanceof File && file.type === 'image/png') ? 'png' : 'jpg';
-        const fileName = `quiz-images/${uuidv4()}.${fileExt}`;
-        const imageRef = ref(storage, fileName);
-        const metadata = {
-          contentType: fileExt === 'png' ? 'image/png' : 'image/jpeg',
-          customMetadata: { uploadedAt: new Date().toISOString() }
-        };
+        const imgbbUrl = await uploadBlobToImgBB(blob, imgbbKey);
+        if (imgbbUrl) return imgbbUrl;
+      } catch (imgbbErr) {
+        console.warn("Tải lên ImgBB thất bại, thử tiếp Firebase Storage:", imgbbErr);
+      }
+    }
 
+    // 3. Tải lên Firebase Cloud Storage
+    const activeStorage = getResolvedFirebaseStorage();
+    if (activeStorage) {
+      const fileExt = (file instanceof File && file.type === 'image/png') ? 'png' : 'jpg';
+      const fileName = `quiz-images/${uuidv4()}.${fileExt}`;
+      const metadata = {
+        contentType: fileExt === 'png' ? 'image/png' : 'image/jpeg',
+        customMetadata: { uploadedAt: new Date().toISOString() }
+      };
+
+      try {
+        const imageRef = ref(activeStorage, fileName);
         const storageUploadPromise = (async () => {
           const snapshot = await uploadBytes(imageRef, blob, metadata);
           return await getDownloadURL(snapshot.ref);
@@ -2173,12 +2576,62 @@ export const uploadQuizImage = async (
         const cloudUrl = await Promise.race([storageUploadPromise, timeoutPromise]);
         if (cloudUrl) return cloudUrl;
       } catch (err: any) {
-        console.warn("Tải lên Firebase Storage thất bại hoặc quá giờ, tự động fallback sang Base64 nén:", err);
+        const errInfo = formatStorageError(err);
+        console.warn("Lần 1 tải lên Storage thất bại:", errInfo.message);
+
+        // Nếu lỗi 404 trên bucket chính và chưa cấu hình custom bucket, thử tiếp bucket đuôi .appspot.com
+        if (errInfo.type === 'not-found' && !localStorage.getItem('eduquiz_custom_storage_bucket')) {
+          const fallbackBucket = `${firebaseConfig.projectId}.appspot.com`;
+          try {
+            const altStorage = getStorage(app, `gs://${fallbackBucket}`);
+            const altRef = ref(altStorage, fileName);
+            const altSnapshot = await uploadBytes(altRef, blob, metadata);
+            const altUrl = await getDownloadURL(altSnapshot.ref);
+            // Ghi nhớ bucket hoạt động để các lần sau không cần thử lại
+            localStorage.setItem('eduquiz_custom_storage_bucket', fallbackBucket);
+            return altUrl;
+          } catch (altErr) {
+            console.warn("Fallback bucket cũng không khả dụng:", altErr);
+          }
+        }
+
+        // Lưu thông tin lỗi vào sessionStorage và phát event để UI hiển thị thông báo chính xác
+        try {
+          sessionStorage.setItem('eduquiz_last_storage_error', JSON.stringify({
+            message: errInfo.message,
+            type: errInfo.type,
+            time: Date.now()
+          }));
+          window.dispatchEvent(new CustomEvent('eduquiz_storage_upload_failed', { 
+            detail: { error: errInfo.message, type: errInfo.type } 
+          }));
+        } catch {
+          // ignore
+        }
+
+        // Thử tiếp Supabase Storage nếu có cấu hình trước khi nén base64
+        try {
+          const supabaseUrl = await uploadImageToSupabaseStorage(blob, fileExt);
+          if (supabaseUrl) return supabaseUrl;
+        } catch (sbErr) {
+          console.warn("Supabase storage upload fallback failed:", sbErr);
+        }
+
+        // Tự động fallback sang Base64 nén để không làm gián đoạn công việc của giáo viên
         return dataUrl;
       }
     }
 
-    // 3. Trả về Base64 nén nếu chưa cấu hình storage
+    // 4. Thử Supabase Storage nếu Firebase Storage chưa được kết nối
+    try {
+      const fileExt = (file instanceof File && file.type === 'image/png') ? 'png' : 'jpg';
+      const supabaseUrl = await uploadImageToSupabaseStorage(blob, fileExt);
+      if (supabaseUrl) return supabaseUrl;
+    } catch {
+      // ignore
+    }
+
+    // 5. Trả về Base64 nén nếu chưa cấu hình storage nào
     return dataUrl;
   } catch (error) {
     console.error("Lỗi xử lý ảnh:", error);
@@ -2191,32 +2644,71 @@ export const uploadQuizImage = async (
   }
 };
 
-// Tải một chuỗi ảnh Base64 sẵn có lên Firebase Storage và lấy đường dẫn URL
+// Tải một chuỗi ảnh Base64 sẵn có lên Firebase Storage hoặc ImgBB và lấy đường dẫn URL
 export const uploadBase64ToStorage = async (dataUrl: string): Promise<string> => {
   if (!dataUrl || !dataUrl.startsWith('data:image/')) return dataUrl;
-  if (!storage) throw new Error("Firebase Storage chưa được khởi tạo!");
 
   const res = await fetch(dataUrl);
   const blob = await res.blob();
 
+  // 1. Kiểm tra nếu có cấu hình ImgBB API Key
+  const imgbbKey = getImgBBKey();
+  if (imgbbKey) {
+    return await uploadBlobToImgBB(blob, imgbbKey);
+  }
+
+  // 1.5. Kiểm tra nếu có cấu hình Supabase Storage
+  try {
+    const supabaseUrl = await uploadImageToSupabaseStorage(blob, 'jpg');
+    if (supabaseUrl) return supabaseUrl;
+  } catch {
+    // Thử tiếp các phương thức khác
+  }
+
+  // 2. Tải lên Firebase Cloud Storage
+  const activeStorage = getResolvedFirebaseStorage();
+  if (!activeStorage) throw new Error("Firebase Storage chưa được khởi tạo!");
+
   const fileName = `quiz-images/${uuidv4()}.jpg`;
-  const imageRef = ref(storage, fileName);
   const metadata = {
     contentType: 'image/jpeg',
     customMetadata: { convertedFromBase64: 'true', uploadedAt: new Date().toISOString() }
   };
 
-  const snapshot = await uploadBytes(imageRef, blob, metadata);
-  return await getDownloadURL(snapshot.ref);
+  try {
+    const imageRef = ref(activeStorage, fileName);
+    const snapshot = await uploadBytes(imageRef, blob, metadata);
+    return await getDownloadURL(snapshot.ref);
+  } catch (err: any) {
+    const errInfo = formatStorageError(err);
+    
+    // Nếu lỗi 404 và chưa cấu hình custom bucket, thử bucket đuôi .appspot.com
+    if (errInfo.type === 'not-found' && !localStorage.getItem('eduquiz_custom_storage_bucket')) {
+      const fallbackBucket = `${firebaseConfig.projectId}.appspot.com`;
+      try {
+        const altStorage = getStorage(app, `gs://${fallbackBucket}`);
+        const altRef = ref(altStorage, fileName);
+        const altSnapshot = await uploadBytes(altRef, blob, metadata);
+        const altUrl = await getDownloadURL(altSnapshot.ref);
+        localStorage.setItem('eduquiz_custom_storage_bucket', fallbackBucket);
+        return altUrl;
+      } catch {
+        // Fallback cũng không được
+      }
+    }
+
+    throw new Error(errInfo.message);
+  }
 };
 
-// Quét toàn bộ đề thi và chuyển các ảnh dạng Base64 lên Firebase Storage hàng loạt
+// Quét toàn bộ đề thi và chuyển các ảnh dạng Base64 lên Cloud Storage hàng loạt
 export const batchUploadQuizImagesToStorage = async (
   questions: Question[],
   onProgress?: (current: number, total: number) => void
-): Promise<{ updatedQuestions: Question[]; successCount: number; failCount: number }> => {
+): Promise<{ updatedQuestions: Question[]; successCount: number; failCount: number; lastError?: string }> => {
   let successCount = 0;
   let failCount = 0;
+  let lastError = '';
 
   const base64Questions = questions.filter(q => q.imageUrl && q.imageUrl.startsWith('data:image/'));
   const total = base64Questions.length;
@@ -2241,7 +2733,8 @@ export const batchUploadQuizImagesToStorage = async (
       }
       updatedQuestions.push({ ...q, imageUrl: cloudUrl });
       successCount++;
-    } catch (err) {
+    } catch (err: any) {
+      lastError = err?.message || 'Lỗi không xác định';
       console.error(`Không thể chuyển ảnh câu ${q.id} lên Storage:`, err);
       updatedQuestions.push(q);
       failCount++;
@@ -2251,11 +2744,14 @@ export const batchUploadQuizImagesToStorage = async (
     if (onProgress) onProgress(processed, total);
   }
 
-  return { updatedQuestions, successCount, failCount };
+  return { updatedQuestions, successCount, failCount, lastError };
 };
 
 // --- Published Results ---
 export const getPublishedResults = async (limitCount: number = 20): Promise<PublishedResult[]> => {
+  if (isSupabasePrimary()) {
+    return await supabaseDb.getPublishedResults(limitCount);
+  }
   if (!db) return [];
   try {
     const q = query(collection(db, 'published_results'), limit(limitCount));
@@ -2272,7 +2768,7 @@ export const getPublishedResults = async (limitCount: number = 20): Promise<Publ
   }
 };
 
-export const savePublishedResult = async (pub: PublishedResult): Promise<void> => {
+export const savePublishedResultToFirestore = async (pub: PublishedResult): Promise<void> => {
   if (db) {
     await setDoc(doc(db, 'published_results', pub.id), cleanUndefined({
       id: pub.id,
@@ -2285,15 +2781,39 @@ export const savePublishedResult = async (pub: PublishedResult): Promise<void> =
   }
 };
 
-export const deletePublishedResult = async (id: string): Promise<void> => {
+export const savePublishedResult = async (pub: PublishedResult): Promise<void> => {
+  if (isSupabasePrimary()) {
+    const res = await supabaseDb.savePublishedResult(pub);
+    if (isDualSyncActive()) {
+      savePublishedResultToFirestore(pub).catch((err) => {
+        console.warn("Dual sync published result to Firestore skipped/failed (non-fatal):", err);
+      });
+    }
+    return res;
+  }
+  return await savePublishedResultToFirestore(pub);
+};
+
+export const deletePublishedResultFromFirestore = async (id: string): Promise<void> => {
   if (db) {
     await deleteDoc(doc(db, 'published_results', id));
     trackFirestoreDelete('published_results', 1);
   }
 };
 
+export const deletePublishedResult = async (id: string): Promise<void> => {
+  if (isSupabasePrimary()) {
+    const res = await supabaseDb.deletePublishedResult(id);
+    if (isDualSyncActive()) {
+      deletePublishedResultFromFirestore(id).catch(() => {});
+    }
+    return res;
+  }
+  return await deletePublishedResultFromFirestore(id);
+};
+
 // --- Exam Sessions ---
-export const saveExamSession = async (session: ExamSession): Promise<void> => {
+export const saveExamSessionToFirestore = async (session: ExamSession): Promise<void> => {
   if (db) {
     await setDoc(doc(db, 'exam_sessions', session.id), cleanUndefined({
       id: session.id,
@@ -2305,14 +2825,41 @@ export const saveExamSession = async (session: ExamSession): Promise<void> => {
   }
 };
 
-export const deleteExamSession = async (id: string): Promise<void> => {
+export const saveExamSession = async (session: ExamSession): Promise<void> => {
+  if (isSupabasePrimary()) {
+    const res = await supabaseDb.saveExamSession(session);
+    if (isDualSyncActive()) {
+      saveExamSessionToFirestore(session).catch((err) => {
+        console.warn("Dual sync exam session to Firestore skipped/failed (non-fatal):", err);
+      });
+    }
+    return res;
+  }
+  return await saveExamSessionToFirestore(session);
+};
+
+export const deleteExamSessionFromFirestore = async (id: string): Promise<void> => {
   if (db) {
     await deleteDoc(doc(db, 'exam_sessions', id));
     trackFirestoreDelete('exam_sessions', 1);
   }
 };
 
+export const deleteExamSession = async (id: string): Promise<void> => {
+  if (isSupabasePrimary()) {
+    const res = await supabaseDb.deleteExamSession(id);
+    if (isDualSyncActive()) {
+      deleteExamSessionFromFirestore(id).catch(() => {});
+    }
+    return res;
+  }
+  return await deleteExamSessionFromFirestore(id);
+};
+
 export const getExamSessions = async (quizId?: string): Promise<ExamSession[]> => {
+  if (isSupabasePrimary()) {
+    return await supabaseDb.getExamSessions(quizId);
+  }
   if (!db) return [];
   try {
     let q = query(collection(db, 'exam_sessions'));
@@ -2331,6 +2878,9 @@ export const getExamSessions = async (quizId?: string): Promise<ExamSession[]> =
 };
 
 export const getStudentActiveSessions = async (studentId: string): Promise<ExamSession[]> => {
+  if (isSupabasePrimary()) {
+    return await supabaseDb.getStudentActiveSessions(studentId);
+  }
   if (!db) return [];
   try {
     const q = query(collection(db, 'exam_sessions'), where('studentId', '==', studentId));
@@ -2346,6 +2896,9 @@ export const getStudentActiveSessions = async (studentId: string): Promise<ExamS
 };
 
 export const clearAllSessions = async (): Promise<void> => {
+  if (isSupabasePrimary()) {
+    return await supabaseDb.clearAllSessions();
+  }
   if (!db) return;
   try {
     const snapshot = await getDocs(collection(db, 'exam_sessions'));
@@ -2452,6 +3005,9 @@ export const pingDatabase = async (): Promise<number> => {
 };
 
 export const getDatabaseMetrics = async (): Promise<DatabaseMetrics> => {
+  if (isSupabasePrimary()) {
+    return (await supabaseDb.getDatabaseMetrics()) as any;
+  }
   const isConn = isDatabaseConnected();
   const projectId = firebaseConfig?.projectId || 'N/A';
   const databaseId = firebaseConfig?.firestoreDatabaseId || '(default)';
@@ -2593,40 +3149,232 @@ export const getDatabaseMetrics = async (): Promise<DatabaseMetrics> => {
 };
 
 export const exportFullDatabaseBackup = async (): Promise<string> => {
+  if (isSupabasePrimary() && isSupabaseConnected()) {
+    return await supabaseDb.exportFullDatabaseBackup();
+  }
   if (!db) throw new Error("Mất kết nối Database Cloud Firestore");
 
-  const [quizzesSnap, usersSnap, resultsSnap, classesSnap, chaptersSnap, bankSnap] = await Promise.all([
+  const [quizzesSnap, usersSnap, resultsSnap, classesSnap, chaptersSnap, bankSnap, sessionsSnap, publishedSnap] = await Promise.all([
     getDocs(collection(db, 'quizzes')),
     getDocs(collection(db, 'users')),
     getDocs(collection(db, 'results')),
     getDocs(collection(db, 'classes')),
     getDocs(collection(db, 'chapters')),
-    getDocs(collection(db, 'bank_questions'))
+    getDocs(collection(db, 'bank_questions')),
+    getDocs(collection(db, 'exam_sessions')),
+    getDocs(collection(db, 'published_results'))
   ]);
 
+  // Thu thập câu hỏi đầy đủ cho từng đề thi (kể cả đề lưu dạng chunks)
+  const fullQuizzes: any[] = [];
+  for (const docSnap of quizzesSnap.docs) {
+    const rawData = docSnap.data();
+    let questions: Question[] = [];
+
+    if (Array.isArray(rawData.questions) && rawData.questions.length > 0) {
+      questions = rawData.questions;
+    } else if (rawData.data && Array.isArray((rawData.data as any).questions)) {
+      questions = (rawData.data as any).questions;
+    }
+
+    if (questions.length === 0 && (rawData.isChunked || rawData.chunkCount)) {
+      try {
+        const chunksSnap = await getDocs(collection(db, 'quizzes', docSnap.id, 'chunks'));
+        if (!chunksSnap.empty) {
+          const sorted = chunksSnap.docs
+            .map(d => d.data() as { index: number; questions: Question[] })
+            .sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
+          questions = sorted.flatMap(c => c.questions || []);
+        }
+      } catch (e) {
+        console.warn(`Không thể lấy chunks cho đề thi ${docSnap.id}:`, e);
+      }
+    }
+
+    const quizObj = (typeof rawData.data === 'object' && rawData.data !== null) ? rawData.data : rawData;
+    fullQuizzes.push({
+      ...quizObj,
+      id: docSnap.id,
+      title: rawData.title || quizObj.title || '',
+      description: rawData.description || quizObj.description || '',
+      type: rawData.type || quizObj.type || 'practice',
+      grade: rawData.grade || quizObj.grade || '12',
+      category: rawData.category || quizObj.category || '',
+      subject: rawData.subject || quizObj.subject || '',
+      startTime: rawData.startTime || quizObj.startTime,
+      endTime: rawData.endTime || quizObj.endTime,
+      durationMinutes: rawData.durationMinutes || quizObj.durationMinutes || 45,
+      questions,
+      questionCount: questions.length || rawData.questionCount || quizObj.questionCount || 0,
+      attemptCount: rawData.attemptCount ?? quizObj.attemptCount ?? 0,
+      maxAttempts: rawData.maxAttempts ?? quizObj.maxAttempts ?? 1,
+      createdAt: rawData.createdAt || quizObj.createdAt || new Date().toISOString(),
+      isPublished: rawData.isPublished ?? quizObj.isPublished ?? false,
+      isMonitored: rawData.isMonitored ?? quizObj.isMonitored ?? false,
+      showResultAnswers: rawData.showResultAnswers ?? quizObj.showResultAnswers ?? true,
+      disablePractice: rawData.disablePractice ?? quizObj.disablePractice ?? false,
+      isUnlisted: rawData.isUnlisted ?? quizObj.isUnlisted ?? false,
+      orderIndex: rawData.orderIndex ?? quizObj.orderIndex ?? 0,
+      createdBy: rawData.createdBy || quizObj.createdBy,
+      createdByName: rawData.createdByName || quizObj.createdByName,
+      isSharedWithTeachers: rawData.isSharedWithTeachers ?? quizObj.isSharedWithTeachers ?? true,
+      academicYear: rawData.academicYear || quizObj.academicYear,
+      targetType: rawData.targetType || quizObj.targetType || 'all',
+      assignedClassIds: rawData.assignedClassIds || quizObj.assignedClassIds || [],
+      assignedClasses: rawData.assignedClasses || quizObj.assignedClasses || []
+    });
+  }
+
   const backupData = {
-    version: "1.0",
+    version: "2.0",
     appName: "EduQuiz VN",
     exportedAt: new Date().toISOString(),
     projectId: firebaseConfig?.projectId,
     databaseId: firebaseConfig?.firestoreDatabaseId,
     stats: {
-      quizzes: quizzesSnap.size,
+      quizzes: fullQuizzes.length,
       users: usersSnap.size,
       results: resultsSnap.size,
       classes: classesSnap.size,
       chapters: chaptersSnap.size,
-      bankQuestions: bankSnap.size
+      bankQuestions: bankSnap.size,
+      examSessions: sessionsSnap.size,
+      publishedResults: publishedSnap.size
     },
     data: {
-      quizzes: quizzesSnap.docs.map(d => ({ id: d.id, ...d.data() })),
+      quizzes: fullQuizzes,
       users: usersSnap.docs.map(d => ({ id: d.id, ...d.data() })),
       results: resultsSnap.docs.map(d => ({ id: d.id, ...d.data() })),
       classes: classesSnap.docs.map(d => ({ id: d.id, ...d.data() })),
       chapters: chaptersSnap.docs.map(d => ({ id: d.id, ...d.data() })),
-      bankQuestions: bankSnap.docs.map(d => ({ id: d.id, ...d.data() }))
+      bankQuestions: bankSnap.docs.map(d => ({ id: d.id, ...d.data() })),
+      examSessions: sessionsSnap.docs.map(d => ({ id: d.id, ...d.data() })),
+      publishedResults: publishedSnap.docs.map(d => ({ id: d.id, ...d.data() }))
     }
   };
 
   return JSON.stringify(backupData, null, 2);
+};
+
+// Khôi phục toàn bộ CSDL Firestore từ file/chuỗi JSON bản sao lưu
+export const restoreFullDatabaseBackup = async (
+  backupContent: string | any,
+  onProgress?: (step: string, percent: number) => void
+): Promise<{ success: boolean; stats: any; message: string }> => {
+  if (!db) throw new Error("Mất kết nối Database Cloud Firestore");
+
+  let parsed: any;
+  if (typeof backupContent === 'string') {
+    try {
+      parsed = JSON.parse(backupContent);
+    } catch (e: any) {
+      throw new Error(`File JSON không hợp lệ: ${e.message}`);
+    }
+  } else {
+    parsed = backupContent;
+  }
+
+  const data = parsed.data || parsed;
+  const classes: ClassRoom[] = data.classes || [];
+  const chapters: Chapter[] = data.chapters || [];
+  const users: User[] = data.users || [];
+  const bankQuestions: Question[] = data.bankQuestions || data.bank_questions || [];
+  const quizzes: Quiz[] = data.quizzes || [];
+  const results: Result[] = data.results || [];
+  const examSessions: ExamSession[] = data.examSessions || data.exam_sessions || [];
+  const publishedResults: PublishedResult[] = data.publishedResults || data.published_results || [];
+
+  const stats = {
+    classes: 0,
+    chapters: 0,
+    users: 0,
+    bankQuestions: 0,
+    quizzes: 0,
+    results: 0,
+    examSessions: 0,
+    publishedResults: 0
+  };
+
+  // Helper thực thi ghi theo batch tối đa 400 bản ghi
+  const writeBatchItems = async <T extends { id: string }>(collectionName: string, items: T[]) => {
+    if (!items || items.length === 0) return 0;
+    const chunkSize = 400;
+    let written = 0;
+    for (let i = 0; i < items.length; i += chunkSize) {
+      const chunk = items.slice(i, i + chunkSize);
+      const batch = writeBatch(db);
+      for (const item of chunk) {
+        if (!item.id) continue;
+        const ref = doc(db, collectionName, item.id);
+        batch.set(ref, cleanUndefined(item), { merge: true });
+      }
+      await batch.commit();
+      trackFirestoreWrite(collectionName, chunk.length);
+      written += chunk.length;
+    }
+    return written;
+  };
+
+  try {
+    // 1. Khôi phục Lớp học
+    if (classes.length > 0) {
+      onProgress?.(`Đang khôi phục ${classes.length} lớp học...`, 15);
+      stats.classes = await writeBatchItems('classes', classes);
+    }
+
+    // 2. Khôi phục Chương bài giảng
+    if (chapters.length > 0) {
+      onProgress?.(`Đang khôi phục ${chapters.length} chương...`, 30);
+      stats.chapters = await writeBatchItems('chapters', chapters);
+    }
+
+    // 3. Khôi phục Người dùng (Giáo viên, Học sinh)
+    if (users.length > 0) {
+      onProgress?.(`Đang khôi phục ${users.length} người dùng...`, 45);
+      stats.users = await writeBatchItems('users', users);
+    }
+
+    // 4. Khôi phục Ngân hàng câu hỏi
+    if (bankQuestions.length > 0) {
+      onProgress?.(`Đang khôi phục ${bankQuestions.length} câu hỏi ngân hàng...`, 65);
+      stats.bankQuestions = await writeBatchItems('bank_questions', bankQuestions);
+    }
+
+    // 5. Khôi phục Đề thi (quizzes)
+    if (quizzes.length > 0) {
+      onProgress?.(`Đang khôi phục ${quizzes.length} đề thi...`, 80);
+      for (const quiz of quizzes) {
+        if (!quiz.id) continue;
+        await saveQuiz(quiz);
+        stats.quizzes++;
+      }
+    }
+
+    // 6. Khôi phục Kết quả bài thi
+    if (results.length > 0) {
+      onProgress?.(`Đang khôi phục ${results.length} kết quả làm bài...`, 90);
+      stats.results = await writeBatchItems('results', results);
+    }
+
+    // 7. Khôi phục phiên thi & kết quả công bố
+    if (examSessions.length > 0) {
+      stats.examSessions = await writeBatchItems('exam_sessions', examSessions);
+    }
+    if (publishedResults.length > 0) {
+      stats.publishedResults = await writeBatchItems('published_results', publishedResults);
+    }
+
+    // Xóa bộ nhớ cache cục bộ để UI tải dữ liệu mới nhất
+    clearLocalCache();
+    onProgress?.("Khôi phục hoàn tất!", 100);
+
+    return {
+      success: true,
+      stats,
+      message: `Khôi phục thành công: ${stats.quizzes} đề thi, ${stats.bankQuestions} câu ngân hàng, ${stats.users} người dùng, ${stats.classes} lớp học!`
+    };
+  } catch (err: any) {
+    console.error("Lỗi khi khôi phục CSDL Firestore:", err);
+    throw new Error(`Lỗi khôi phục: ${err.message || 'Không thể khôi phục'}`);
+  }
 };

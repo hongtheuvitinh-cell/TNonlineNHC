@@ -26,7 +26,7 @@ import {
   LayoutDashboard, Users, BarChart3, ShieldAlert, Sparkles, FolderTree, 
   Plus, Database, Loader2, X, RefreshCw, AlertTriangle, FileUp, DatabaseZap, GraduationCap,
   ShieldCheck, UserCheck, Key, Eye, EyeOff, Check, BookOpen, Server, HardDrive,
-  ChevronUp, ChevronDown
+  ChevronUp, ChevronDown, Cloud
 } from 'lucide-react';
 
 import QuizList from './QuizList';
@@ -38,6 +38,7 @@ import ChapterManager from './ChapterManager';
 import QuestionBank from './QuestionBank';
 import AIRenderer from './AIRenderer';
 import ClassManager from './ClassManager';
+import StorageConfigModal from './StorageConfigModal';
 import TeacherManager from './TeacherManager';
 import DatabaseMonitor from './DatabaseMonitor';
 
@@ -241,6 +242,7 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
   });
   const [showApiKey, setShowApiKey] = useState(false);
   const [isApiKeyModalOpen, setIsApiKeyModalOpen] = useState(false);
+  const [isStorageModalOpen, setIsStorageModalOpen] = useState(false);
 
   const handleApiKeyChange = (newKey: string) => {
     setCustomApiKey(newKey);
@@ -1112,7 +1114,13 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
       if (url) {
         setQuestions(prev => prev.map(q => q.id === id ? { ...q, imageUrl: url } : q));
         if (url.startsWith('http')) {
-          showAlert("Thành công", "Đã tải ảnh lên Firebase Cloud Storage và lấy link trực tuyến thành công!", "success");
+          showAlert("Thành công", "Đã tải ảnh lên Cloud Storage và lấy link trực tuyến thành công!", "success");
+        } else if (mode === 'cloud') {
+          showAlert(
+            "Đã lưu Base64 dự phòng", 
+            "Không thể tải lên Cloud Storage do Bucket chưa được kích hoạt trên Firebase Console (hoặc lỗi quyền). Ảnh đã được lưu tạm an toàn dưới dạng Base64. Hãy nhấn vào 'Cấu hình Storage' để kích hoạt.", 
+            "warning"
+          );
         } else {
           showAlert("Đã lưu ảnh", "Đã nén và lưu ảnh Base64 vào câu hỏi.", "info");
         }
@@ -1691,6 +1699,16 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
                         {customApiKey && <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse ml-0.5"></span>}
                       </button>
 
+                      <button
+                        type="button"
+                        onClick={() => setIsStorageModalOpen(true)}
+                        className="flex items-center gap-2 px-3.5 py-2.5 rounded-xl font-black uppercase text-[10px] bg-white border-2 border-slate-200 text-slate-600 hover:bg-slate-50 hover:border-slate-300 transition-all shadow-sm active:scale-95"
+                        title="Cấu hình và kiểm tra kết nối Cloud Storage lưu trữ ảnh trực tuyến"
+                      >
+                        <Cloud size={14} className="text-blue-600" />
+                        <span>Cloud Storage</span>
+                      </button>
+
                       <button 
                         onClick={handleSyncAllQuizzes} 
                         disabled={isSyncing}
@@ -2236,6 +2254,12 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
           </div>
         </div>
       )}
+
+      {/* Storage Configuration & Diagnostic Modal */}
+      <StorageConfigModal
+        isOpen={isStorageModalOpen}
+        onClose={() => setIsStorageModalOpen(false)}
+      />
 
       {/* Alert and Confirmation Modal Overlay */}
       {alertModal && alertModal.isOpen && (

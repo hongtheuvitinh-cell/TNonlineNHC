@@ -1209,4 +1209,3 @@ export default function QuizList({
         </div>
     );
 }
-
