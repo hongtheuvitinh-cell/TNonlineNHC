@@ -920,11 +920,22 @@ export default function QuestionBank({
                 })}
 
                 {visibleQuestions.length === 0 && (
-                    <div className="py-20 text-center space-y-4">
-                        <X className="mx-auto text-slate-200" size={48}/>
-                        <p className="text-xs font-black uppercase text-slate-400 tracking-widest italic">
-                            {showOnlySelected ? "Chưa có câu hỏi nào được chọn" : "Không tìm thấy câu hỏi nào"}
-                        </p>
+                    <div className="py-16 text-center space-y-4 bg-slate-50/60 rounded-3xl border border-dashed border-slate-200 p-8">
+                        <Database className="mx-auto text-slate-300" size={48}/>
+                        <div className="space-y-1">
+                            <p className="text-sm font-black uppercase text-slate-600 tracking-wider">
+                                {showOnlySelected 
+                                    ? "Chưa có câu hỏi nào được chọn" 
+                                    : (questions.length === 0 
+                                        ? "Ngân hàng câu hỏi hiện đang trống" 
+                                        : "Không tìm thấy câu hỏi nào phù hợp với bộ lọc")}
+                            </p>
+                            <p className="text-xs text-slate-400 font-medium max-w-md mx-auto">
+                                {questions.length === 0 
+                                    ? "Bạn hãy nhấn nút \"CẬP NHẬT TỪ ĐỀ THI\" ở góc trên để hệ thống tự động quét và nạp toàn bộ câu hỏi từ các đề thi vào Ngân hàng."
+                                    : "Hãy thử thay đổi bộ lọc Khối, Chương, Dạng câu hoặc Môn học để hiển thị câu hỏi."}
+                            </p>
+                        </div>
                     </div>
                 )}
 

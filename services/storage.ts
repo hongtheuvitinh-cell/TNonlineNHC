@@ -2073,19 +2073,28 @@ export interface SyncBankResult {
  * Đồng bộ câu hỏi từ các đề thi vào Ngân hàng câu hỏi (có cơ chế Chống trùng lặp thông minh)
  */
 export const syncQuizzesToBank = async (targetSubject?: string): Promise<SyncBankResult> => {
-  if (!db) return { totalScanned: 0, added: 0, updated: 0, skippedDuplicates: 0 };
   try {
     const isFiltered = targetSubject && targetSubject !== 'all';
-    // 1. Tải toàn bộ câu hỏi hiện có trong Ngân hàng
-    const existingBankSnap = await getDocs(collection(db, 'bank_questions'));
-    trackFirestoreRead('bank_questions', existingBankSnap.docs.length);
+    
+    // 1. Tải toàn bộ câu hỏi hiện có trong Ngân hàng (từ Supabase hoặc Firestore)
+    let existingBankList: Question[] = [];
+    if (isSupabasePrimary()) {
+      existingBankList = await supabaseDb.getBankQuestions();
+    } else if (db) {
+      const existingBankSnap = await getDocs(collection(db, 'bank_questions'));
+      trackFirestoreRead('bank_questions', existingBankSnap.docs.length);
+      existingBankList = existingBankSnap.docs.map(d => {
+        const row = d.data();
+        const bq = (row.data as Question) || (row as Question);
+        return { ...bq, id: d.id || bq.id };
+      });
+    }
+
     const existingBankMapById = new Map<string, Question>();
     const existingBankMapByFingerprint = new Map<string, string>(); // fingerprint -> docId
 
-    existingBankSnap.docs.forEach(d => {
-      const row = d.data();
-      const bq = (row.data as Question) || (row as Question);
-      const bqId = d.id;
+    existingBankList.forEach(bq => {
+      const bqId = bq.id;
       existingBankMapById.set(bqId, bq);
       const fp = getQuestionFingerprint(bq);
       if (fp) {
@@ -2093,22 +2102,31 @@ export const syncQuizzesToBank = async (targetSubject?: string): Promise<SyncBan
       }
     });
 
-    // 2. Quét toàn bộ đề thi (lọc theo môn nếu có targetSubject)
-    const quizSnap = await getDocs(collection(db, 'quizzes'));
-    trackFirestoreRead('quizzes', quizSnap.docs.length);
+    // 2. Quét toàn bộ đề thi
+    let allQuizzes: Quiz[] = [];
+    if (isSupabasePrimary()) {
+      allQuizzes = await supabaseDb.getQuizzes();
+    } else if (db) {
+      const quizSnap = await getDocs(collection(db, 'quizzes'));
+      trackFirestoreRead('quizzes', quizSnap.docs.length);
+      allQuizzes = quizSnap.docs.map(d => {
+        const row = d.data();
+        const qz = (row.data as Quiz) || (row as Quiz);
+        return { ...qz, id: d.id || qz.id };
+      });
+    }
+
     let totalScanned = 0;
     let addedCount = 0;
     let updatedCount = 0;
     let skippedCount = 0;
 
-    const questionsToUpsert: { docId: string; question: Question; isNew: boolean }[] = [];
+    const questionsToUpsertMap = new Map<string, { docId: string; question: Question; isNew: boolean }>();
 
-    quizSnap.docs.forEach(d => {
-      const row = d.data();
-      const quiz = (row.data as Quiz) || (row as Quiz);
+    allQuizzes.forEach(quiz => {
       if (quiz.questions && Array.isArray(quiz.questions)) {
         quiz.questions.forEach(q => {
-          const qSubject = q.subject || quiz.subject || (row.subject as string) || '';
+          const qSubject = q.subject || quiz.subject || '';
           if (isFiltered && !isSameSubject(qSubject, targetSubject)) {
             return; // Bỏ qua câu hỏi thuộc môn khác
           }
@@ -2147,14 +2165,15 @@ export const syncQuizzesToBank = async (targetSubject?: string): Promise<SyncBan
               solution: enrichedQ.solution || currentBq?.solution,
               level: enrichedQ.level || currentBq?.level,
             };
-            questionsToUpsert.push({ docId: targetDocId, question: mergedQ, isNew: false });
+            existingBankMapById.set(targetDocId, mergedQ);
+            questionsToUpsertMap.set(targetDocId, { docId: targetDocId, question: mergedQ, isNew: false });
             updatedCount++;
             skippedCount++; // Tránh tạo trùng lặp
           } else {
             // Câu hỏi mới hoàn toàn
             const newDocId = q.bankQuestionId || q.id || uuidv4();
             enrichedQ.id = newDocId;
-            questionsToUpsert.push({ docId: newDocId, question: enrichedQ, isNew: true });
+            questionsToUpsertMap.set(newDocId, { docId: newDocId, question: enrichedQ, isNew: true });
             existingBankMapById.set(newDocId, enrichedQ);
             if (fp) existingBankMapByFingerprint.set(fp, newDocId);
             addedCount++;
@@ -2163,27 +2182,53 @@ export const syncQuizzesToBank = async (targetSubject?: string): Promise<SyncBan
       }
     });
 
+    const questionsToUpsert = Array.from(questionsToUpsertMap.values());
+
     if (questionsToUpsert.length === 0) {
       return { totalScanned, added: 0, updated: 0, skippedDuplicates: skippedCount };
     }
 
-    // 3. Thực thi lưu theo Batch vào Firestore
-    const chunkSize = 350;
-    for (let i = 0; i < questionsToUpsert.length; i += chunkSize) {
-      const chunk = questionsToUpsert.slice(i, i + chunkSize);
-      const batch = writeBatch(db);
-      for (const item of chunk) {
-        batch.set(doc(db, 'bank_questions', item.docId), cleanUndefined({
-          id: item.docId,
-          subject: item.question.subject || '',
-          grade: item.question.quizGrade || '',
-          createdBy: item.question.createdBy || '',
-          data: cleanUndefined(item.question)
-        }), { merge: true });
+    // 3. Thực thi lưu
+    if (isSupabasePrimary()) {
+      const qList = questionsToUpsert.map(item => item.question);
+      await supabaseDb.saveBatchBankQuestions(qList);
+      if (isDualSyncActive()) {
+        const chunkSize = 350;
+        for (let i = 0; i < questionsToUpsert.length; i += chunkSize) {
+          const chunk = questionsToUpsert.slice(i, i + chunkSize);
+          const batch = writeBatch(db!);
+          for (const item of chunk) {
+            batch.set(doc(db!, 'bank_questions', item.docId), cleanUndefined({
+              id: item.docId,
+              subject: item.question.subject || '',
+              grade: item.question.quizGrade || '',
+              createdBy: item.question.createdBy || '',
+              data: cleanUndefined(item.question)
+            }), { merge: true });
+          }
+          await batch.commit().catch(() => {});
+        }
       }
-      await batch.commit();
-      trackFirestoreWrite('bank_questions', chunk.length);
+    } else if (db) {
+      const chunkSize = 350;
+      for (let i = 0; i < questionsToUpsert.length; i += chunkSize) {
+        const chunk = questionsToUpsert.slice(i, i + chunkSize);
+        const batch = writeBatch(db);
+        for (const item of chunk) {
+          batch.set(doc(db, 'bank_questions', item.docId), cleanUndefined({
+            id: item.docId,
+            subject: item.question.subject || '',
+            grade: item.question.quizGrade || '',
+            createdBy: item.question.createdBy || '',
+            data: cleanUndefined(item.question)
+          }), { merge: true });
+        }
+        await batch.commit();
+        trackFirestoreWrite('bank_questions', chunk.length);
+      }
     }
+
+    invalidateMemoryCache('bank');
 
     return {
       totalScanned,
@@ -2207,16 +2252,21 @@ export interface DeduplicateBankResult {
  * Quét toàn bộ Ngân hàng câu hỏi (hoặc lọc theo môn), phát hiện các câu hỏi trùng lặp nội dung và tự động gộp/xóa bản thừa
  */
 export const deduplicateBankQuestions = async (targetSubject?: string): Promise<DeduplicateBankResult> => {
-  if (!db) return { totalScanned: 0, duplicatesRemoved: 0, uniqueRemaining: 0 };
   try {
     const isFiltered = targetSubject && targetSubject !== 'all';
-    const snapshot = await getDocs(collection(db, 'bank_questions'));
-    trackFirestoreRead('bank_questions', snapshot.docs.length);
-    let allBankQuestions = snapshot.docs.map(d => {
-      const row = d.data();
-      const q = (row.data as Question) || (row as Question);
-      return { ...q, id: d.id };
-    });
+    let allBankQuestions: Question[] = [];
+
+    if (isSupabasePrimary()) {
+      allBankQuestions = await supabaseDb.getBankQuestions();
+    } else if (db) {
+      const snapshot = await getDocs(collection(db, 'bank_questions'));
+      trackFirestoreRead('bank_questions', snapshot.docs.length);
+      allBankQuestions = snapshot.docs.map(d => {
+        const row = d.data();
+        const q = (row.data as Question) || (row as Question);
+        return { ...q, id: d.id };
+      });
+    }
 
     if (isFiltered) {
       allBankQuestions = allBankQuestions.filter(q => isSameSubject(q.subject || '', targetSubject));
@@ -2273,7 +2323,7 @@ export const deduplicateBankQuestions = async (targetSubject?: string): Promise<
 
         questionsToKeepAndMerge.push(merged);
 
-        // Các bản sao còn lại đánh dấu để xóa khỏi Firestore
+        // Các bản sao còn lại đánh dấu để xóa
         items.forEach(item => {
           if (item.id !== primary.id) {
             idsToDelete.push(item.id);
@@ -2282,19 +2332,33 @@ export const deduplicateBankQuestions = async (targetSubject?: string): Promise<
       }
     });
 
-    // Thực thi xóa các bản sao trùng lặp theo Batch
+    // Thực thi xóa các bản sao trùng lặp
     if (idsToDelete.length > 0) {
-      const chunkSize = 350;
-      for (let i = 0; i < idsToDelete.length; i += chunkSize) {
-        const chunk = idsToDelete.slice(i, i + chunkSize);
-        const batch = writeBatch(db);
-        for (const id of chunk) {
-          batch.delete(doc(db, 'bank_questions', id));
+      if (isSupabasePrimary()) {
+        await supabaseDb.deleteBatchBankQuestions(idsToDelete);
+        if (isDualSyncActive()) {
+          deleteBatchBankQuestionsFromFirestore(idsToDelete).catch(() => {});
         }
-        await batch.commit();
-        trackFirestoreDelete('bank_questions', chunk.length);
+      } else if (db) {
+        const chunkSize = 350;
+        for (let i = 0; i < idsToDelete.length; i += chunkSize) {
+          const chunk = idsToDelete.slice(i, i + chunkSize);
+          const batch = writeBatch(db);
+          for (const id of chunk) {
+            batch.delete(doc(db, 'bank_questions', id));
+          }
+          await batch.commit();
+          trackFirestoreDelete('bank_questions', chunk.length);
+        }
       }
     }
+
+    // Cập nhật lại các câu hỏi đã gộp (nếu cần cập nhật nội dung tốt hơn)
+    if (isSupabasePrimary()) {
+      await supabaseDb.saveBatchBankQuestions(questionsToKeepAndMerge);
+    }
+
+    invalidateMemoryCache('bank');
 
     return {
       totalScanned,
@@ -2376,13 +2440,11 @@ export const deleteBatchBankQuestionsFromFirestore = async (ids: string[]): Prom
 export const deleteBatchBankQuestions = async (ids: string[]): Promise<number> => {
   if (!ids || ids.length === 0) return 0;
   if (isSupabasePrimary()) {
-    for (const id of ids) {
-      await supabaseDb.deleteBankQuestion(id);
-    }
+    const res = await supabaseDb.deleteBatchBankQuestions(ids);
     if (isDualSyncActive()) {
       deleteBatchBankQuestionsFromFirestore(ids).catch(() => {});
     }
-    return ids.length;
+    return res;
   }
   return await deleteBatchBankQuestionsFromFirestore(ids);
 };

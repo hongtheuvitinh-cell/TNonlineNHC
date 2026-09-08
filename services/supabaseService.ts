@@ -65,7 +65,7 @@ export function mapUserToDb(u: User): any {
     full_name: u.fullName || u.username,
     student_code: u.studentCode ? u.studentCode.trim().toUpperCase() : null,
     grade: u.grade || null,
-    points: u.points ?? 0,
+    points: typeof u.points === 'number' ? u.points : Number(u.points) || 0,
     class_id: u.classId || null,
     class_name: u.className || null,
     academic_year: u.academicYear || null,
@@ -476,6 +476,35 @@ export const supabaseDb = {
     const row = mapBankQuestionToDb(q);
     const { error } = await client.from('bank_questions').upsert(row, { onConflict: 'id' });
     if (error) throw new Error(`Lỗi lưu câu hỏi: ${error.message}`);
+  },
+
+  async saveBatchBankQuestions(questions: Question[]): Promise<number> {
+    const client = getSupabase();
+    if (!client || questions.length === 0) return 0;
+    
+    // Đảm bảo không có ID trùng lặp trong danh sách upsert để tránh lỗi PostgreSQL "ON CONFLICT DO UPDATE command cannot affect row a second time"
+    const uniqueMap = new Map<string, Question>();
+    questions.forEach(q => {
+      if (q && q.id) {
+        uniqueMap.set(q.id, q);
+      }
+    });
+    const uniqueQuestions = Array.from(uniqueMap.values());
+    if (uniqueQuestions.length === 0) return 0;
+
+    const chunkSize = 200;
+    let saved = 0;
+    for (let i = 0; i < uniqueQuestions.length; i += chunkSize) {
+      const chunk = uniqueQuestions.slice(i, i + chunkSize);
+      const rows = chunk.map(mapBankQuestionToDb);
+      const { error } = await client.from('bank_questions').upsert(rows, { onConflict: 'id' });
+      if (error) {
+        console.error("Lỗi batch upsert bank_questions sang Supabase:", error);
+        throw new Error(`Lỗi lưu danh sách câu hỏi: ${error.message}`);
+      }
+      saved += chunk.length;
+    }
+    return saved;
   },
 
   async deleteBankQuestion(id: string): Promise<void> {
