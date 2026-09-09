@@ -1777,10 +1777,10 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
                         type="button"
                         onClick={() => setIsStorageModalOpen(true)}
                         className="flex items-center gap-2 px-3.5 py-2.5 rounded-xl font-black uppercase text-[10px] bg-white border-2 border-slate-200 text-slate-600 hover:bg-slate-50 hover:border-slate-300 transition-all shadow-sm active:scale-95"
-                        title="Cấu hình và kiểm tra kết nối Cloud Storage lưu trữ ảnh trực tuyến"
+                        title="Cấu hình nơi lưu ảnh đề thi trực tuyến (ImgBB API)"
                       >
-                        <Cloud size={14} className="text-blue-600" />
-                        <span>Cloud Storage</span>
+                        <Sparkles size={14} className="text-purple-600" />
+                        <span>Cấu hình nơi lưu ảnh</span>
                       </button>
 
                       <button 
