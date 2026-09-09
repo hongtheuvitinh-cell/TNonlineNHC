@@ -153,7 +153,7 @@ const QuestionSection: React.FC<QuestionSectionProps> = ({
             alert("🎉 Đã tải ảnh lên Cloud Storage và cập nhật link thành công!");
         } catch (e: any) {
             const msg = e?.message || '';
-            if (window.confirm(`Không thể tải ảnh lên Cloud Storage: ${msg}\n\nBạn có muốn mở bảng Cấu hình & Hướng dẫn kích hoạt Storage không?`)) {
+            if (window.confirm(`Không thể tải ảnh trực tuyến: ${msg}\n\nBạn có muốn mở bảng Cấu hình nơi lưu ảnh (ImgBB API) không?`)) {
                 onOpenStorageModal?.();
             }
         } finally {
@@ -1853,7 +1853,7 @@ export default function QuizEditor(props: QuizEditorProps) {
                 {storageWarningBanner && (
                     <div className="p-3 bg-amber-50 border-2 border-amber-200 rounded-2xl flex flex-wrap items-center justify-between gap-3 text-xs text-amber-900 shadow-sm animate-fade-in">
                         <div className="flex items-center gap-2">
-                            <span className="px-2 py-0.5 bg-amber-200 text-amber-900 rounded-md font-black text-[9px] uppercase tracking-wider">Lưu ý Cloud Storage</span>
+                            <span className="px-2 py-0.5 bg-amber-200 text-amber-900 rounded-md font-black text-[9px] uppercase tracking-wider">Lưu trữ ảnh</span>
                             <span className="font-bold text-slate-800">{storageWarningBanner}</span>
                             <span className="text-slate-500 text-[11px] hidden md:inline">(Ảnh đã được lưu tạm an toàn dạng Base64)</span>
                         </div>
@@ -1861,9 +1861,9 @@ export default function QuizEditor(props: QuizEditorProps) {
                             <button
                                 type="button"
                                 onClick={() => setIsStorageModalOpen(true)}
-                                className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-[10px] font-black uppercase transition-all shadow-sm active:scale-95"
+                                className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded-xl text-[10px] font-black uppercase transition-all shadow-sm active:scale-95"
                             >
-                                Hướng dẫn bật Storage
+                                Cấu hình nơi lưu ảnh
                             </button>
                             <button
                                 type="button"
