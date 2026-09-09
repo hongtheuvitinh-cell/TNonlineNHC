@@ -397,13 +397,13 @@ export default function QuestionBank({
         <div className="space-y-4 animate-fade-in w-full max-w-full pb-10">
             {/* Status pill for teacher subject */}
             {currentUser?.subject && !isSuperAdmin && (
-                <div className="bg-blue-50/80 border border-blue-200 px-4 py-2 rounded-xl flex items-center justify-between text-xs text-blue-900">
+                <div className="bg-blue-50/80 border border-blue-200 px-4 py-2 rounded-xl flex flex-wrap items-center justify-between gap-2 text-xs text-blue-900">
                     <span className="font-bold flex items-center gap-1.5">
-                        <BookOpen size={14} className="text-blue-600"/> 
-                        Ngân hàng câu hỏi bộ môn: <b className="text-blue-700 uppercase font-black">{currentUser.subject}</b>
+                        <BookOpen size={14} className="text-blue-600 shrink-0"/> 
+                        Ngân hàng câu hỏi: <b className="text-blue-700 uppercase font-black">Môn {bSubjectFilter !== 'all' ? bSubjectFilter : currentUser.subject}</b> • Khối <b className="text-blue-700 font-black">{bGradeFilter !== 'all' ? bGradeFilter : 'Tất cả'}</b>
                     </span>
                     <span className="text-[10px] text-blue-600 font-medium">
-                        Dùng chung & tự động đồng bộ giữa các giáo viên dạy cùng môn {currentUser.subject}
+                        Tự động nhận diện môn & khối thông minh • Truy vấn có lọc từ máy chủ tiết kiệm băng thông tối đa
                     </span>
                 </div>
             )}
@@ -466,8 +466,8 @@ export default function QuestionBank({
 
                     {/* Các dropdown bộ lọc */}
                     <div className="flex flex-wrap items-center gap-2">
-                        {/* Subject Filter (Chỉ hiển thị cho SuperAdmin) */}
-                        {isSuperAdmin && setBSubjectFilter && (
+                        {/* Subject Filter (Hiển thị môn thông minh) */}
+                        {setBSubjectFilter && (
                             <select 
                                 className="bg-amber-50 border border-amber-300 text-amber-900 px-3 py-1.5 rounded-lg text-[9px] font-black uppercase outline-none cursor-pointer shadow-sm"
                                 value={bSubjectFilter}
@@ -476,7 +476,7 @@ export default function QuestionBank({
                                     setBChapterFilter('all');
                                 }}
                             >
-                                <option value="all">Môn: Tất cả</option>
+                                {isSuperAdmin && <option value="all">Môn: Tất cả</option>}
                                 {availableSubjects.map(s => (
                                     <option key={s} value={s}>Môn {s}</option>
                                 ))}
