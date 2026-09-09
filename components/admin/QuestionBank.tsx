@@ -4,7 +4,7 @@ import { Question, QuestionType, Grade, Chapter, QuestionLevel, User } from '../
 import { 
     Database, Search, CheckCircle2, CheckSquare, Square, X, BookOpen, Trash2, 
     AlertTriangle, Loader2, Sparkles, MousePointer, Eye, Layers, ChevronDown, 
-    ChevronUp, ChevronsUpDown, Check
+    ChevronUp, ChevronsUpDown, Check, Lock
 } from 'lucide-react';
 import LatexText from '../LatexText';
 import { v4 as uuidv4 } from 'uuid';
@@ -167,6 +167,13 @@ export default function QuestionBank({
             }
         }
     }, [relevantChapters, bChapterFilter, setBChapterFilter]);
+
+    // Giáo viên bình thường: luôn đồng bộ và khóa theo môn của giáo viên
+    useEffect(() => {
+        if (!isSuperAdmin && currentUser?.subject && setBSubjectFilter && bSubjectFilter !== currentUser.subject) {
+            setBSubjectFilter(currentUser.subject);
+        }
+    }, [isSuperAdmin, currentUser?.subject, bSubjectFilter, setBSubjectFilter]);
 
     const canDeleteQuestion = (q: Question) => {
         if (isSuperAdmin) return true;
@@ -466,21 +473,32 @@ export default function QuestionBank({
 
                     {/* Các dropdown bộ lọc */}
                     <div className="flex flex-wrap items-center gap-2">
-                        {/* Subject Filter (Hiển thị môn thông minh) */}
-                        {setBSubjectFilter && (
-                            <select 
-                                className="bg-amber-50 border border-amber-300 text-amber-900 px-3 py-1.5 rounded-lg text-[9px] font-black uppercase outline-none cursor-pointer shadow-sm"
-                                value={bSubjectFilter}
-                                onChange={e => {
-                                    setBSubjectFilter(e.target.value);
-                                    setBChapterFilter('all');
-                                }}
+                        {/* Subject Filter: SuperAdmin được mở khóa chọn môn, GV bình thường bị KHÓA listbox và chỉ hiển thị tên môn của mình */}
+                        {isSuperAdmin ? (
+                            setBSubjectFilter && (
+                                <select 
+                                    className="bg-amber-50 border border-amber-300 text-amber-900 px-3 py-1.5 rounded-lg text-[9px] font-black uppercase outline-none cursor-pointer shadow-sm hover:border-amber-400"
+                                    value={bSubjectFilter}
+                                    onChange={e => {
+                                        setBSubjectFilter(e.target.value);
+                                        setBChapterFilter('all');
+                                    }}
+                                    title="SuperAdmin: Mở khóa chọn môn học"
+                                >
+                                    <option value="all">Môn: Tất cả</option>
+                                    {availableSubjects.map(s => (
+                                        <option key={s} value={s}>Môn {s}</option>
+                                    ))}
+                                </select>
+                            )
+                        ) : (
+                            <div 
+                                className="flex items-center gap-1.5 bg-amber-50 border border-amber-300 text-amber-900 px-3 py-1.5 rounded-lg text-[9px] font-black uppercase shadow-xs select-none cursor-not-allowed"
+                                title={`Môn học được cố định theo phân công chuyên môn: ${currentUser?.subject || bSubjectFilter || 'Vật lý'}`}
                             >
-                                {isSuperAdmin && <option value="all">Môn: Tất cả</option>}
-                                {availableSubjects.map(s => (
-                                    <option key={s} value={s}>Môn {s}</option>
-                                ))}
-                            </select>
+                                <Lock size={11} className="text-amber-600 shrink-0" />
+                                <span>MÔN {getDisplaySubject(currentUser?.subject || bSubjectFilter || 'Vật lý')}</span>
+                            </div>
                         )}
 
                         <select 
