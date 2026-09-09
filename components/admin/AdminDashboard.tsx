@@ -322,23 +322,30 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
     return () => clearTimeout(timer);
   }, [sSearch, activeTab]);
 
+  const isSuperAdmin = currentUser?.role === 'superadmin';
+
   const [bGradeFilter, setBGradeFilter] = useState<Grade | 'all'>(() => (currentUser?.grade as Grade) || '12');
   const [bChapterFilter, setBChapterFilter] = useState('all');
   const [bTypeFilter, setBTypeFilter] = useState<QuestionType | 'all'>('all');
   const [bSearch, setBSearch] = useState('');
-  const [bSubjectFilter, setBSubjectFilter] = useState<string>(() => currentUser?.subject || 'Toán');
+  const [bSubjectFilter, setBSubjectFilter] = useState<string>(() => {
+    if (!isSuperAdmin && currentUser?.subject) return currentUser.subject;
+    return currentUser?.subject || 'Toán';
+  });
 
   // Thông minh nhận diện môn & khối từ thông tin giáo viên đang đăng nhập
   useEffect(() => {
-    if (currentUser?.subject && (!bSubjectFilter || bSubjectFilter === 'all')) {
-      setBSubjectFilter(currentUser.subject);
+    if (currentUser?.subject) {
+      if (!isSuperAdmin) {
+        setBSubjectFilter(currentUser.subject);
+      } else if (!bSubjectFilter || bSubjectFilter === 'all' || bSubjectFilter === 'Toán') {
+        setBSubjectFilter(currentUser.subject);
+      }
     }
     if (currentUser?.grade && (!bGradeFilter || bGradeFilter === 'all')) {
       setBGradeFilter(currentUser.grade as Grade);
     }
-  }, [currentUser?.subject, currentUser?.grade]);
-
-  const isSuperAdmin = currentUser?.role === 'superadmin';
+  }, [currentUser?.subject, currentUser?.grade, isSuperAdmin]);
 
   // Chuyển tab giáo viên về quizzes nếu người dùng không phải superadmin
   useEffect(() => {
