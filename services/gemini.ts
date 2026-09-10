@@ -18,8 +18,8 @@
         
         // 1. Tự động bảo vệ tất cả các lệnh LaTeX trước khi parse
         const preEscapedStr = cleanStr.replace(
-            new RegExp(`(?<!\\\\)\\\\(${latexKeywords})\\b`, 'g'),
-            '\\\\$1'
+            new RegExp(`(^|[^\\\\])\\\\(${latexKeywords})\\b`, 'g'),
+            '$1\\\\$2'
         );
 
         // 2. Thử parse sau khi đã bảo vệ lệnh LaTeX
