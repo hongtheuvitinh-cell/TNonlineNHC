@@ -106,8 +106,7 @@ export function mapClassToDb(c: ClassRoom): any {
     created_at: c.createdAt || new Date().toISOString(),
     created_by: c.createdBy || null,
     teacher_name: c.teacherName || null,
-    is_shared_with_teachers: c.isSharedWithTeachers ?? true,
-    student_count: typeof c.studentCount === 'number' ? c.studentCount : null
+    is_shared_with_teachers: c.isSharedWithTeachers ?? true
   };
 }
 
@@ -427,11 +426,16 @@ export const supabaseDb = {
     await client.from('classes').delete().eq('id', id);
   },
 
-  async assignStudentsToClass(studentIds: string[], classId: string, className: string, academicYear?: string): Promise<number> {
+  async assignStudentsToClass(studentIds: string[], classId?: string | null, className?: string | null, academicYear?: string): Promise<number> {
     const client = getSupabase();
     if (!client || studentIds.length === 0) return 0;
-    const updatePayload: any = { class_id: classId, class_name: className };
-    if (academicYear) updatePayload.academic_year = academicYear;
+    const updatePayload: any = { 
+      class_id: classId && classId.trim() ? classId.trim() : null, 
+      class_name: className && className.trim() ? className.trim() : null 
+    };
+    if (academicYear !== undefined) {
+      updatePayload.academic_year = academicYear && academicYear.trim() ? academicYear.trim() : null;
+    }
     const { error } = await client.from('users').update(updatePayload).in('id', studentIds);
     return error ? 0 : studentIds.length;
   },
@@ -456,11 +460,10 @@ export const supabaseDb = {
     const { data, error } = await client.from('users')
       .select('*')
       .eq('role', 'student')
-      .is('class_id', null)
       .order('full_name', { ascending: true })
-      .limit(200);
+      .limit(1000);
     if (error || !data) return [];
-    return data.map(mapUserFromDb);
+    return data.map(mapUserFromDb).filter(u => !u.classId && !u.className);
   },
 
   // CHAPTERS
