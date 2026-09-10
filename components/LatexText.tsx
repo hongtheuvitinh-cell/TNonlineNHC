@@ -11,10 +11,23 @@ export default function LatexText({ text }: LatexTextProps) {
   if (!text) return null;
 
   // Chuẩn hóa tiếng Việt (sửa vỡ dấu), giữ nguyên 100% công thức trong $...$
-  const cleanText = useMemo(() => normalizeFullText(text), [text]);
+  const cleanText = useMemo(() => {
+    try {
+      return normalizeFullText(text);
+    } catch (err) {
+      console.warn("Lỗi chuẩn hóa văn bản LatexText:", err);
+      return text;
+    }
+  }, [text]);
 
   // Tách text theo cú pháp LaTeX $...$
-  const parts = useMemo(() => cleanText.split(/(\$.*?\$)/g), [cleanText]);
+  const parts = useMemo(() => {
+    try {
+      return cleanText.split(/(\$.*?\$)/g);
+    } catch {
+      return [cleanText];
+    }
+  }, [cleanText]);
   
   // Lấy đối tượng KaTeX an toàn
   const getKatexInstance = () => {
