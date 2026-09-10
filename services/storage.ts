@@ -588,6 +588,12 @@ export const saveUserToFirestore = async (user: User): Promise<void> => {
 };
 
 export const saveUser = async (user: User): Promise<void> => {
+  invalidateMemoryCache('users');
+  try {
+    localStorage.removeItem('eduquiz_users_cache');
+    localStorage.removeItem('eduquiz_unassigned_students');
+  } catch {}
+
   if (isSupabasePrimary()) {
     const res = await supabaseDb.saveUser(user);
     if (isDualSyncActive()) {
@@ -636,6 +642,12 @@ export const saveUsersBatchToFirestore = async (users: User[]): Promise<void> =>
 };
 
 export const saveUsersBatch = async (users: User[]): Promise<void> => {
+  invalidateMemoryCache('users');
+  try {
+    localStorage.removeItem('eduquiz_users_cache');
+    localStorage.removeItem('eduquiz_unassigned_students');
+  } catch {}
+
   if (isSupabasePrimary()) {
     const res = await supabaseDb.saveUsersBatch(users);
     if (isDualSyncActive()) {
@@ -2078,6 +2090,11 @@ export const saveClassToFirestore = async (c: ClassRoom): Promise<void> => {
 };
 
 export const saveClass = async (c: ClassRoom): Promise<void> => {
+  invalidateMemoryCache('classes');
+  try {
+    localStorage.removeItem('eduquiz_classes_cache');
+  } catch {}
+
   if (isSupabasePrimary()) {
     const res = await supabaseDb.saveClass(c);
     if (isDualSyncActive()) {
@@ -2118,6 +2135,11 @@ export const saveClassesBatchToFirestore = async (classesList: ClassRoom[]): Pro
 };
 
 export const saveClassesBatch = async (classesList: ClassRoom[]): Promise<void> => {
+  invalidateMemoryCache('classes');
+  try {
+    localStorage.removeItem('eduquiz_classes_cache');
+  } catch {}
+
   if (isSupabasePrimary()) {
     const res = await supabaseDb.saveClassesBatch(classesList);
     if (isDualSyncActive()) {
@@ -2145,6 +2167,11 @@ export const deleteClassFromFirestore = async (id: string): Promise<void> => {
 };
 
 export const deleteClass = async (id: string): Promise<void> => {
+  invalidateMemoryCache('classes');
+  try {
+    localStorage.removeItem('eduquiz_classes_cache');
+  } catch {}
+
   if (isSupabasePrimary()) {
     const res = await supabaseDb.deleteClass(id);
     if (isDualSyncActive()) {
@@ -2159,6 +2186,24 @@ export const assignStudentsToClass = async (
   studentIds: string[], 
   classInfo: { classId?: string; className?: string; academicYear?: string; grade?: Grade; subject?: string } | null
 ): Promise<number> => {
+  invalidateMemoryCache('users');
+  invalidateMemoryCache('classes');
+  try {
+    localStorage.removeItem('eduquiz_users_cache');
+    localStorage.removeItem('eduquiz_classes_cache');
+    localStorage.removeItem('eduquiz_unassigned_students');
+  } catch {}
+
+  if (isSupabasePrimary()) {
+    const res = await supabaseDb.assignStudentsToClass(
+      studentIds, 
+      classInfo?.classId || null, 
+      classInfo?.className || null, 
+      classInfo?.academicYear
+    );
+    return res;
+  }
+
   if (!db || studentIds.length === 0) return 0;
   try {
     const allUsers = await getUsers();
@@ -2173,7 +2218,7 @@ export const assignStudentsToClass = async (
       subject: classInfo?.subject || u.subject || ''
     }));
 
-    await saveUsersBatch(updatedUsers);
+    await saveUsersBatchToFirestore(updatedUsers);
     return updatedUsers.length;
   } catch (e) {
     console.error("Lỗi gán học sinh vào lớp:", e);
