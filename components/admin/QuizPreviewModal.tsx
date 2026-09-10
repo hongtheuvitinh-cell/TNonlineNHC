@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, Download, FileType, AlignLeft, Rows, FileCode, Sparkles, Loader2, ChevronUp, ChevronDown } from 'lucide-react';
+import { X, Download, FileType, AlignLeft, Rows, FileCode, Sparkles, Loader2, ChevronUp, ChevronDown, Printer } from 'lucide-react';
 import { Quiz, Question } from '../../types';
 import LatexText from '../LatexText';
 import { normalizeFullText, repairVietnameseText } from '../../services/vietnameseFixer';
@@ -460,6 +460,28 @@ export default function QuizPreviewModal({ quiz, onClose, isAdmin = true }: Quiz
 
     return (
         <div className="fixed inset-0 bg-slate-900/95 z-[2000] flex items-center justify-center p-0 md:p-4 backdrop-blur-xl animate-fade-in">
+            <style>{`
+                @media print {
+                    body * {
+                        visibility: hidden !important;
+                    }
+                    #quiz-export-content, #quiz-export-content * {
+                        visibility: visible !important;
+                    }
+                    #quiz-export-content {
+                        position: absolute !important;
+                        left: 0 !important;
+                        top: 0 !important;
+                        width: 100% !important;
+                        margin: 0 !important;
+                        padding: 15mm !important;
+                        background: white !important;
+                        color: black !important;
+                        box-shadow: none !important;
+                        border: none !important;
+                    }
+                }
+            `}</style>
             <div className="bg-white rounded-[0] md:rounded-[3.5rem] w-full max-w-5xl h-full md:h-[95vh] flex flex-col overflow-hidden shadow-2xl relative">
                 
                 <div className="p-6 bg-slate-900 text-white flex flex-wrap justify-between items-center gap-4 shrink-0 border-b border-slate-800">
@@ -525,6 +547,13 @@ export default function QuizPreviewModal({ quiz, onClose, isAdmin = true }: Quiz
                                     title="Xuất file Microsoft Word (.docx) chứa công thức hiển thị trực tiếp bằng Equation trong Word"
                                 >
                                     {isExportingDocx ? <Loader2 size={15} className="animate-spin" /> : <Sparkles size={15} />} Xuất Word (.docx)
+                                </button>
+                                <button 
+                                    onClick={() => window.print()}
+                                    className="flex items-center gap-2 px-4 py-2.5 bg-slate-700 hover:bg-slate-600 text-white rounded-xl text-[11px] font-black uppercase transition-all shadow-xl active:scale-95"
+                                    title="In đề thi trực tiếp qua máy in hoặc lưu PDF"
+                                >
+                                    <Printer size={15}/> In đề (PDF)
                                 </button>
                             </>
                         )}

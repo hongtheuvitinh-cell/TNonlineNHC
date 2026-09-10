@@ -10,29 +10,42 @@
 
     export const safeParseJsonWithLatex = (inputStr: string): any => {
         if (!inputStr || typeof inputStr !== 'string') return null;
-        const cleanStr = cleanJsonString(inputStr);
+        let cleanStr = cleanJsonString(inputStr);
 
-        // Thử parse trực tiếp
+        // Danh sách các lệnh LaTeX phổ biến có chữ cái đầu trùng với ký tự escape JSON (\b, \t, \r, \n, \f)
+        // Nếu không escape thành \\ thì JSON.parse sẽ ngầm biến \times thành Tab + "imes", \beta thành Backspace + "eta", \theta thành Tab + "heta"...
+        const latexKeywords = 'times|theta|tau|tan|top|text|tilde|triangle|to|beta|bar|bm|mathbf|boldsymbol|begin|bullet|bot|rho|rightarrow|Rightarrow|right|rangle|rad|nu|nabla|neq|notin|not|frac|forall|flat|alpha|gamma|delta|epsilon|omega|pi|mu|lambda|sigma|phi|psi|sqrt|cdot|approx|pm|le|ge|sim|in|infty|vec|hat|circ|angle|partial';
+        
+        // 1. Tự động bảo vệ tất cả các lệnh LaTeX trước khi parse
+        const preEscapedStr = cleanStr.replace(
+            new RegExp(`(?<!\\\\)\\\\(${latexKeywords})\\b`, 'g'),
+            '\\\\$1'
+        );
+
+        // 2. Thử parse sau khi đã bảo vệ lệnh LaTeX
         try {
-            return JSON.parse(cleanStr);
+            return JSON.parse(preEscapedStr);
         } catch (firstErr) {
-            // Nếu thất bại do các ký tự escape LaTeX (như \Delta, \frac, \text, \pm, \alpha, \s, \d...), sửa chữa tự động
+            // Nếu thất bại do các ký tự escape LaTeX khác (như \Delta, \s, \d...), sửa chữa tự động
             try {
-        // Thay thế các ký tự escape không hợp lệ trong chuỗi JSON thành escape kép (\\)
-                // JSON chỉ cho phép escape: \" \\ \/ \b \f \n \r \t \uXXXX
-                // Cẩn thận với \Rightarrow, \rightarrow, \rho, \tau... tránh bị \r hoặc \t biến tính
-                const fixedEscape = cleanStr.replace(/\\([^"\\\/bfnrtu]|u(?![\da-fA-F]{4}))/g, '\\\\$1');
+                // Thay thế các ký tự escape không hợp lệ trong chuỗi JSON thành escape kép (\\)
+                const fixedEscape = preEscapedStr.replace(/\\([^"\\\/bfnrtu]|u(?![\da-fA-F]{4}))/g, '\\\\$1');
                 return JSON.parse(fixedEscape);
             } catch (secondErr) {
                 // Thử dọn dẹp các ký tự điều khiển tab/newline ẩn
                 try {
-                    const noInvalidCtrl = cleanStr
+                    const noInvalidCtrl = preEscapedStr
                         .replace(/\r\n/g, "\\n")
                         .replace(/\n/g, "\\n")
                         .replace(/\t/g, "\\t");
                     return JSON.parse(noInvalidCtrl);
                 } catch (thirdErr: any) {
-                    throw new Error("Cấu trúc file hoặc chuỗi JSON không hợp lệ: " + (firstErr as Error).message);
+                    // Cố gắng parse chuỗi gốc
+                    try {
+                        return JSON.parse(cleanStr);
+                    } catch {
+                        throw new Error("Cấu trúc JSON từ AI không hợp lệ: " + (firstErr as Error).message);
+                    }
                 }
             }
         }

@@ -16,6 +16,7 @@ export interface ClassRoom {
   createdBy?: string; // ID giáo viên tạo lớp
   teacherName?: string; // Tên giáo viên tạo lớp
   isSharedWithTeachers?: boolean; // Chia sẻ cho toàn bộ giáo viên khác xem và giao bài
+  studentCount?: number; // Số lượng học sinh trong lớp
 }
 
 export interface User {

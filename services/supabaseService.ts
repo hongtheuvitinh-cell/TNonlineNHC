@@ -90,7 +90,8 @@ export function mapClassFromDb(row: any): ClassRoom {
     createdAt: row.created_at || row.createdAt,
     createdBy: row.created_by || row.createdBy,
     teacherName: row.teacher_name || row.teacherName,
-    isSharedWithTeachers: row.is_shared_with_teachers ?? row.isSharedWithTeachers ?? true
+    isSharedWithTeachers: row.is_shared_with_teachers ?? row.isSharedWithTeachers ?? true,
+    studentCount: row.student_count ?? row.studentCount ?? undefined
   };
 }
 
@@ -105,7 +106,8 @@ export function mapClassToDb(c: ClassRoom): any {
     created_at: c.createdAt || new Date().toISOString(),
     created_by: c.createdBy || null,
     teacher_name: c.teacherName || null,
-    is_shared_with_teachers: c.isSharedWithTeachers ?? true
+    is_shared_with_teachers: c.isSharedWithTeachers ?? true,
+    student_count: typeof c.studentCount === 'number' ? c.studentCount : null
   };
 }
 
@@ -432,6 +434,33 @@ export const supabaseDb = {
     if (academicYear) updatePayload.academic_year = academicYear;
     const { error } = await client.from('users').update(updatePayload).in('id', studentIds);
     return error ? 0 : studentIds.length;
+  },
+
+  async getStudentsByClass(classId: string, className?: string, academicYear?: string): Promise<User[]> {
+    const client = getSupabase();
+    if (!client) return [];
+    let q = client.from('users').select('*').eq('role', 'student');
+    if (className && academicYear) {
+      q = q.or(`class_id.eq.${classId},and(class_name.eq.${className},academic_year.eq.${academicYear})`);
+    } else {
+      q = q.eq('class_id', classId);
+    }
+    const { data, error } = await q.order('full_name', { ascending: true });
+    if (error || !data) return [];
+    return data.map(mapUserFromDb);
+  },
+
+  async getUnassignedStudents(): Promise<User[]> {
+    const client = getSupabase();
+    if (!client) return [];
+    const { data, error } = await client.from('users')
+      .select('*')
+      .eq('role', 'student')
+      .is('class_id', null)
+      .order('full_name', { ascending: true })
+      .limit(200);
+    if (error || !data) return [];
+    return data.map(mapUserFromDb);
   },
 
   // CHAPTERS

@@ -516,15 +516,25 @@ export const getUsersPage = async (
   }
 };
 
-export const getUsers = async (): Promise<User[]> => {
+export const getUsers = async (forceRefresh: boolean = false): Promise<User[]> => {
   if (isSupabasePrimary()) {
     return await supabaseDb.getUsers();
   }
-  if (!db) return [];
+  const now = Date.now();
+  if (!forceRefresh && memoryCache.users && memoryCache.users.expires > now) {
+    return memoryCache.users.data;
+  }
+  if (!db) {
+    try {
+      const local = localStorage.getItem('eduquiz_users_cache');
+      if (local) return JSON.parse(local);
+    } catch {}
+    return [];
+  }
   try {
     const snapshot = await getDocs(collection(db, 'users'));
     trackFirestoreRead('users', snapshot.docs.length);
-    return snapshot.docs.map(d => {
+    const users = snapshot.docs.map(d => {
       const row = d.data();
       const parsed = (row.data as User) || ({ ...row, id: d.id } as User);
       return {
@@ -536,13 +546,23 @@ export const getUsers = async (): Promise<User[]> => {
         createdById: parsed.createdById || row.createdById || '',
       };
     });
+    memoryCache.users = { data: users, expires: now + 5 * 60 * 1000 };
+    try {
+      localStorage.setItem('eduquiz_users_cache', JSON.stringify(users));
+    } catch {}
+    return users;
   } catch (e) {
     console.error("Lỗi getUsers Firestore:", e);
+    try {
+      const local = localStorage.getItem('eduquiz_users_cache');
+      if (local) return JSON.parse(local);
+    } catch {}
     return [];
   }
 };
 
 export const saveUserToFirestore = async (user: User): Promise<void> => {
+  invalidateMemoryCache('users');
   if (!db) return;
   const payload = {
     id: user.id,
@@ -581,6 +601,7 @@ export const saveUser = async (user: User): Promise<void> => {
 };
 
 export const saveUsersBatchToFirestore = async (users: User[]): Promise<void> => {
+  invalidateMemoryCache('users');
   if (!db || users.length === 0) return;
   const chunkSize = 400;
   for (let i = 0; i < users.length; i += chunkSize) {
@@ -629,6 +650,7 @@ export const saveUsersBatch = async (users: User[]): Promise<void> => {
 
 // Memory cache to drastically reduce Firebase/Supabase read quota and bandwidth consumption
 const memoryCache: {
+  users?: { data: User[]; expires: number };
   teachers?: { data: User[]; expires: number };
   chapters?: { data: Chapter[]; expires: number };
   classes?: { data: ClassRoom[]; expires: number };
@@ -653,8 +675,9 @@ export const cacheResultDetails = (results: Result[]): void => {
   }
 };
 
-export const invalidateMemoryCache = (key?: 'teachers' | 'chapters' | 'classes' | 'quizzes' | 'bank' | 'results') => {
+export const invalidateMemoryCache = (key?: 'users' | 'teachers' | 'chapters' | 'classes' | 'quizzes' | 'bank' | 'results') => {
   if (!key) {
+    delete memoryCache.users;
     delete memoryCache.teachers;
     delete memoryCache.chapters;
     delete memoryCache.classes;
@@ -663,7 +686,13 @@ export const invalidateMemoryCache = (key?: 'teachers' | 'chapters' | 'classes' 
     delete memoryCache.quizDetails;
     delete memoryCache.resultDetails;
     try {
+      localStorage.removeItem('eduquiz_users_cache');
       localStorage.removeItem('eduquiz_quizzes_meta_cache');
+    } catch {}
+  } else if (key === 'users') {
+    delete memoryCache.users;
+    try {
+      localStorage.removeItem('eduquiz_users_cache');
     } catch {}
   } else if (key === 'teachers') {
     delete memoryCache.teachers;
@@ -883,6 +912,7 @@ export const findUser = async (username: string): Promise<User | undefined> => {
 };
 
 export const deleteUserFromFirestore = async (id: string): Promise<void> => {
+  invalidateMemoryCache('users');
   if (!db) return;
   try {
     // 1. Delete associated results
@@ -1979,17 +2009,21 @@ export const getClasses = async (forceRefresh: boolean = false): Promise<ClassRo
             name: row.name || '',
             academicYear: row.academicYear || row.academic_year || '',
             grade: row.grade || '12',
+            subject: row.subject || undefined,
             description: row.description || '',
             createdBy: row.createdBy || '',
             teacherName: row.teacherName || '',
-            isSharedWithTeachers: row.isSharedWithTeachers || false
+            isSharedWithTeachers: row.isSharedWithTeachers || false,
+            studentCount: row.studentCount ?? row.student_count ?? undefined
           } as ClassRoom);
           return {
             ...parsed,
             id: d.id,
+            subject: parsed.subject || row.subject || undefined,
             createdBy: parsed.createdBy || row.createdBy || '',
             teacherName: parsed.teacherName || row.teacherName || '',
-            isSharedWithTeachers: parsed.isSharedWithTeachers ?? row.isSharedWithTeachers ?? false
+            isSharedWithTeachers: parsed.isSharedWithTeachers ?? row.isSharedWithTeachers ?? false,
+            studentCount: parsed.studentCount ?? row.studentCount ?? row.student_count ?? undefined
           };
         });
 
@@ -2031,10 +2065,12 @@ export const saveClassToFirestore = async (c: ClassRoom): Promise<void> => {
       name: c.name,
       academicYear: c.academicYear,
       grade: c.grade,
+      subject: c.subject || '',
       description: c.description || '',
       createdBy: c.createdBy || '',
       teacherName: c.teacherName || '',
       isSharedWithTeachers: Boolean(c.isSharedWithTeachers),
+      studentCount: typeof c.studentCount === 'number' ? c.studentCount : null,
       data: cleanUndefined(c)
     }));
     trackFirestoreWrite('classes', 1);
@@ -2142,6 +2178,98 @@ export const assignStudentsToClass = async (
   } catch (e) {
     console.error("Lỗi gán học sinh vào lớp:", e);
     throw e;
+  }
+};
+
+/**
+ * Tải chi tiết danh sách học sinh của một lớp học cụ thể (Lazy loading tối ưu băng thông)
+ * Chỉ nạp học sinh của lớp đang được xem, không tải toàn bộ học sinh hệ thống.
+ */
+export const getStudentsByClass = async (
+  classId: string, 
+  className?: string, 
+  academicYear?: string
+): Promise<User[]> => {
+  if (isSupabasePrimary()) {
+    return await supabaseDb.getStudentsByClass(classId, className, academicYear);
+  }
+
+  if (!db) {
+    try {
+      const local = localStorage.getItem(`eduquiz_class_students_${classId}`);
+      if (local) return JSON.parse(local);
+    } catch {}
+    return [];
+  }
+
+  try {
+    const qRef = collection(db, 'users');
+    const q1 = query(qRef, where('classId', '==', classId));
+    const snap1 = await getDocs(q1);
+    trackFirestoreRead('users', snap1.docs.length);
+
+    const studentsMap = new Map<string, User>();
+    snap1.docs.forEach(d => {
+      const row = d.data();
+      const parsed = (row.data as User) || ({ ...row, id: d.id } as User);
+      if (parsed.role === 'student' || !parsed.role) {
+        studentsMap.set(d.id, { ...parsed, id: d.id });
+      }
+    });
+
+    // Fallback đối soát tên lớp + niên khóa đối với dữ liệu cũ chưa có classId
+    if (className && academicYear) {
+      const q2 = query(qRef, where('className', '==', className), where('academicYear', '==', academicYear));
+      const snap2 = await getDocs(q2);
+      trackFirestoreRead('users', snap2.docs.length);
+      snap2.docs.forEach(d => {
+        const row = d.data();
+        const parsed = (row.data as User) || ({ ...row, id: d.id } as User);
+        if ((parsed.role === 'student' || !parsed.role) && !studentsMap.has(d.id)) {
+          studentsMap.set(d.id, { ...parsed, id: d.id });
+        }
+      });
+    }
+
+    const result = Array.from(studentsMap.values());
+    result.sort((a, b) => (a.fullName || '').localeCompare(b.fullName || ''));
+
+    try {
+      localStorage.setItem(`eduquiz_class_students_${classId}`, JSON.stringify(result));
+    } catch {}
+
+    return result;
+  } catch (e) {
+    console.error("Lỗi getStudentsByClass:", e);
+    return [];
+  }
+};
+
+/**
+ * Tải danh sách học sinh chưa phân lớp (để phục vụ gán vào lớp mới)
+ */
+export const getUnassignedStudents = async (): Promise<User[]> => {
+  if (isSupabasePrimary()) {
+    return await supabaseDb.getUnassignedStudents();
+  }
+  if (!db) return [];
+  try {
+    const qRef = collection(db, 'users');
+    const q1 = query(qRef, where('classId', '==', ''));
+    const snap1 = await getDocs(q1);
+    trackFirestoreRead('users', snap1.docs.length);
+    const list: User[] = [];
+    snap1.docs.forEach(d => {
+      const row = d.data();
+      const parsed = (row.data as User) || ({ ...row, id: d.id } as User);
+      if ((parsed.role === 'student' || !parsed.role) && (!parsed.className || !parsed.className.trim())) {
+        list.push({ ...parsed, id: d.id });
+      }
+    });
+    return list;
+  } catch (e) {
+    console.error("Lỗi getUnassignedStudents:", e);
+    return [];
   }
 };
 

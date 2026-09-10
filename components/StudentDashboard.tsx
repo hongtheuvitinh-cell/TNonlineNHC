@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { User, Quiz, Result, PublishedResult, Chapter, Grade } from '../types';
-import { getQuizzesMetadata, getResultsForStudent, getPublishedResults, getQuizById, getStudentActiveSessions, deleteExamSession, getChapters } from '../services/storage';
+import { getQuizzesMetadata, getResultsForStudent, getPublishedResults, getQuizById, getStudentActiveSessions, deleteExamSession, getChapters, cacheResultDetails } from '../services/storage';
 import { getCurrentAcademicYear } from '../services/academicUtils';
 import QuizTaker from './QuizTaker';
 import QuickPractice from './QuickPractice';
@@ -50,6 +50,7 @@ export default function StudentDashboard({ user, targetQuizId }: StudentDashboar
             new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime()
         );
         setResults(sortedResults);
+        cacheResultDetails(sortedResults);
 
         const userPubs = latestPubs.filter((p: PublishedResult) => 
             user.studentCode && p.studentCodes.map((c: string) => c.toUpperCase()).includes(user.studentCode.toUpperCase())
@@ -170,12 +171,18 @@ export default function StudentDashboard({ user, targetQuizId }: StudentDashboar
       setIsLoading(true);
       const fetched = await getQuizById(targetQuiz.id);
       setIsLoading(false);
-      if (fetched) targetQuiz = fetched;
+      if (fetched) {
+        targetQuiz = fetched;
+        setQuizzes(prev => prev.map(item => item.id === fetched.id ? fetched : item));
+      }
     } else if (!targetQuiz) {
       setIsLoading(true);
       const fetched = await getQuizById(r.quizId);
       setIsLoading(false);
-      if (fetched) targetQuiz = fetched;
+      if (fetched) {
+        targetQuiz = fetched;
+        setQuizzes(prev => [...prev.filter(item => item.id !== fetched.id), fetched]);
+      }
     }
     if (targetQuiz) {
       setSelectedResult({ result: r, quiz: targetQuiz });

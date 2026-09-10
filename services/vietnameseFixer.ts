@@ -223,6 +223,20 @@ export function cleanLatexTextTags(text: string): string {
     // 8. Đảm bảo khoảng trắng xung quanh \Rightarrow, \Leftrightarrow, \rightarrow nếu dính liền
     res = res.replace(/([0-9a-zA-Z_\)\}\]])(\\Rightarrow|\\Leftarrow|\\Leftrightarrow|\\rightarrow)([0-9a-zA-Z_\\\{\(])/g, '$1 $2 $3');
 
+    // 9. Tự động khắc phục các lỗi ký tự escape LaTeX bị JSON parse biến dạng:
+    // - "\times" bị biến thành [Tab] + "imes" hoặc "imes"
+    res = res.replace(/(?:[\t\x08\r\n]|\b)imes\b/g, '\\times');
+    // - "\theta" bị biến thành [Tab] + "heta" hoặc "heta" khi nằm cạnh các hàm lượng giác / góc
+    res = res.replace(/(?<=\\cos|\\sin|\\tan|\\cot|\(|\s|=|\\cdot|\\times)(?:[\t\x08\r\n]|\b)heta\b/g, '\\theta');
+    // - "\beta" bị biến thành [Backspace] + "eta" hoặc "\b eta"
+    res = res.replace(/[\x08]eta\b|\\b\s*eta\b/g, '\\beta');
+
+    // 10. Sửa lỗi AI viết từ "gốc" hoặc "căn" bằng chữ tiếng Việt trong công thức toán/lý ($1gốc 3$ N -> $1\sqrt{3}$ N)
+    res = res.replace(/(\d+)\s*gốc\s*(\d+)/gi, '$1\\sqrt{$2}');
+    res = res.replace(/(\d+)\s*căn\s*(\d+)/gi, '$1\\sqrt{$2}');
+    res = res.replace(/(?<=[$=+\-*/(\s])gốc\s*(\d+)/gi, '\\sqrt{$1}');
+    res = res.replace(/(?<=[$=+\-*/(\s])căn\s*(\d+)/gi, '\\sqrt{$1}');
+
     return res;
 }
 

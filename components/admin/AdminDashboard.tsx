@@ -112,13 +112,36 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
         setClasses(cls);
         loadedTabsRef.current.add('teachers');
       } else if (tab === 'classes') {
-        const [cls, q, c, t] = await Promise.all([
+        const [cls, q, c, t, allUsers] = await Promise.all([
           getClasses(forceRefresh),
           getQuizzesMetadata(undefined, undefined, forceRefresh),
           getChapters(forceRefresh),
-          getTeachers(forceRefresh)
+          getTeachers(forceRefresh),
+          students.length === 0 ? getUsers(forceRefresh) : Promise.resolve(students)
         ]);
-        setClasses(cls);
+
+        let currentStudents = students;
+        if (allUsers && allUsers.length > 0) {
+          const studentList = allUsers.filter(u => u.role === 'student' || !u.role);
+          setStudents(studentList);
+          setStudentsTotal(studentList.length);
+          currentStudents = studentList;
+        }
+
+        // Tự động gán sĩ số chuẩn xác cho từng lớp (kể cả khi DB chưa lưu trường studentCount)
+        const enrichedClasses = cls.map(cl => {
+          const count = currentStudents.filter(s => 
+            s.classId === cl.id || 
+            (s.className && cl.name && s.className.trim().toLowerCase() === cl.name.trim().toLowerCase() && 
+             (!cl.academicYear || !s.academicYear || s.academicYear === cl.academicYear))
+          ).length;
+          return {
+            ...cl,
+            studentCount: count
+          };
+        });
+
+        setClasses(enrichedClasses);
         setQuizzes(q);
         setChapters(c);
         setTeachers(t);
@@ -134,7 +157,20 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
         setStudents(studentList);
         setStudentsTotal(pagedUsers.total || studentList.length);
         setStudentsPage(1);
-        setClasses(cls);
+
+        const enrichedClasses = cls.map(cl => {
+          const count = studentList.filter(s => 
+            s.classId === cl.id || 
+            (s.className && cl.name && s.className.trim().toLowerCase() === cl.name.trim().toLowerCase() && 
+             (!cl.academicYear || !s.academicYear || s.academicYear === cl.academicYear))
+          ).length;
+          return {
+            ...cl,
+            studentCount: typeof cl.studentCount === 'number' && cl.studentCount > count ? cl.studentCount : count
+          };
+        });
+
+        setClasses(enrichedClasses);
         setTeachers(t);
         loadedTabsRef.current.add('students');
       } else if (tab === 'results') {
@@ -262,16 +298,33 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
     }
   };
 
+  const isSuperAdmin = currentUser?.role === 'superadmin';
+
   // Filters
   const [qSearch, setQSearch] = useState('');
   const [qAcademicYearFilter, setQAcademicYearFilter] = useState<string>(getCurrentAcademicYear());
-  const [qSubjectFilter, setQSubjectFilter] = useState<string>('all');
-  const [qGradeFilter, setQGradeFilter] = useState<Grade | 'all'>('all');
+  const [qSubjectFilter, setQSubjectFilter] = useState<string>(() => (currentUser?.subject && !isSuperAdmin) ? currentUser.subject : 'all');
+  const [qGradeFilter, setQGradeFilter] = useState<Grade | 'all'>(() => isSuperAdmin ? 'all' : '12');
+  const [qAuthorFilter, setQAuthorFilter] = useState<string>(() => isSuperAdmin ? 'all' : 'mine');
   const [qChapterFilter, setQChapterFilter] = useState('all');
+
+  // Mặc định cho màn hình GV thường: Năm hiện hành, Khối 12, Đề của tôi, Môn của GV
+  useEffect(() => {
+    if (currentUser && !isSuperAdmin) {
+      setQGradeFilter('12');
+      setQAuthorFilter('mine');
+      setQAcademicYearFilter(getCurrentAcademicYear());
+      setSGradeFilter('12');
+      setRGradeFilter('12');
+      if (currentUser.subject) {
+        setQSubjectFilter(currentUser.subject);
+      }
+    }
+  }, [currentUser?.id, currentUser?.subject, isSuperAdmin]);
   const [sSearch, setSSearch] = useState('');
   const [rSearch, setRSearch] = useState('');
-  const [sGradeFilter, setSGradeFilter] = useState<Grade | 'all'>('all');
-  const [rGradeFilter, setRGradeFilter] = useState<Grade | 'all'>('all');
+  const [sGradeFilter, setSGradeFilter] = useState<Grade | 'all'>('12');
+  const [rGradeFilter, setRGradeFilter] = useState<Grade | 'all'>('12');
   const [rChapterFilter, setRChapterFilter] = useState('all');
   const [rQuizFilter, setRQuizFilter] = useState('all');
 
@@ -322,8 +375,6 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
     return () => clearTimeout(timer);
   }, [sSearch, activeTab]);
 
-  const isSuperAdmin = currentUser?.role === 'superadmin';
-
   const [bGradeFilter, setBGradeFilter] = useState<Grade | 'all'>(() => (currentUser?.grade as Grade) || '12');
   const [bChapterFilter, setBChapterFilter] = useState('all');
   const [bTypeFilter, setBTypeFilter] = useState<QuestionType | 'all'>('all');
@@ -357,16 +408,27 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
   // Quản lý dữ liệu phân quyền theo giáo viên
   const accessibleQuizzes = useMemo(() => {
     if (isSuperAdmin) return quizzes;
+    const mySubj = currentUser?.subject;
     return quizzes.filter(q => {
-      // Đề do mình tạo hoặc được chia sẻ với giáo viên
-      if (q.createdBy === currentUser?.id) return true;
-      if (q.isSharedWithTeachers) return true;
-      // Nếu cùng môn học và không có creator cụ thể
-      if (q.subject && currentUser?.subject && isSameSubject(q.subject, currentUser.subject)) return true;
-      if (!q.createdBy) return true;
+      // Đề do mình tạo: luôn truy cập được
+      const isMine = Boolean(currentUser?.id && q.createdBy === currentUser.id);
+      if (isMine) return true;
+
+      // Đề được chia sẻ: chỉ truy cập nếu cùng bộ môn giảng dạy
+      if (q.isSharedWithTeachers) {
+        if (!mySubj) return true;
+        const creator = teachers.find(t => t.id === q.createdBy);
+        const effectiveSubj = q.subject || creator?.subject;
+        if (!effectiveSubj || isSameSubject(effectiveSubj, mySubj)) return true;
+      }
+
+      // Đề không có creator nhưng cùng bộ môn
+      if (!q.createdBy && q.subject && mySubj && isSameSubject(q.subject, mySubj)) {
+        return true;
+      }
       return false;
     });
-  }, [quizzes, isSuperAdmin, currentUser?.id, currentUser?.subject]);
+  }, [quizzes, isSuperAdmin, currentUser?.id, currentUser?.subject, teachers]);
 
   const accessibleQuizIds = useMemo(() => new Set(accessibleQuizzes.map(q => q.id)), [accessibleQuizzes]);
 
@@ -1099,6 +1161,10 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
     setQuizzes(prev => prev.map(q => q.id === quizId ? { ...q, isSharedWithTeachers: newShareStatus } : q));
   };
 
+  const handleLoadSharedQuizzes = useCallback(async () => {
+    await loadTabData('quizzes', true);
+  }, [loadTabData]);
+
   const handleDeleteQuiz = (id: string) => {
     const targetQuiz = quizzes.find(q => q.id === id);
     const isMine = Boolean(currentUser?.id && targetQuiz?.createdBy === currentUser.id);
@@ -1606,6 +1672,18 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
                     showAlert("Quyền hạn", `Chức năng "${tab.label}" chỉ dành riêng cho Tổng Quản Trị (SuperAdmin).`, "warning");
                     return;
                   }
+                  if (tab.id === 'quizzes') {
+                    if (!isSuperAdmin) {
+                      setQAcademicYearFilter(getCurrentAcademicYear());
+                      setQGradeFilter('12');
+                      setQAuthorFilter('mine');
+                      if (currentUser?.subject) {
+                        setQSubjectFilter(currentUser.subject);
+                      }
+                      setQChapterFilter('all');
+                      setQSearch('');
+                    }
+                  }
                   if (tab.id === 'bank') {
                     if (currentUser?.subject && (!bSubjectFilter || bSubjectFilter === 'all')) {
                       setBSubjectFilter(currentUser.subject);
@@ -1811,6 +1889,8 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
                         qChapterFilter={qChapterFilter} setQChapterFilter={setQChapterFilter}
                         qSubjectFilter={qSubjectFilter} setQSubjectFilter={setQSubjectFilter}
                         qAcademicYearFilter={qAcademicYearFilter} setQAcademicYearFilter={setQAcademicYearFilter}
+                        qAuthorFilter={qAuthorFilter} setQAuthorFilter={setQAuthorFilter}
+                        onLoadSharedQuizzes={handleLoadSharedQuizzes}
                     />
                 )}
               </div>
@@ -2002,7 +2082,15 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
              </div>
           )}
 
-          {activeTab === 'monitor' && <ExamMonitor currentUser={currentUser} />}
+          {activeTab === 'monitor' && (
+            <ExamMonitor 
+              currentUser={currentUser} 
+              initialQuizzes={accessibleQuizzes} 
+              initialClasses={accessibleClasses} 
+              initialUsers={accessibleStudents}
+              initialTeachers={teachers}
+            />
+          )}
           {activeTab === 'chapters' && (
             <ChapterManager 
               chapters={chapters} 

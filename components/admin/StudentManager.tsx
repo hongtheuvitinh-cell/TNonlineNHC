@@ -1,18 +1,17 @@
-
 import React, { useState, useMemo, useEffect } from 'react';
 import { User, Grade, Result, Quiz, ClassRoom } from '../../types';
 import { isDatabaseConnected } from '../../services/storage';
-import { STANDARD_SUBJECTS, isSameSubject } from '../../services/subjectUtils';
+import { getCurrentAcademicYear } from '../../services/academicUtils';
 import { 
-  Search, UserPlus, Eye, Trash2, FileSpreadsheet, Key, Edit3, Clock, 
-  Medal, Info, ChevronDown, Database, RefreshCw, Loader2, 
-  GraduationCap, Check, X, Calendar, BookOpen
+  Search, UserPlus, Eye, Trash2, FileSpreadsheet, Key, Edit3, 
+  ChevronDown, Database, RefreshCw, Loader2, 
+  GraduationCap, Check, X, Calendar, UserCheck, Copy, Shield
 } from 'lucide-react';
 
 interface StudentManagerProps {
     students: User[];
-    results: Result[]; 
-    quizzes: Quiz[];
+    results?: Result[]; 
+    quizzes?: Quiz[];
     classes?: ClassRoom[];
     teachers?: User[];
     currentUser?: User;
@@ -35,7 +34,7 @@ interface StudentManagerProps {
 }
 
 export default function StudentManager({ 
-    students, results, quizzes, classes = [], teachers = [], currentUser, sSearch, setSSearch, sGradeFilter, setSGradeFilter, 
+    students, results = [], quizzes = [], classes = [], teachers = [], currentUser, sSearch, setSSearch, sGradeFilter, setSGradeFilter, 
     onAdd, onRefresh, onImportCsv, onViewDetail, onEdit, onDelete, onBulkDelete, onBulkAssignClass, onResetPassword,
     totalCount, onLoadMore, isMoreLoading
 }: StudentManagerProps) {
@@ -43,10 +42,15 @@ export default function StudentManager({
     const [selectedIds, setSelectedIds] = useState<string[]>([]);
     const [deleteBulkConfirm, setDeleteBulkConfirm] = useState(false);
     const [sClassFilter, setSClassFilter] = useState<string>('all');
-    const [sAcademicYearFilter, setSAcademicYearFilter] = useState<string>('all');
+    // Mặc định: Năm hiện hành
+    const [sAcademicYearFilter, setSAcademicYearFilter] = useState<string>(() => getCurrentAcademicYear());
+    // Mặc định: Học sinh của tôi (dành cho GV) hoặc Tất cả (dành cho SuperAdmin)
+    const [sScopeFilter, setSScopeFilter] = useState<'mine' | 'all'>(() => isSuperAdmin ? 'all' : 'mine');
+    
     const [isBulkClassModalOpen, setIsBulkClassModalOpen] = useState(false);
     const [targetClassId, setTargetClassId] = useState<string>('');
     const [isAssigning, setIsAssigning] = useState(false);
+    const [copiedPassId, setCopiedPassId] = useState<string | null>(null);
 
     // Map nhanh thông tin giáo viên
     const teacherMap = useMemo(() => {
@@ -71,6 +75,10 @@ export default function StudentManager({
     // Danh sách niên khóa trích xuất từ dữ liệu
     const availableAcademicYears = useMemo(() => {
         const set = new Set<string>();
+        // Luôn có năm học hiện hành
+        const currYear = getCurrentAcademicYear();
+        if (currYear) set.add(currYear);
+        
         classes.forEach(c => {
             if (c.academicYear && c.academicYear.trim()) set.add(c.academicYear.trim());
         });
@@ -105,19 +113,48 @@ export default function StudentManager({
         }
     }, [relevantClasses, sClassFilter]);
 
+    // Danh sách học sinh đã lọc theo các tiêu chí: Năm học hiện hành, Khối 12, Do giáo viên này thêm/quản lý
     const filtered = useMemo(() => {
         return students.filter(u => {
-            // 1. Lọc theo Khối
+            // 1. Lọc theo Khối (Mặc định Khối 12)
             if (sGradeFilter !== 'all' && u.grade !== sGradeFilter) return false;
 
-            // 2. Lọc theo Niên khóa
+            // 2. Lọc theo Niên khóa (Mặc định Năm hiện hành)
             const studentYear = u.academicYear || classes.find(c => c.id === u.classId || (c.name === u.className && c.grade === u.grade))?.academicYear;
             if (sAcademicYearFilter !== 'all') {
                 if (sAcademicYearFilter === 'none' && studentYear) return false;
                 if (sAcademicYearFilter !== 'none' && studentYear !== sAcademicYearFilter) return false;
             }
 
-            // 3. Lọc theo Lớp học
+            // 3. Lọc theo Giáo viên tạo / quản lý (Mặc định: 'mine' - do GV này thêm hoặc thuộc lớp GV này)
+            if (sScopeFilter === 'mine' && currentUser?.id) {
+                const isCreatedByMe = Boolean(u.createdById && u.createdById === currentUser.id);
+                
+                let isMyClass = false;
+                if (u.classId) {
+                    const cls = classes.find(c => c.id === u.classId);
+                    if (cls && (cls.createdBy === currentUser.id || (currentUser.fullName && cls.teacherName === currentUser.fullName))) {
+                        isMyClass = true;
+                    }
+                }
+                if (!isMyClass && u.className) {
+                    const clsName = u.className.trim().toLowerCase();
+                    const cls = classes.find(c => 
+                        c.name.trim().toLowerCase() === clsName && 
+                        (!c.academicYear || !u.academicYear || c.academicYear === u.academicYear)
+                    );
+                    if (cls && (cls.createdBy === currentUser.id || (currentUser.fullName && cls.teacherName === currentUser.fullName))) {
+                        isMyClass = true;
+                    }
+                }
+
+                // Nếu không do GV này tạo và không thuộc lớp do GV này quản lý thì loại bỏ
+                if (!isCreatedByMe && !isMyClass) {
+                    return false;
+                }
+            }
+
+            // 4. Lọc theo Lớp học
             if (sClassFilter === 'unassigned') {
                 if (u.classId || u.className) return false;
             } else if (sClassFilter !== 'all') {
@@ -133,19 +170,20 @@ export default function StudentManager({
                 }
             }
 
-            // 4. Tìm kiếm từ khóa
+            // 5. Tìm kiếm từ khóa (tên, mã số, lớp, tài khoản)
             if (sSearch.trim()) {
                 const q = sSearch.toLowerCase();
                 const matchName = u.fullName.toLowerCase().includes(q);
                 const matchCode = Boolean(u.studentCode && u.studentCode.toLowerCase().includes(q));
                 const matchClass = Boolean(u.className && u.className.toLowerCase().includes(q));
                 const matchYear = Boolean(u.academicYear && u.academicYear.toLowerCase().includes(q));
-                if (!matchName && !matchCode && !matchClass && !matchYear) return false;
+                const matchUsername = Boolean(u.username && u.username.toLowerCase().includes(q));
+                if (!matchName && !matchCode && !matchClass && !matchYear && !matchUsername) return false;
             }
 
             return true;
         });
-    }, [students, sGradeFilter, sAcademicYearFilter, sClassFilter, sSearch, classes]);
+    }, [students, sGradeFilter, sAcademicYearFilter, sScopeFilter, sClassFilter, sSearch, classes, currentUser]);
 
     const handleSelectAll = (checked: boolean) => {
         if (checked) {
@@ -201,43 +239,27 @@ export default function StudentManager({
         }
     };
 
-    const formatTime = (seconds: number) => {
-        const h = Math.floor(seconds / 3600);
-        const m = Math.floor((seconds % 3600) / 60);
-        return h > 0 ? `${h}h ${m}m` : `${m}m`;
+    const handleCopyPassword = (pass?: string, id?: string) => {
+        if (!pass) return;
+        navigator.clipboard.writeText(pass);
+        if (id) {
+            setCopiedPassId(id);
+            setTimeout(() => setCopiedPassId(null), 2000);
+        }
     };
 
     const handleExportCsv = () => {
-        const headers = ['Tên học sinh', 'Mã số (MAHS)', 'Khối', 'Lớp', 'Niên khóa', 'Môn học', 'Điểm rèn (Tích lũy)', 'Thời gian luyện'];
+        const headers = ['Họ và tên', 'Mã số (MAHS)', 'Tài khoản', 'Mật khẩu', 'Khối', 'Lớp', 'Niên khóa', 'Môn học'];
         const rows = filtered.map(u => {
-            const userResults = results.filter(r => 
-                r.studentId === u.id || 
-                (u.studentCode && r.studentCode && r.studentCode.trim().toUpperCase() === u.studentCode.trim().toUpperCase())
-            );
-            
-            const totalSeconds = userResults.reduce((acc, r) => acc + (r.durationSeconds || 0), 0);
-            const timePoints = totalSeconds / 2700;
-
-            const bonusPoints = userResults.reduce((acc, r) => {
-                const bp = (r as any).bonusPoint;
-                if (bp !== undefined && bp !== null) {
-                    return acc + Number(bp);
-                }
-                if (r.score >= 8) return acc + 1;
-                return acc;
-            }, 0);
-            
-            const totalAccumulated = timePoints + bonusPoints;
-
             return [
                 `"${u.fullName.replace(/"/g, '""')}"`,
                 `"${(u.studentCode || 'N/A').replace(/"/g, '""')}"`,
+                `"${(u.username || u.studentCode || '').replace(/"/g, '""')}"`,
+                `"${(u.password || '123').replace(/"/g, '""')}"`,
                 `"${u.grade || '-'}"`,
                 `"${(u.className || 'Chưa phân lớp').replace(/"/g, '""')}"`,
                 `"${(u.academicYear || '-').replace(/"/g, '""')}"`,
-                `"${(u.subject || 'Chung').replace(/"/g, '""')}"`,
-                totalAccumulated.toFixed(2),
-                `"${formatTime(totalSeconds)}"`
+                `"${(u.subject || 'Chung').replace(/"/g, '""')}"`
             ].join(',');
         });
 
@@ -245,27 +267,31 @@ export default function StudentManager({
         const encodedUri = encodeURI(csvContent);
         const link = document.createElement("a");
         link.setAttribute("href", encodedUri);
-        link.setAttribute("download", `danh_sach_hoc_sinh_${new Date().toISOString().slice(0, 10)}.csv`);
+        link.setAttribute("download", `danh_sach_hoc_sinh_${sGradeFilter !== 'all' ? `K${sGradeFilter}_` : ''}${sAcademicYearFilter !== 'all' ? `${sAcademicYearFilter}_` : ''}${new Date().toISOString().slice(0, 10)}.csv`);
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
     };
 
+    const isFilteredFromDefaults = sAcademicYearFilter !== getCurrentAcademicYear() || sGradeFilter !== '12' || sScopeFilter !== (isSuperAdmin ? 'all' : 'mine') || sClassFilter !== 'all' || sSearch.trim() !== '';
+
     return (
         <div className="space-y-6 animate-fade-in">
-            {/* Thanh công cụ tìm kiếm và lọc */}
+            {/* Thanh công cụ tìm kiếm và lọc tối ưu băng thông */}
             <div className="bg-white p-6 rounded-[2.5rem] border shadow-sm space-y-4">
                 <div className="flex flex-col lg:flex-row justify-between items-center gap-4">
+                    {/* Tìm kiếm */}
                     <div className="flex-1 flex gap-3 px-5 py-2 items-center bg-slate-50 border rounded-2xl w-full">
                         <Search className="text-slate-300" size={18}/>
                         <input 
                             className="bg-transparent outline-none text-xs font-black w-full py-2" 
-                            placeholder="Tìm tên, MAHS, lớp, môn, niên khóa..." 
+                            placeholder="Tìm kiếm theo Tên học sinh, Mã số (MAHS), Lớp, Niên khóa..." 
                             value={sSearch} 
                             onChange={e => setSSearch(e.target.value)} 
                         />
                     </div>
                     
+                    {/* Các nút hành động chính */}
                     <div className="flex gap-2 flex-wrap items-center w-full lg:w-auto">
                         {selectedIds.length > 0 && (
                             <>
@@ -299,39 +325,54 @@ export default function StudentManager({
                     </div>
                 </div>
 
-                {/* Bộ lọc chi tiết: Niên khóa, Khối, Lớp (có tên GV), Môn học */}
+                {/* Bộ lọc tối ưu: Niên khóa hiện hành, Khối 12, Học sinh của giáo viên này, Lớp học */}
                 <div className="flex flex-wrap items-center gap-3 pt-2 border-t border-slate-100">
                     <span className="text-[10px] font-black text-slate-400 uppercase">Bộ lọc:</span>
 
-                    {/* 1. Lọc theo Niên học */}
-                    <div className="flex items-center gap-1.5 bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-200 shadow-xs">
-                        <Calendar size={13} className="text-slate-400 shrink-0" />
+                    {/* 1. Lọc theo Phân quyền / Người thêm (Mặc định: Học sinh của tôi) */}
+                    <div className="flex items-center gap-1.5 bg-blue-50/80 px-3 py-1.5 rounded-xl border border-blue-200 shadow-xs">
+                        <UserCheck size={14} className="text-blue-600 shrink-0" />
                         <select 
-                            className="bg-transparent text-[10px] font-black uppercase outline-none cursor-pointer"
+                            className="bg-transparent text-[10px] font-black text-blue-950 uppercase outline-none cursor-pointer"
+                            value={sScopeFilter} 
+                            onChange={e => setSScopeFilter(e.target.value as 'mine' | 'all')}
+                        >
+                            <option value="mine">👤 HỌC SINH CỦA TÔI</option>
+                            <option value="all">🌐 TẤT CẢ HỌC SINH</option>
+                        </select>
+                    </div>
+
+                    {/* 2. Lọc theo Niên học (Mặc định: Năm hiện hành) */}
+                    <div className="flex items-center gap-1.5 bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-200 shadow-xs">
+                        <Calendar size={13} className="text-slate-500 shrink-0" />
+                        <select 
+                            className="bg-transparent text-[10px] font-black uppercase outline-none cursor-pointer text-slate-800"
                             value={sAcademicYearFilter} 
                             onChange={e => setSAcademicYearFilter(e.target.value)}
                         >
                             <option value="all">📅 TẤT CẢ NIÊN KHÓA</option>
                             {availableAcademicYears.map(yr => (
-                                <option key={yr} value={yr}>NIÊN KHÓA {yr}</option>
+                                <option key={yr} value={yr}>
+                                    NIÊN KHÓA {yr} {yr === getCurrentAcademicYear() ? '★ (Hiện hành)' : ''}
+                                </option>
                             ))}
                             <option value="none">CHƯA CÓ NIÊN KHÓA</option>
                         </select>
                     </div>
 
-                    {/* 2. Lọc theo Khối */}
+                    {/* 3. Lọc theo Khối (Mặc định: Khối 12) */}
                     <select 
-                        className="px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-[10px] font-black uppercase outline-none cursor-pointer shadow-xs" 
+                        className="px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-[10px] font-black uppercase outline-none cursor-pointer shadow-xs text-slate-800" 
                         value={sGradeFilter} 
                         onChange={e => setSGradeFilter(e.target.value as any)}
                     >
                         <option value="all">🎓 TẤT CẢ KHỐI</option>
-                        <option value="12">KHỐI 12</option>
+                        <option value="12">KHỐI 12 (Mặc định)</option>
                         <option value="11">KHỐI 11</option>
                         <option value="10">KHỐI 10</option>
                     </select>
 
-                    {/* 3. Lọc theo Lớp học (Hiển thị tên Giáo viên tạo ra kế bên) */}
+                    {/* 4. Lọc theo Lớp học (Tự động lọc theo Niên khóa & Khối) */}
                     <div className="flex items-center gap-1.5 bg-indigo-50/70 px-3 py-1.5 rounded-xl border border-indigo-200 shadow-xs">
                         <GraduationCap size={14} className="text-indigo-600 shrink-0" />
                         <select 
@@ -352,25 +393,30 @@ export default function StudentManager({
                         </select>
                     </div>
 
-                    {(sAcademicYearFilter !== 'all' || sGradeFilter !== 'all' || sClassFilter !== 'all') && (
+                    {/* Nút Đặt lại bộ lọc */}
+                    {isFilteredFromDefaults && (
                         <button 
                             onClick={() => {
-                                setSAcademicYearFilter('all');
-                                setSGradeFilter('all');
+                                setSAcademicYearFilter(getCurrentAcademicYear());
+                                setSGradeFilter('12');
+                                setSScopeFilter(isSuperAdmin ? 'all' : 'mine');
                                 setSClassFilter('all');
+                                setSSearch('');
                             }}
-                            className="px-3 py-1.5 bg-slate-200 text-slate-700 rounded-xl text-[9px] font-black uppercase hover:bg-slate-300 transition-all flex items-center gap-1"
+                            className="px-3 py-1.5 bg-slate-200 text-slate-700 rounded-xl text-[9px] font-black uppercase hover:bg-slate-300 transition-all flex items-center gap-1 shadow-xs"
+                            title="Khôi phục bộ lọc mặc định (Năm hiện hành + Khối 12 + Của tôi)"
                         >
-                            <X size={12}/> Xóa bộ lọc
+                            <X size={12}/> Mặc định ban đầu
                         </button>
                     )}
 
                     <span className="text-[10px] font-black text-slate-400 ml-auto">
-                        Hiển thị: {filtered.length} / {students.length} học sinh
+                        Hiển thị: <strong className="text-slate-800">{filtered.length}</strong> / {students.length} học sinh
                     </span>
                 </div>
             </div>
 
+            {/* Bảng danh sách học sinh - Chỉ hiển thị thông tin cơ bản để tối ưu băng thông */}
             <div className="bg-white rounded-[2.5rem] border shadow-sm overflow-hidden overflow-x-auto">
                 <table className="w-full text-left">
                     <thead>
@@ -383,108 +429,129 @@ export default function StudentManager({
                                     onChange={e => handleSelectAll(e.target.checked)}
                                 />
                             </th>
-                            <th className="p-6">Học sinh (Cloud ID)</th>
+                            <th className="p-6 w-16 text-center">STT</th>
+                            <th className="p-6">Họ và tên học sinh</th>
                             <th className="p-6 text-center">Mã số (MAHS)</th>
                             <th className="p-6 text-center">Khối</th>
                             <th className="p-6 text-center">Lớp & Niên khóa</th>
-                            <th className="p-6 text-center">Điểm tích lũy</th>
-                            <th className="p-6 text-center">Tổng TG</th>
+                            <th className="p-6 text-center">Mật khẩu</th>
                             <th className="p-6 text-center">Thao tác</th>
                         </tr>
                     </thead>
-                    <tbody className="divide-y">
-                        {filtered.map(u => {
-                            const userResults = results.filter(r => 
-                                r.studentId === u.id || 
-                                (u.studentCode && r.studentCode && r.studentCode.trim().toUpperCase() === u.studentCode.trim().toUpperCase())
-                            );
-                            
-                            const totalSeconds = userResults.reduce((acc, r) => acc + (r.durationSeconds || 0), 0);
-                            const timePoints = totalSeconds / 2700;
+                    <tbody className="divide-y divide-slate-100">
+                        {filtered.length === 0 ? (
+                            <tr>
+                                <td colSpan={8} className="py-16 text-center text-slate-400">
+                                    <GraduationCap className="mx-auto text-slate-300 mb-2" size={36}/>
+                                    <p className="text-xs font-black uppercase text-slate-600">Không tìm thấy học sinh phù hợp</p>
+                                    <p className="text-[11px] text-slate-400 mt-1">
+                                        Vui lòng kiểm tra lại bộ lọc Khối, Niên khóa hoặc thêm mới học sinh vào hệ thống.
+                                    </p>
+                                </td>
+                            </tr>
+                        ) : (
+                            filtered.map((u, idx) => {
+                                const isSelected = selectedIds.includes(u.id);
 
-                            const bonusPoints = userResults.reduce((acc, r) => {
-                                const bp = (r as any).bonusPoint;
-                                if (bp !== undefined && bp !== null) {
-                                    return acc + Number(bp);
-                                }
-                                if (r.score >= 8) return acc + 1;
-                                return acc;
-                            }, 0);
-                            
-                            const totalAccumulated = timePoints + bonusPoints;
-                            const isSelected = selectedIds.includes(u.id);
+                                return (
+                                    <tr key={u.id} className={`hover:bg-slate-50/80 transition-colors group ${isSelected ? 'bg-blue-50/50' : ''}`}>
+                                        <td className="p-6">
+                                            <input 
+                                                type="checkbox" 
+                                                className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                                                checked={isSelected}
+                                                onChange={() => handleToggleStudent(u.id)}
+                                            />
+                                        </td>
+                                        <td className="p-6 text-center font-mono text-xs font-bold text-slate-400">
+                                            {idx + 1}
+                                        </td>
+                                        <td className="p-6">
+                                            <div className="flex items-center gap-3">
+                                                <div className="w-9 h-9 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center font-black text-xs shrink-0 border border-blue-100 uppercase">
+                                                    {u.fullName.charAt(0) || 'H'}
+                                                </div>
+                                                <div>
+                                                    <p className="font-black text-slate-800 uppercase text-sm leading-tight">{u.fullName}</p>
+                                                    <div className="flex items-center gap-2 mt-0.5">
+                                                        {u.username && (
+                                                            <span className="text-[10px] font-mono text-slate-400">
+                                                                User: <strong className="text-slate-600">{u.username}</strong>
+                                                            </span>
+                                                        )}
+                                                        {u.createdById === currentUser?.id && (
+                                                            <span className="text-[9px] font-bold text-emerald-600 bg-emerald-50 px-1.5 py-0.2 rounded border border-emerald-200">
+                                                                Của tôi
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </td>
+                                        <td className="p-6 text-center">
+                                            <span className="font-black uppercase text-blue-600 bg-blue-50 px-3 py-1 rounded-lg border border-blue-100 text-xs tracking-wider">
+                                                {u.studentCode || 'N/A'}
+                                            </span>
+                                        </td>
+                                        <td className="p-6 text-center">
+                                            <span className="font-black text-slate-600 bg-slate-100 px-3 py-1 rounded-lg text-xs">
+                                                {u.grade ? `Khối ${u.grade}` : '-'}
+                                            </span>
+                                        </td>
+                                        <td className="p-6 text-center">
+                                            <div className="inline-flex flex-col items-center gap-1">
+                                                {u.className ? (
+                                                    <span className="font-black text-indigo-700 bg-indigo-50 border border-indigo-100 px-3 py-1 rounded-lg text-xs uppercase">
+                                                        {u.className}
+                                                    </span>
+                                                ) : (
+                                                    <span className="text-slate-400 text-xs italic">Chưa phân lớp</span>
+                                                )}
 
-                            return (
-                                <tr key={u.id} className={`hover:bg-slate-50 transition-colors group ${isSelected ? 'bg-blue-50/50' : ''}`}>
-                                    <td className="p-6">
-                                        <input 
-                                            type="checkbox" 
-                                            className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-                                            checked={isSelected}
-                                            onChange={() => handleToggleStudent(u.id)}
-                                        />
-                                    </td>
-                                    <td className="p-6">
-                                        <div className="flex items-center gap-3">
-                                            <div className="p-2 bg-emerald-50 text-emerald-600 rounded-lg" title="Đã đồng bộ Cloud">
-                                                <Database size={14}/>
+                                                {u.academicYear && (
+                                                    <span className="text-[9px] font-bold text-slate-400 bg-slate-100 px-2 py-0.5 rounded-md font-mono">
+                                                        {u.academicYear}
+                                                    </span>
+                                                )}
                                             </div>
-                                            <div>
-                                                <p className="font-black text-slate-800 uppercase text-sm leading-tight">{u.fullName}</p>
-                                                <p className="text-[8px] font-bold text-slate-300 uppercase tracking-widest mt-0.5 italic">Học sinh hệ thống</p>
+                                        </td>
+                                        <td className="p-6 text-center">
+                                            <div className="inline-flex items-center gap-1.5 bg-slate-50 px-2.5 py-1 rounded-lg border border-slate-200">
+                                                <Key size={12} className="text-slate-400"/>
+                                                <span className="font-mono text-xs font-bold text-slate-700">{u.password || '123'}</span>
+                                                <button 
+                                                    type="button"
+                                                    onClick={() => handleCopyPassword(u.password || '123', u.id)}
+                                                    className="p-1 hover:bg-slate-200 rounded text-slate-400 hover:text-slate-700 transition-colors"
+                                                    title="Sao chép mật khẩu"
+                                                >
+                                                    {copiedPassId === u.id ? <Check size={12} className="text-emerald-600"/> : <Copy size={12}/>}
+                                                </button>
                                             </div>
-                                        </div>
-                                    </td>
-                                    <td className="p-6 text-center">
-                                        <span className="font-black uppercase text-blue-600 bg-blue-50 px-3 py-1 rounded-lg border border-blue-100 text-xs">{u.studentCode || 'N/A'}</span>
-                                    </td>
-                                    <td className="p-6 text-center">
-                                        <span className="font-black text-slate-500 bg-slate-100 px-3 py-1 rounded-lg text-xs">{u.grade || '-'}</span>
-                                    </td>
-                                    <td className="p-6 text-center">
-                                        <div className="inline-flex flex-col items-center gap-1">
-                                            {u.className ? (
-                                                <span className="font-black text-indigo-700 bg-indigo-50 border border-indigo-100 px-3 py-1 rounded-lg text-xs uppercase">
-                                                    {u.className}
-                                                </span>
-                                            ) : (
-                                                <span className="text-slate-400 text-xs italic">Chưa phân lớp</span>
-                                            )}
-
-                                            {u.academicYear && (
-                                                <span className="text-[9px] font-bold text-slate-400 bg-slate-100 px-2 py-0.5 rounded-md">
-                                                    {u.academicYear}
-                                                </span>
-                                            )}
-                                        </div>
-                                    </td>
-                                    <td className="p-6 text-center">
-                                        <div className="flex flex-col items-center">
-                                            <div className="flex items-center gap-1.5 text-yellow-600 font-black text-sm">
-                                                <Medal size={14} className="text-yellow-500"/>
-                                                {totalAccumulated.toFixed(2)}
+                                        </td>
+                                        <td className="p-6">
+                                            <div className="flex items-center justify-center gap-2">
+                                                {/* Nút Xem chi tiết: Nhấn vào mới kích hoạt tải dữ liệu điểm số, lịch sử thi */}
+                                                <button 
+                                                    onClick={() => onViewDetail(u)} 
+                                                    className="p-2.5 bg-blue-50 text-blue-600 rounded-xl hover:bg-blue-600 hover:text-white transition-all shadow-xs flex items-center gap-1 text-xs font-black uppercase" 
+                                                    title="Xem chi tiết kết quả & lịch sử bài làm"
+                                                >
+                                                    <Eye size={15}/>
+                                                    <span className="hidden sm:inline text-[10px]">Chi tiết</span>
+                                                </button>
+                                                <button onClick={() => onEdit(u)} className="p-2.5 bg-slate-100 text-slate-600 rounded-xl hover:bg-slate-900 hover:text-white transition-all shadow-xs" title="Sửa thông tin"><Edit3 size={15}/></button>
+                                                <button onClick={() => onResetPassword(u)} className="p-2.5 bg-orange-50 text-orange-600 rounded-xl hover:bg-orange-600 hover:text-white transition-all shadow-xs" title="Đặt lại mật khẩu"><Key size={15}/></button>
+                                                <button onClick={() => onDelete(u.id, u.fullName)} className="p-2.5 text-slate-300 hover:text-red-600 hover:bg-red-50 rounded-xl transition-colors" title="Xóa học sinh"><Trash2 size={15}/></button>
                                             </div>
-                                            <p className="text-[8px] font-bold text-slate-300 uppercase tracking-tighter">({timePoints.toFixed(1)} nỗ lực + {bonusPoints} thưởng)</p>
-                                        </div>
-                                    </td>
-                                    <td className="p-6 text-center">
-                                        <div className="flex items-center justify-center gap-1.5 text-orange-600 font-black text-xs">
-                                            <Clock size={12}/> {formatTime(totalSeconds)}
-                                        </div>
-                                    </td>
-                                    <td className="p-6">
-                                        <div className="flex items-center justify-center gap-2">
-                                            <button onClick={() => onViewDetail(u)} className="p-3 bg-blue-50 text-blue-600 rounded-xl hover:bg-blue-600 hover:text-white transition-all shadow-sm" title="Chi tiết"><Eye size={16}/></button>
-                                            <button onClick={() => onEdit(u)} className="p-3 bg-slate-100 text-slate-600 rounded-xl hover:bg-slate-900 hover:text-white transition-all shadow-sm" title="Sửa"><Edit3 size={16}/></button>
-                                            <button onClick={() => onResetPassword(u)} className="p-3 bg-orange-50 text-orange-600 rounded-xl hover:bg-orange-600 hover:text-white transition-all shadow-sm" title="Đổi mật khẩu"><Key size={16}/></button>
-                                            <button onClick={() => onDelete(u.id, u.fullName)} className="p-3 text-slate-200 hover:text-red-500 transition-colors" title="Xóa"><Trash2 size={16}/></button>
-                                        </div>
-                                    </td>
-                                </tr>
-                            );
-                        })}
+                                        </td>
+                                    </tr>
+                                );
+                            })
+                        )}
                     </tbody>
                 </table>
+
                 {students.length < totalCount && isDatabaseConnected() && (
                     <div className="p-8 text-center bg-slate-50/50">
                         <button 
@@ -557,6 +624,7 @@ export default function StudentManager({
                 </div>
             )}
 
+            {/* MODAL XÁC NHẬN XÓA HÀNG LOẠT */}
             {deleteBulkConfirm && (
                 <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[5000] flex items-center justify-center p-4">
                     <div className="bg-white max-w-md w-full rounded-3xl border shadow-2xl p-6 overflow-hidden animate-scale-up">
