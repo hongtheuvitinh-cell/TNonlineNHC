@@ -113,21 +113,56 @@ export default function StudentManager({
         }
     }, [relevantClasses, sClassFilter]);
 
+    // Danh sách học sinh chưa phân lớp
+    const unassignedCount = useMemo(() => {
+        return students.filter(u => !u.classId && !u.className).length;
+    }, [students]);
+
     // Danh sách học sinh đã lọc theo các tiêu chí: Năm học hiện hành, Khối 12, Do giáo viên này thêm/quản lý
     const filtered = useMemo(() => {
         return students.filter(u => {
-            // 1. Lọc theo Khối (Mặc định Khối 12)
-            if (sGradeFilter !== 'all' && u.grade !== sGradeFilter) return false;
+            const isUnassigned = !u.classId && !u.className;
 
-            // 2. Lọc theo Niên khóa (Mặc định Năm hiện hành)
-            const studentYear = u.academicYear || classes.find(c => c.id === u.classId || (c.name === u.className && c.grade === u.grade))?.academicYear;
-            if (sAcademicYearFilter !== 'all') {
-                if (sAcademicYearFilter === 'none' && studentYear) return false;
-                if (sAcademicYearFilter !== 'none' && studentYear !== sAcademicYearFilter) return false;
+            // 1. Lọc theo Khối (Mặc định Khối 12)
+            if (sGradeFilter !== 'all') {
+                if (u.grade && u.grade !== sGradeFilter) return false;
+            }
+
+            // 2. Lọc theo Niên khóa
+            const studentYear = u.academicYear || classes.find(c => c.id === u.classId || (c.name.trim().toLowerCase() === (u.className || '').trim().toLowerCase() && c.grade === u.grade))?.academicYear;
+            
+            if (sClassFilter === 'unassigned') {
+                if (!isUnassigned) return false;
+                // Nếu người dùng chọn xem "Chưa phân lớp", học sinh chưa phân lớp phải hiển thị (trừ khi có niên khóa cụ thể khác hẳn)
+                if (sAcademicYearFilter !== 'all' && sAcademicYearFilter !== 'none' && studentYear && studentYear !== sAcademicYearFilter) {
+                    return false;
+                }
+            } else {
+                if (sAcademicYearFilter !== 'all') {
+                    if (sAcademicYearFilter === 'none') {
+                        if (studentYear) return false;
+                    } else {
+                        // Nếu là học sinh chưa phân lớp và chưa gán năm học thì vẫn hiển thị để quản lý/phân lớp
+                        if (studentYear && studentYear !== sAcademicYearFilter) return false;
+                    }
+                }
+
+                if (sClassFilter !== 'all') {
+                    const targetClass = classes.find(c => c.id === sClassFilter);
+                    if (targetClass) {
+                        const matchById = u.classId === targetClass.id;
+                        const matchByNameAndDetails = (u.className || '').trim().toLowerCase() === targetClass.name.trim().toLowerCase() && 
+                            (!u.academicYear || u.academicYear === targetClass.academicYear) &&
+                            (!u.grade || u.grade === targetClass.grade);
+                        if (!matchById && !matchByNameAndDetails) return false;
+                    } else {
+                        if (u.classId !== sClassFilter && u.className !== sClassFilter) return false;
+                    }
+                }
             }
 
             // 3. Lọc theo Giáo viên tạo / quản lý (Mặc định: 'mine' - do GV này thêm hoặc thuộc lớp GV này)
-            if (sScopeFilter === 'mine' && currentUser?.id) {
+            if (sScopeFilter === 'mine' && currentUser?.id && !isSuperAdmin) {
                 const isCreatedByMe = Boolean(u.createdById && u.createdById === currentUser.id);
                 
                 let isMyClass = false;
@@ -148,29 +183,15 @@ export default function StudentManager({
                     }
                 }
 
-                // Nếu không do GV này tạo và không thuộc lớp do GV này quản lý thì loại bỏ
-                if (!isCreatedByMe && !isMyClass) {
+                // Học sinh chưa phân lớp mà chưa có ai nhận hoặc do GV này tạo
+                const isUnassignedFree = isUnassigned && (!u.createdById || isCreatedByMe);
+
+                if (!isCreatedByMe && !isMyClass && !isUnassignedFree) {
                     return false;
                 }
             }
 
-            // 4. Lọc theo Lớp học
-            if (sClassFilter === 'unassigned') {
-                if (u.classId || u.className) return false;
-            } else if (sClassFilter !== 'all') {
-                const targetClass = classes.find(c => c.id === sClassFilter);
-                if (targetClass) {
-                    const matchById = u.classId === targetClass.id;
-                    const matchByNameAndDetails = u.className === targetClass.name && 
-                        (!u.academicYear || u.academicYear === targetClass.academicYear) &&
-                        (!u.grade || u.grade === targetClass.grade);
-                    if (!matchById && !matchByNameAndDetails) return false;
-                } else {
-                    if (u.classId !== sClassFilter && u.className !== sClassFilter) return false;
-                }
-            }
-
-            // 5. Tìm kiếm từ khóa (tên, mã số, lớp, tài khoản)
+            // 4. Tìm kiếm từ khóa (tên, mã số, lớp, tài khoản)
             if (sSearch.trim()) {
                 const q = sSearch.toLowerCase();
                 const matchName = u.fullName.toLowerCase().includes(q);
@@ -183,7 +204,7 @@ export default function StudentManager({
 
             return true;
         });
-    }, [students, sGradeFilter, sAcademicYearFilter, sScopeFilter, sClassFilter, sSearch, classes, currentUser]);
+    }, [students, sGradeFilter, sAcademicYearFilter, sScopeFilter, sClassFilter, sSearch, classes, currentUser, isSuperAdmin]);
 
     const handleSelectAll = (checked: boolean) => {
         if (checked) {
@@ -381,7 +402,7 @@ export default function StudentManager({
                             onChange={e => setSClassFilter(e.target.value)}
                         >
                             <option value="all">🏫 TẤT CẢ LỚP ({relevantClasses.length})</option>
-                            <option value="unassigned">⚠️ CHƯA PHÂN LỚP</option>
+                            <option value="unassigned">⚠️ CHƯA PHÂN LỚP ({unassignedCount})</option>
                             {relevantClasses.map(c => {
                                 const tInfo = getTeacherInfoForClass(c);
                                 return (
