@@ -213,8 +213,8 @@ export function cleanLatexTextTags(text: string): string {
     res = res.replace(/^Leftrightarrow\b/g, '\\Leftrightarrow ');
 
     // Sửa các ký hiệu mũi tên text thường =>, <=>, -> trong công thức
-    res = res.replace(/(?<=[0-9a-zA-Z_\)\}\]])\s*=>\s*(?=[0-9a-zA-Z_\\\{\(])/g, ' \\Rightarrow ');
-    res = res.replace(/(?<=[0-9a-zA-Z_\)\}\]])\s*<=>\s*(?=[0-9a-zA-Z_\\\{\(])/g, ' \\Leftrightarrow ');
+    res = res.replace(/([0-9a-zA-Z_\)\}\]])\s*=>\s*(?=[0-9a-zA-Z_\\\{\(])/g, '$1 \\Rightarrow ');
+    res = res.replace(/([0-9a-zA-Z_\)\}\]])\s*<=>\s*(?=[0-9a-zA-Z_\\\{\(])/g, '$1 \\Leftrightarrow ');
 
     // 7. Sửa lỗi hiển thị độ C: 10^oC, 50^oC, 100^oC -> 10^\circ C
     res = res.replace(/(\d+)\s*\^o\s*C\b/g, '$1^\\circ\\text{C}');
@@ -227,15 +227,15 @@ export function cleanLatexTextTags(text: string): string {
     // - "\times" bị biến thành [Tab] + "imes" hoặc "imes"
     res = res.replace(/(?:[\t\x08\r\n]|\b)imes\b/g, '\\times');
     // - "\theta" bị biến thành [Tab] + "heta" hoặc "heta" khi nằm cạnh các hàm lượng giác / góc
-    res = res.replace(/(?<=\\cos|\\sin|\\tan|\\cot|\(|\s|=|\\cdot|\\times)(?:[\t\x08\r\n]|\b)heta\b/g, '\\theta');
+    res = res.replace(/(\\cos|\\sin|\\tan|\\cot|\(|\s|=|\\cdot|\\times)(?:[\t\x08\r\n]|\b)heta\b/g, '$1\\theta');
     // - "\beta" bị biến thành [Backspace] + "eta" hoặc "\b eta"
     res = res.replace(/[\x08]eta\b|\\b\s*eta\b/g, '\\beta');
 
     // 10. Sửa lỗi AI viết từ "gốc" hoặc "căn" bằng chữ tiếng Việt trong công thức toán/lý ($1gốc 3$ N -> $1\sqrt{3}$ N)
     res = res.replace(/(\d+)\s*gốc\s*(\d+)/gi, '$1\\sqrt{$2}');
     res = res.replace(/(\d+)\s*căn\s*(\d+)/gi, '$1\\sqrt{$2}');
-    res = res.replace(/(?<=[$=+\-*/(\s])gốc\s*(\d+)/gi, '\\sqrt{$1}');
-    res = res.replace(/(?<=[$=+\-*/(\s])căn\s*(\d+)/gi, '\\sqrt{$1}');
+    res = res.replace(/([$=+\-*/(\s])gốc\s*(\d+)/gi, '$1\\sqrt{$2}');
+    res = res.replace(/([$=+\-*/(\s])căn\s*(\d+)/gi, '$1\\sqrt{$2}');
 
     return res;
 }
