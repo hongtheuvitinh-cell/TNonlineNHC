@@ -16,7 +16,9 @@ import StorageConfigModal from './StorageConfigModal';
 import { 
     parseQuestionsFromJSON, 
     classifyQuestionsIntoChapters, 
+    classifyQuestionsIntoLevels,
     QuestionChapterAssignment,
+    QuestionLevelAssignment,
     solveQuestionWithAI,
     solveMultipleQuestionsWithAI,
     SolveProgressUpdate
@@ -1222,7 +1224,17 @@ export default function QuizEditor(props: QuizEditorProps) {
     }, [props.chapters, props.grade, props.subject]);
     const [showKeyInput, setShowKeyInput] = useState(false);
     const [isAssigningChapters, setIsAssigningChapters] = useState(false);
+    const [isAssigningLevels, setIsAssigningLevels] = useState(false);
     const [isSolvingBatch, setIsSolvingBatch] = useState(false);
+
+    // Đếm số câu chưa được gán mức độ nhận thức (hoặc có ý trắc nghiệm chưa gán mức độ)
+    const unassignedLevelsCount = useMemo(() => {
+        return props.questions.filter(q => {
+            if (!q.level) return true;
+            if (q.type === 'group-tf' && q.subQuestions && q.subQuestions.some(sq => !sq.level)) return true;
+            return false;
+        }).length;
+    }, [props.questions]);
 
     // Tiến trình Timeline thời gian thực hiển thị trạng thái AI giải đề thi
     const [solveTimelineProgress, setSolveTimelineProgress] = useState<{
@@ -1472,6 +1484,79 @@ export default function QuizEditor(props: QuizEditorProps) {
         }
     };
 
+    const handleAiAutoAssignLevels = async () => {
+        if (!props.questions || props.questions.length === 0) {
+            alert("Đề thi chưa có câu hỏi nào để phân mức độ!");
+            return;
+        }
+
+        const unassigned = props.questions.filter(q => {
+            if (!q.level) return true;
+            if (q.type === 'group-tf' && q.subQuestions && q.subQuestions.some(sq => !sq.level)) return true;
+            return false;
+        });
+
+        if (unassigned.length === 0) {
+            const reassign = window.confirm(`Toàn bộ ${props.questions.length} câu hỏi trong đề đã có mức độ nhận thức (Biết, Hiểu, Vận dụng, VDC).\n\nBạn có muốn AI phân tích và rà soát/gán lại toàn bộ mức độ cho đề thi không?`);
+            if (!reassign) return;
+        } else {
+            const confirmMsg = `Phát hiện ${unassigned.length}/${props.questions.length} câu hỏi chưa được gán mức độ nhận thức (Biết [B], Hiểu [H], Vận dụng [VD], VDC [VDC]).\n\nBạn có muốn AI Gemini tự động dò và phân mức độ chuẩn theo quy chế khảo thí THPT không?`;
+            if (!window.confirm(confirmMsg)) return;
+        }
+
+        setIsAssigningLevels(true);
+        try {
+            const assignments = await classifyQuestionsIntoLevels(
+                props.questions,
+                {
+                    subject: props.subject,
+                    grade: String(props.grade),
+                    customApiKey: props.customApiKey
+                }
+            );
+
+            if (!assignments || assignments.length === 0) {
+                alert("AI không trả về kết quả phân loại mức độ nào. Vui lòng kiểm tra lại nội dung câu hỏi hoặc kết nối mạng.");
+                return;
+            }
+
+            const levelMap = new Map<string, QuestionLevelAssignment>();
+            assignments.forEach(a => levelMap.set(a.questionId, a));
+
+            let assignedCount = 0;
+            const updatedQuestions = props.questions.map(q => {
+                const item = levelMap.get(q.id);
+                if (item) {
+                    assignedCount++;
+                    let newSubQuestions = q.subQuestions;
+                    if (q.type === 'group-tf' && q.subQuestions && item.subQuestionLevels) {
+                        newSubQuestions = q.subQuestions.map((sq, idx) => {
+                            const sqLvl = item.subQuestionLevels?.find(s => s.index === idx);
+                            return {
+                                ...sq,
+                                level: sqLvl ? sqLvl.level : (sq.level || item.level)
+                            };
+                        });
+                    }
+                    return {
+                        ...q,
+                        level: item.level || q.level,
+                        subQuestions: newSubQuestions
+                    };
+                }
+                return q;
+            });
+
+            props.setQuestions(updatedQuestions);
+            alert(`🎉 Thành công! AI Gemini đã phân tích và tự động gán mức độ nhận thức cho ${assignedCount} câu hỏi trong đề thi. Bạn có thể kiểm tra từng câu và tùy chỉnh lại nếu cần.`);
+        } catch (error: any) {
+            console.error("Lỗi tự động gán mức độ bằng AI:", error);
+            alert("❌ Lỗi AI: " + (error?.message || "Không thể phân mức độ câu hỏi. Vui lòng thử lại."));
+        } finally {
+            setIsAssigningLevels(false);
+        }
+    };
+
     const handleConfirmTextExtract = () => {
         if (!pastedText.trim()) return;
         const trimmed = pastedText.trim();
@@ -1555,6 +1640,24 @@ export default function QuizEditor(props: QuizEditorProps) {
                         <div className="space-y-3">
                             <h3 className="text-xl font-black uppercase text-slate-800 tracking-tight leading-none">AI Đang quét đề...</h3>
                             <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest leading-relaxed px-2">Đang phân tích các câu hỏi và tự động gán vào chương phù hợp bằng Gemini.</p>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {isAssigningLevels && (
+                <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[2100] flex items-center justify-center p-6 animate-fade-in">
+                    <div className="bg-white p-10 rounded-[3rem] shadow-2xl text-center space-y-6 max-w-sm w-full border-8 border-emerald-100">
+                        <div className="relative w-24 h-24 mx-auto">
+                            <div className="absolute inset-0 border-8 border-emerald-50 rounded-full"></div>
+                            <div className="absolute inset-0 border-8 border-emerald-600 border-t-transparent rounded-full animate-spin"></div>
+                            <div className="absolute inset-0 flex items-center justify-center">
+                                <Sparkles className="text-emerald-600 animate-pulse" size={32}/>
+                            </div>
+                        </div>
+                        <div className="space-y-3">
+                            <h3 className="text-xl font-black uppercase text-slate-800 tracking-tight leading-none">AI Đang gán mức độ...</h3>
+                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest leading-relaxed px-2">Đang phân tích độ khó (Biết, Hiểu, Vận dụng, VDC) cho các câu hỏi bằng Gemini theo chuẩn khảo thí THPT.</p>
                         </div>
                     </div>
                 </div>
@@ -1674,13 +1777,13 @@ export default function QuizEditor(props: QuizEditorProps) {
                 </div>
             )}
 
-            <div className="bg-white p-5 sm:p-7 rounded-3xl border-2 border-slate-100 shadow-sm space-y-5 relative overflow-hidden">
+            <div className="bg-white p-5 sm:p-7 rounded-3xl border-2 border-slate-100 shadow-sm space-y-6 relative overflow-hidden">
                 <div className={`absolute top-0 right-8 sm:right-12 px-5 py-2 rounded-b-2xl font-black text-[11px] uppercase shadow-md z-10 transition-colors ${totalPoints === 10 ? 'bg-emerald-600' : 'bg-orange-500'} text-white`}>
                     Tổng điểm đề: {totalPoints.toFixed(2)}đ
                 </div>
                 
-                {/* Khu vực Nhập Tiêu đề đề thi độc lập, gọn gàng */}
-                <div className="space-y-3 border-b border-slate-100 pb-4 pt-1">
+                {/* ================= NHÓM 1: THÔNG TIN CƠ BẢN & MA TRẬN ĐỀ THI ================= */}
+                <div className="space-y-4 border-b border-slate-100 pb-5 pt-1">
                     <div className="space-y-1.5 bg-slate-50/90 p-3.5 sm:p-4 rounded-2xl border-2 border-slate-200/80 focus-within:border-blue-500 focus-within:bg-white focus-within:shadow-sm transition-all">
                         <label className="text-[10px] font-black text-slate-500 uppercase tracking-wider flex items-center gap-2">
                             <FileCode size={14} className="text-blue-600"/>
@@ -1696,301 +1799,343 @@ export default function QuizEditor(props: QuizEditorProps) {
                         />
                     </div>
 
-                    {/* Thanh công cụ nhập câu hỏi & AI gọn gàng */}
-                    <div className="flex flex-wrap items-center justify-between gap-2 pt-0.5">
-                        <div className="flex flex-wrap items-center gap-1.5">
-                            <label className="flex items-center gap-1.5 px-3 py-2 bg-amber-500 text-white rounded-xl text-[10px] font-black uppercase cursor-pointer hover:bg-amber-600 transition-all shadow-sm active:scale-95" title="Nhập trực tiếp file .json (Không tốn lượt AI)">
-                                <FileCode size={13}/> NHẬP JSON (0% AI)
-                                <input type="file" accept=".json,application/json" className="hidden" onChange={handleJsonFileSelect}/>
+                    {/* Lưới 7 thông số cốt lõi đề thi: Gọn gàng, rõ nét */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-7 gap-3">
+                        <div className="space-y-1.5">
+                            <label className="text-[10px] font-black text-slate-500 uppercase ml-1 flex items-center gap-1">
+                                <BookOpen size={11} className="text-blue-500"/> Môn học
                             </label>
-                            <button 
-                                onClick={() => setIsTextInputOpen(true)}
-                                className={`flex items-center gap-1.5 px-3 py-2 bg-blue-600 text-white rounded-xl text-[10px] font-black uppercase hover:bg-black transition-all shadow-sm active:scale-95 ${props.isAiLoading ? 'opacity-50 cursor-not-allowed' : ''}`}
-                            >
-                                <TypeIcon size={13}/> NHẬP TEXT (AI)
-                            </button>
-                            <label className={`flex items-center gap-1.5 px-3 py-2 bg-slate-900 text-white rounded-xl text-[10px] font-black uppercase cursor-pointer hover:bg-black transition-all shadow-sm active:scale-95 ${props.isAiLoading ? 'opacity-50 cursor-not-allowed' : ''}`}>
-                                <FileUp size={13}/> NHẬP PDF (AI)
-                                <input type="file" accept="application/pdf" className="hidden" disabled={props.isAiLoading} onChange={props.onPdfExtract}/>
-                            </label>
-                            <button 
-                                onClick={props.onCleanLabels}
-                                className="flex items-center gap-1.5 px-3 py-2 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-xl text-[10px] font-black uppercase hover:bg-emerald-600 hover:text-white transition-all shadow-sm active:scale-95"
-                                title="Xóa bỏ các nhãn A., B., a), b) dư thừa trong nội dung câu hỏi"
-                            >
-                                <Zap size={13}/> DỌN NHÃN
-                            </button>
-
-                            {/* Nút AI Quét qua đề và tự động gán vào các chương */}
-                            <button 
-                                type="button"
-                                onClick={handleAiAutoAssignChapters}
-                                disabled={isAssigningChapters || props.questions.length === 0}
-                                className={`flex items-center gap-1.5 px-3.5 py-2 bg-gradient-to-r from-purple-600 via-indigo-600 to-blue-600 text-white rounded-xl text-[10px] font-black uppercase hover:opacity-95 transition-all shadow-md active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed ${isAssigningChapters ? 'animate-pulse' : ''}`}
-                                title="Dùng AI Gemini quét qua toàn bộ câu hỏi trong đề và tự động gán vào chương tương ứng"
-                            >
-                                {isAssigningChapters ? (
-                                    <Loader2 size={13} className="animate-spin text-purple-200" />
-                                ) : (
-                                    <Sparkles size={13} className="text-amber-300 animate-pulse" />
-                                )}
-                                <span>{isAssigningChapters ? "AI ĐANG GÁN..." : "AI GÁN CHƯƠNG"}</span>
-                            </button>
-
-                            {/* NÚT AI GIẢI CÂU CHƯA CÓ LỜI GIẢI (CÓ TIMELINE TIẾN TRÌNH & ĐỐI CHIẾU MỨC ĐỘ) */}
-                            <button
-                                type="button"
-                                onClick={handleBatchSolveMissingSolutions}
-                                disabled={isSolvingBatch || props.questions.length === 0}
-                                className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-[10px] font-black uppercase transition-all shadow-md active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed ${
-                                    missingSolutionsCount > 0
-                                        ? 'bg-gradient-to-r from-amber-500 via-orange-600 to-rose-600 text-white hover:opacity-95 shadow-amber-200'
-                                        : 'bg-emerald-50 text-emerald-700 border border-emerald-300 hover:bg-emerald-100'
-                                }`}
-                                title="Chỉ kích hoạt AI soạn lời giải khi câu hỏi chưa có lời giải. Nếu đã có sẵn thì giữ nguyên từ câu hỏi gốc."
-                            >
-                                {isSolvingBatch ? (
-                                    <Loader2 size={13} className="animate-spin text-white" />
-                                ) : (
-                                    <Lightbulb size={13} className={missingSolutionsCount > 0 ? "text-amber-200 animate-bounce" : "text-emerald-600"} />
-                                )}
-                                <span>
-                                    {isSolvingBatch 
-                                        ? "AI ĐANG GIẢI..." 
-                                        : (missingSolutionsCount > 0 ? `AI GIẢI CÂU CHƯA CÓ (${missingSolutionsCount})` : "LỜI GIẢI ĐÃ ĐỦ")}
-                                </span>
-                            </button>
-
-                            {/* CẤU HÌNH LƯU ẢNH TRÊN CLOUD STORAGE VS BASE64 */}
-                            <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl border border-slate-200" title="Chọn phương thức lưu ảnh khi dán hoặc tải ảnh vào câu hỏi">
-                                <span className="text-[9px] font-black text-slate-500 uppercase px-1.5 flex items-center gap-1">
-                                    <Cloud size={11} className="text-blue-600"/> Lưu ảnh:
-                                </span>
-                                <button
-                                    type="button"
-                                    onClick={() => handleStorageModeChange('cloud')}
-                                    className={`px-2.5 py-1 rounded-lg text-[10px] font-black uppercase transition-all flex items-center gap-1 ${
-                                        imageStorageMode === 'cloud' 
-                                            ? 'bg-blue-600 text-white shadow-xs' 
-                                            : 'text-slate-600 hover:bg-slate-200'
-                                    }`}
-                                    title="Tải ảnh lên Firebase Cloud Storage và lấy URL trực tiếp (Khuyên dùng - đề thi siêu nhẹ)"
+                            {props.isSuperAdmin ? (
+                                <select 
+                                    className="w-full border-2 border-slate-200 rounded-xl p-2.5 text-xs font-black uppercase bg-slate-50 focus:border-blue-400 outline-none cursor-pointer" 
+                                    value={props.subject || 'Toán'} 
+                                    onChange={e => { 
+                                        if (props.setSubject) props.setSubject(e.target.value); 
+                                        props.setCategory(''); 
+                                    }}
                                 >
-                                    <Cloud size={11}/> Cloud Storage
-                                </button>
-                                <button
-                                    type="button"
-                                    onClick={() => handleStorageModeChange('base64')}
-                                    className={`px-2.5 py-1 rounded-lg text-[10px] font-black uppercase transition-all flex items-center gap-1 ${
-                                        imageStorageMode === 'base64' 
-                                            ? 'bg-amber-600 text-white shadow-xs' 
-                                            : 'text-slate-600 hover:bg-slate-200'
-                                    }`}
-                                    title="Lưu chuỗi ảnh Base64 nén trực tiếp vào đề thi"
-                                >
-                                    <HardDrive size={11}/> Base64
-                                </button>
-                            </div>
-
-                            {/* NÚT ĐẨY HÀNG LOẠT ẢNH BASE64 LÊN CLOUD STORAGE */}
-                            {base64ImagesCount > 0 && (
-                                <button
-                                    type="button"
-                                    onClick={handleBatchMigrateImagesToCloud}
-                                    disabled={isBatchMigratingImages}
-                                    className="flex items-center gap-1.5 px-3 py-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white rounded-xl text-[10px] font-black uppercase shadow-md shadow-emerald-200 transition-all active:scale-95 disabled:opacity-50 animate-pulse"
-                                    title="Tải toàn bộ hình ảnh dạng Base64 trong đề lên Firebase Cloud Storage để tối ưu kích thước đề thi"
-                                >
-                                    {isBatchMigratingImages ? <Loader2 size={13} className="animate-spin text-white"/> : <CloudUpload size={13} className="text-emerald-100"/>}
-                                    <span>{isBatchMigratingImages ? `ĐANG TẢI LÊN (${batchMigrateProgress?.current}/${batchMigrateProgress?.total})...` : `LƯU ${base64ImagesCount} ẢNH LÊN CLOUD`}</span>
-                                </button>
+                                    {STANDARD_SUBJECTS.map(subj => (
+                                        <option key={subj} value={subj}>{subj.toUpperCase()}</option>
+                                    ))}
+                                </select>
+                            ) : (
+                                <div className="w-full border-2 border-blue-200 bg-blue-50/70 rounded-xl p-2.5 flex items-center justify-between">
+                                    <span className="text-xs font-black uppercase text-blue-800 tracking-wide truncate">
+                                        {props.subject || 'TOÁN'}
+                                    </span>
+                                    <span className="px-1.5 py-0.5 bg-blue-600 text-white rounded text-[8px] font-black uppercase">
+                                        MÔN
+                                    </span>
+                                </div>
                             )}
                         </div>
-
-                        <div className="flex items-center gap-2">
-                            {/* Thống kê số câu đã gán chương */}
-                            {props.questions.length > 0 && (
-                                <div className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 bg-indigo-50 border border-indigo-200 rounded-xl text-[10px] font-bold text-indigo-900" title="Số lượng câu hỏi trong đề đã được gắn chương">
-                                    <BookOpen size={12} className="text-indigo-600" />
-                                    <span>Gán chương:</span>
-                                    <span className="font-black text-indigo-700">
-                                        {props.questions.filter(q => Boolean(q.chapterId || q.chapterName || q.quizCategory)).length}/{props.questions.length} câu
-                                    </span>
-                                </div>
-                            )}
-
-                            {/* Thống kê số câu đã có lời giải */}
-                            {props.questions.length > 0 && (
-                                <div className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 bg-amber-50 border border-amber-200 rounded-xl text-[10px] font-bold text-amber-900" title="Số lượng câu hỏi trong đề đã có lời giải chi tiết">
-                                    <Lightbulb size={12} className="text-amber-600" />
-                                    <span>Lời giải:</span>
-                                    <span className={`font-black ${missingSolutionsCount === 0 ? 'text-emerald-700' : 'text-amber-700'}`}>
-                                        {props.questions.length - missingSolutionsCount}/{props.questions.length} câu
-                                    </span>
-                                </div>
-                            )}
-
-                            {props.onApiKeyChange && (
-                                <button
-                                    type="button"
-                                    onClick={() => setShowKeyInput(true)}
-                                    className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-[10px] font-black uppercase border transition-all shadow-sm active:scale-95 ${
-                                        props.customApiKey 
-                                            ? 'bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100' 
-                                            : 'bg-slate-100 border-slate-200 text-slate-600 hover:bg-slate-200'
-                                    }`}
-                                    title="Cấu hình Gemini API Key riêng"
+                        <div className="space-y-1.5">
+                            <label className="text-[10px] font-black text-slate-500 uppercase ml-1">Khối lớp</label>
+                            <select className="w-full border-2 border-slate-200 rounded-xl p-2.5 text-xs font-black bg-slate-50 focus:border-blue-400 outline-none cursor-pointer" value={props.grade} onChange={e => { props.setGrade(e.target.value as Grade); props.setCategory(''); }}>
+                                <option value="12">Khối 12</option>
+                                <option value="11">Khối 11</option>
+                                <option value="10">Khối 10</option>
+                            </select>
+                        </div>
+                        <div className="space-y-1.5">
+                            <label className="text-[10px] font-black text-slate-500 uppercase ml-1">Niên học</label>
+                            <select 
+                                className="w-full border-2 border-blue-200 bg-blue-50/50 rounded-xl p-2.5 text-xs font-black text-blue-800 focus:border-blue-400 outline-none cursor-pointer" 
+                                value={props.academicYear || getCurrentAcademicYear()} 
+                                onChange={e => props.setAcademicYear && props.setAcademicYear(e.target.value)}
+                            >
+                                {getAcademicYearOptions([props.academicYear]).map(yr => (
+                                    <option key={yr} value={yr}>NH {yr} {yr === getCurrentAcademicYear() ? '(Hiện hành)' : ''}</option>
+                                ))}
+                            </select>
+                        </div>
+                        <div className="space-y-1.5">
+                            <label className="text-[10px] font-black text-slate-500 uppercase ml-1">Chương học</label>
+                            <select className="w-full border-2 border-slate-200 rounded-xl p-2.5 text-xs font-black uppercase bg-slate-50 focus:border-blue-400 outline-none cursor-pointer" value={props.category} onChange={e => props.setCategory(e.target.value)}>
+                                <option value="">Chọn chương...</option>
+                                {relevantChapters.map(c => <option key={c.id} value={c.name}>{(c.name || (c as any).title || "Chương chưa đặt tên").toUpperCase()}</option>)}
+                            </select>
+                        </div>
+                        <div className="space-y-1.5">
+                            <label className="text-[10px] font-black text-slate-500 uppercase ml-1">Hình thức</label>
+                            <select className="w-full border-2 border-slate-200 rounded-xl p-2.5 text-xs font-black bg-slate-50 focus:border-blue-400 outline-none cursor-pointer" value={props.quizType} onChange={e => {
+                                const val = e.target.value as any;
+                                props.setQuizType(val);
+                                if (val === 'practice') {
+                                    props.setIsMonitored(false);
+                                    if (props.setMaxAttempts) props.setMaxAttempts(0);
+                                } else {
+                                    if (props.setMaxAttempts && (props.maxAttempts === undefined || props.maxAttempts === 0)) {
+                                        props.setMaxAttempts(1);
+                                    }
+                                }
+                            }}>
+                                <option value="practice">📖 Luyện tập (Xem ngay đáp án)</option>
+                                <option value="test">✍️ Làm bài / Test (Chấm điểm)</option>
+                            </select>
+                        </div>
+                        {props.quizType === 'test' && (
+                            <div className="space-y-1.5">
+                                <label className="text-[10px] font-black text-indigo-700 uppercase ml-1 flex items-center gap-1">
+                                    <TargetIcon size={11} className="text-indigo-600"/> Số lần làm
+                                </label>
+                                <select 
+                                    className="w-full border-2 border-indigo-200 bg-indigo-50/50 rounded-xl p-2.5 text-xs font-black text-indigo-900 focus:border-indigo-400 outline-none cursor-pointer" 
+                                    value={props.maxAttempts !== undefined ? props.maxAttempts : 1} 
+                                    onChange={e => {
+                                        if (props.setMaxAttempts) {
+                                            props.setMaxAttempts(parseInt(e.target.value));
+                                        }
+                                    }}
                                 >
-                                    <Key size={13} className={props.customApiKey ? "text-emerald-600" : "text-slate-500"}/>
-                                    <span>{props.customApiKey ? "Key riêng: Đã bật" : "Gemini API Key"}</span>
-                                </button>
-                            )}
+                                    <option value="1">1 lần (Nộp xong ĐÓNG BĂNG)</option>
+                                    <option value="2">2 lần làm bài</option>
+                                    <option value="3">3 lần làm bài</option>
+                                    <option value="5">5 lần làm bài</option>
+                                    <option value="0">Không giới hạn số lần</option>
+                                </select>
+                            </div>
+                        )}
+                        <div className="space-y-1.5">
+                            <label className="text-[10px] font-black text-slate-500 uppercase ml-1">Thứ tự luyện</label>
+                            <input 
+                                type="number" 
+                                min="0"
+                                className="w-full border-2 border-slate-200 rounded-xl p-2.5 text-xs font-black bg-slate-50 focus:border-blue-400 outline-none" 
+                                value={props.orderIndex} 
+                                onChange={e => {
+                                    const val = parseInt(e.target.value);
+                                    props.setOrderIndex(isNaN(val) ? 0 : val);
+                                }} 
+                            />
+                        </div>
+                        <div className="space-y-1.5">
+                            <label className="text-[10px] font-black text-slate-500 uppercase ml-1">Thời lượng (phút)</label>
+                            <input type="number" className="w-full border-2 border-slate-200 rounded-xl p-2.5 text-xs font-black bg-slate-50 focus:border-blue-400 outline-none" value={props.duration} onChange={e => props.setDuration(parseInt(e.target.value))} />
                         </div>
                     </div>
                 </div>
 
-                {/* Cảnh báo Cloud Storage nếu có lỗi */}
-                {storageWarningBanner && (
-                    <div className="p-3 bg-amber-50 border-2 border-amber-200 rounded-2xl flex flex-wrap items-center justify-between gap-3 text-xs text-amber-900 shadow-sm animate-fade-in">
+                {/* ================= NHÓM 2: THANH CÔNG CỤ NHẬP LIỆU & TRỢ LÝ AI ================= */}
+                <div className="bg-slate-50/80 p-4 sm:p-5 rounded-2xl border border-slate-200/90 space-y-3.5">
+                    <div className="flex items-center justify-between">
                         <div className="flex items-center gap-2">
-                            <span className="px-2 py-0.5 bg-amber-200 text-amber-900 rounded-md font-black text-[9px] uppercase tracking-wider">Lưu trữ ảnh</span>
-                            <span className="font-bold text-slate-800">{storageWarningBanner}</span>
-                            <span className="text-slate-500 text-[11px] hidden md:inline">(Ảnh đã được lưu tạm an toàn dạng Base64)</span>
+                            <Sparkles size={16} className="text-purple-600"/>
+                            <span className="text-[11px] font-black uppercase text-slate-800 tracking-wider">
+                                CÔNG CỤ NHẬP LIỆU & TRỢ LÝ AI
+                            </span>
                         </div>
-                        <div className="flex items-center gap-2">
-                            <button
-                                type="button"
-                                onClick={() => setIsStorageModalOpen(true)}
-                                className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded-xl text-[10px] font-black uppercase transition-all shadow-sm active:scale-95"
-                            >
-                                Cấu hình nơi lưu ảnh
-                            </button>
-                            <button
-                                type="button"
-                                onClick={() => setStorageWarningBanner(null)}
-                                className="p-1 text-slate-400 hover:text-slate-700 rounded-lg"
-                                title="Đóng thông báo"
-                            >
-                                <X size={14} />
-                            </button>
-                        </div>
+                        <span className="text-[10px] font-bold text-slate-400">
+                            {props.questions.length} câu hỏi trong đề
+                        </span>
                     </div>
-                )}
-                
-                {/* Lưới thông số đề thi: Gọn gàng, rõ chữ */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-7 gap-3">
-                    <div className="space-y-1.5">
-                        <label className="text-[10px] font-black text-slate-500 uppercase ml-1 flex items-center gap-1">
-                            <BookOpen size={11} className="text-blue-500"/> Môn học
+
+                    {/* Hàng các nút thao tác nhanh */}
+                    <div className="flex flex-wrap items-center gap-1.5">
+                        <label className="flex items-center gap-1.5 px-3 py-2 bg-amber-500 text-white rounded-xl text-[10px] font-black uppercase cursor-pointer hover:bg-amber-600 transition-all shadow-sm active:scale-95" title="Nhập trực tiếp file .json (Không tốn lượt AI)">
+                            <FileCode size={13}/> NHẬP JSON (0% AI)
+                            <input type="file" accept=".json,application/json" className="hidden" onChange={handleJsonFileSelect}/>
                         </label>
-                        {props.isSuperAdmin ? (
-                            <select 
-                                className="w-full border-2 border-slate-200 rounded-xl p-2.5 text-xs font-black uppercase bg-slate-50 focus:border-blue-400 outline-none cursor-pointer" 
-                                value={props.subject || 'Toán'} 
-                                onChange={e => { 
-                                    if (props.setSubject) props.setSubject(e.target.value); 
-                                    props.setCategory(''); 
-                                }}
+                        <button 
+                            onClick={() => setIsTextInputOpen(true)}
+                            className={`flex items-center gap-1.5 px-3 py-2 bg-blue-600 text-white rounded-xl text-[10px] font-black uppercase hover:bg-black transition-all shadow-sm active:scale-95 ${props.isAiLoading ? 'opacity-50 cursor-not-allowed' : ''}`}
+                        >
+                            <TypeIcon size={13}/> NHẬP TEXT (AI)
+                        </button>
+                        <label className={`flex items-center gap-1.5 px-3 py-2 bg-slate-900 text-white rounded-xl text-[10px] font-black uppercase cursor-pointer hover:bg-black transition-all shadow-sm active:scale-95 ${props.isAiLoading ? 'opacity-50 cursor-not-allowed' : ''}`}>
+                            <FileUp size={13}/> NHẬP PDF (AI)
+                            <input type="file" accept="application/pdf" className="hidden" disabled={props.isAiLoading} onChange={props.onPdfExtract}/>
+                        </label>
+                        <button 
+                            onClick={props.onCleanLabels}
+                            className="flex items-center gap-1.5 px-3 py-2 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-xl text-[10px] font-black uppercase hover:bg-emerald-600 hover:text-white transition-all shadow-sm active:scale-95"
+                            title="Xóa bỏ các nhãn A., B., a), b) dư thừa trong nội dung câu hỏi"
+                        >
+                            <Zap size={13}/> DỌN NHÃN
+                        </button>
+
+                        {/* Nút AI GÁN CHƯƠNG */}
+                        <button 
+                            type="button"
+                            onClick={handleAiAutoAssignChapters}
+                            disabled={isAssigningChapters || props.questions.length === 0}
+                            className={`flex items-center gap-1.5 px-3.5 py-2 bg-gradient-to-r from-purple-600 via-indigo-600 to-blue-600 text-white rounded-xl text-[10px] font-black uppercase hover:opacity-95 transition-all shadow-md active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed ${isAssigningChapters ? 'animate-pulse' : ''}`}
+                            title="Dùng AI Gemini quét qua toàn bộ câu hỏi trong đề và tự động gán vào chương tương ứng"
+                        >
+                            {isAssigningChapters ? (
+                                <Loader2 size={13} className="animate-spin text-purple-200" />
+                            ) : (
+                                <Sparkles size={13} className="text-amber-300 animate-pulse" />
+                            )}
+                            <span>{isAssigningChapters ? "AI ĐANG GÁN..." : "AI GÁN CHƯƠNG"}</span>
+                        </button>
+
+                        {/* NÚT AI GÁN MỨC ĐỘ (MỚI) */}
+                        <button 
+                            type="button"
+                            onClick={handleAiAutoAssignLevels}
+                            disabled={isAssigningLevels || props.questions.length === 0}
+                            className={`flex items-center gap-1.5 px-3.5 py-2 bg-gradient-to-r from-emerald-600 via-teal-600 to-cyan-600 text-white rounded-xl text-[10px] font-black uppercase hover:opacity-95 transition-all shadow-md active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed ${isAssigningLevels ? 'animate-pulse' : ''}`}
+                            title="Dùng AI Gemini dò và tự động phân loại mức độ nhận thức (Biết, Hiểu, Vận dụng, VDC) cho các câu chưa phân mức độ"
+                        >
+                            {isAssigningLevels ? (
+                                <Loader2 size={13} className="animate-spin text-emerald-200" />
+                            ) : (
+                                <Sparkles size={13} className="text-yellow-300 animate-pulse" />
+                            )}
+                            <span>
+                                {isAssigningLevels 
+                                    ? "AI ĐANG GÁN MỨC ĐỘ..." 
+                                    : (unassignedLevelsCount > 0 ? `AI GÁN MỨC ĐỘ (${unassignedLevelsCount})` : "GÁN MỨC ĐỘ")}
+                            </span>
+                        </button>
+
+                        {/* NÚT AI GIẢI CÂU CHƯA CÓ LỜI GIẢI */}
+                        <button
+                            type="button"
+                            onClick={handleBatchSolveMissingSolutions}
+                            disabled={isSolvingBatch || props.questions.length === 0}
+                            className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-[10px] font-black uppercase transition-all shadow-md active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed ${
+                                missingSolutionsCount > 0
+                                    ? 'bg-gradient-to-r from-amber-500 via-orange-600 to-rose-600 text-white hover:opacity-95 shadow-amber-200'
+                                    : 'bg-emerald-50 text-emerald-700 border border-emerald-300 hover:bg-emerald-100'
+                            }`}
+                            title="Chỉ kích hoạt AI soạn lời giải khi câu hỏi chưa có lời giải. Nếu đã có sẵn thì giữ nguyên từ câu hỏi gốc."
+                        >
+                            {isSolvingBatch ? (
+                                <Loader2 size={13} className="animate-spin text-white" />
+                            ) : (
+                                <Lightbulb size={13} className={missingSolutionsCount > 0 ? "text-amber-200 animate-bounce" : "text-emerald-600"} />
+                            )}
+                            <span>
+                                {isSolvingBatch 
+                                    ? "AI ĐANG GIẢI..." 
+                                    : (missingSolutionsCount > 0 ? `AI GIẢI CÂU CHƯA CÓ (${missingSolutionsCount})` : "LỜI GIẢI ĐÃ ĐỦ")}
+                            </span>
+                        </button>
+
+                        {/* CẤU HÌNH LƯU ẢNH TRÊN CLOUD STORAGE VS BASE64 */}
+                        <div className="flex items-center gap-1 bg-white p-1 rounded-xl border border-slate-200 shadow-xs" title="Chọn phương thức lưu ảnh khi dán hoặc tải ảnh vào câu hỏi">
+                            <span className="text-[9px] font-black text-slate-500 uppercase px-1.5 flex items-center gap-1">
+                                <Cloud size={11} className="text-blue-600"/> Lưu ảnh:
+                            </span>
+                            <button
+                                type="button"
+                                onClick={() => handleStorageModeChange('cloud')}
+                                className={`px-2.5 py-1 rounded-lg text-[10px] font-black uppercase transition-all flex items-center gap-1 ${
+                                    imageStorageMode === 'cloud' 
+                                        ? 'bg-blue-600 text-white shadow-xs' 
+                                        : 'text-slate-600 hover:bg-slate-200'
+                                }`}
+                                title="Tải ảnh lên Firebase Cloud Storage và lấy URL trực tiếp (Khuyên dùng - đề thi siêu nhẹ)"
                             >
-                                {STANDARD_SUBJECTS.map(subj => (
-                                    <option key={subj} value={subj}>{subj.toUpperCase()}</option>
-                                ))}
-                            </select>
-                        ) : (
-                            <div className="w-full border-2 border-blue-200 bg-blue-50/70 rounded-xl p-2.5 flex items-center justify-between">
-                                <span className="text-xs font-black uppercase text-blue-800 tracking-wide truncate">
-                                    {props.subject || 'TOÁN'}
-                                </span>
-                                <span className="px-1.5 py-0.5 bg-blue-600 text-white rounded text-[8px] font-black uppercase">
-                                    MÔN
-                                </span>
-                            </div>
+                                <Cloud size={11}/> Cloud Storage
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => handleStorageModeChange('base64')}
+                                className={`px-2.5 py-1 rounded-lg text-[10px] font-black uppercase transition-all flex items-center gap-1 ${
+                                    imageStorageMode === 'base64' 
+                                        ? 'bg-amber-600 text-white shadow-xs' 
+                                        : 'text-slate-600 hover:bg-slate-200'
+                                }`}
+                                title="Lưu chuỗi ảnh Base64 nén trực tiếp vào đề thi"
+                            >
+                                <HardDrive size={11}/> Base64
+                            </button>
+                        </div>
+
+                        {/* NÚT ĐẨY HÀNG LOẠT ẢNH BASE64 LÊN CLOUD STORAGE */}
+                        {base64ImagesCount > 0 && (
+                            <button
+                                type="button"
+                                onClick={handleBatchMigrateImagesToCloud}
+                                disabled={isBatchMigratingImages}
+                                className="flex items-center gap-1.5 px-3 py-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white rounded-xl text-[10px] font-black uppercase shadow-md shadow-emerald-200 transition-all active:scale-95 disabled:opacity-50 animate-pulse"
+                                title="Tải toàn bộ hình ảnh dạng Base64 trong đề lên Firebase Cloud Storage để tối ưu kích thước đề thi"
+                            >
+                                {isBatchMigratingImages ? <Loader2 size={13} className="animate-spin text-white"/> : <CloudUpload size={13} className="text-emerald-100"/>}
+                                <span>{isBatchMigratingImages ? `ĐANG TẢI LÊN (${batchMigrateProgress?.current}/${batchMigrateProgress?.total})...` : `LƯU ${base64ImagesCount} ẢNH LÊN CLOUD`}</span>
+                            </button>
+                        )}
+
+                        {/* NÚT GEMINI API KEY */}
+                        {props.onApiKeyChange && (
+                            <button
+                                type="button"
+                                onClick={() => setShowKeyInput(true)}
+                                className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-[10px] font-black uppercase border transition-all shadow-sm active:scale-95 ${
+                                    props.customApiKey 
+                                        ? 'bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100' 
+                                        : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-100'
+                                }`}
+                                title="Cấu hình Gemini API Key riêng"
+                            >
+                                <Key size={13} className={props.customApiKey ? "text-emerald-600" : "text-slate-500"}/>
+                                <span>{props.customApiKey ? "Key riêng: Đã bật" : "Gemini API Key"}</span>
+                            </button>
                         )}
                     </div>
-                    <div className="space-y-1.5">
-                        <label className="text-[10px] font-black text-slate-500 uppercase ml-1">Khối lớp</label>
-                        <select className="w-full border-2 border-slate-200 rounded-xl p-2.5 text-xs font-black bg-slate-50 focus:border-blue-400 outline-none cursor-pointer" value={props.grade} onChange={e => { props.setGrade(e.target.value as Grade); props.setCategory(''); }}>
-                            <option value="12">Khối 12</option>
-                            <option value="11">Khối 11</option>
-                            <option value="10">Khối 10</option>
-                        </select>
-                    </div>
-                    <div className="space-y-1.5">
-                        <label className="text-[10px] font-black text-slate-500 uppercase ml-1">Niên học</label>
-                        <select 
-                            className="w-full border-2 border-blue-200 bg-blue-50/50 rounded-xl p-2.5 text-xs font-black text-blue-800 focus:border-blue-400 outline-none cursor-pointer" 
-                            value={props.academicYear || getCurrentAcademicYear()} 
-                            onChange={e => props.setAcademicYear && props.setAcademicYear(e.target.value)}
-                        >
-                            {getAcademicYearOptions([props.academicYear]).map(yr => (
-                                <option key={yr} value={yr}>NH {yr} {yr === getCurrentAcademicYear() ? '(Hiện hành)' : ''}</option>
-                            ))}
-                        </select>
-                    </div>
-                    <div className="space-y-1.5">
-                        <label className="text-[10px] font-black text-slate-500 uppercase ml-1">Chương học</label>
-                        <select className="w-full border-2 border-slate-200 rounded-xl p-2.5 text-xs font-black uppercase bg-slate-50 focus:border-blue-400 outline-none cursor-pointer" value={props.category} onChange={e => props.setCategory(e.target.value)}>
-                            <option value="">Chọn chương...</option>
-                            {relevantChapters.map(c => <option key={c.id} value={c.name}>{(c.name || (c as any).title || "Chương chưa đặt tên").toUpperCase()}</option>)}
-                        </select>
-                    </div>
-                    <div className="space-y-1.5">
-                        <label className="text-[10px] font-black text-slate-500 uppercase ml-1">Hình thức</label>
-                        <select className="w-full border-2 border-slate-200 rounded-xl p-2.5 text-xs font-black bg-slate-50 focus:border-blue-400 outline-none cursor-pointer" value={props.quizType} onChange={e => {
-                            const val = e.target.value as any;
-                            props.setQuizType(val);
-                            if (val === 'practice') {
-                                props.setIsMonitored(false);
-                                if (props.setMaxAttempts) props.setMaxAttempts(0);
-                            } else {
-                                if (props.setMaxAttempts && (props.maxAttempts === undefined || props.maxAttempts === 0)) {
-                                    props.setMaxAttempts(1);
-                                }
-                            }
-                        }}>
-                            <option value="practice">📖 Luyện tập (Xem ngay đáp án)</option>
-                            <option value="test">✍️ Làm bài / Test (Chấm điểm)</option>
-                        </select>
-                    </div>
-                    {props.quizType === 'test' && (
-                        <div className="space-y-1.5">
-                            <label className="text-[10px] font-black text-indigo-700 uppercase ml-1 flex items-center gap-1">
-                                <span>🎯 Số lần làm</span>
-                            </label>
-                            <select 
-                                className="w-full border-2 border-indigo-200 bg-indigo-50/60 rounded-xl p-2.5 text-xs font-black text-indigo-950 focus:border-indigo-400 outline-none cursor-pointer"
-                                value={props.maxAttempts ?? 1}
-                                onChange={e => {
-                                    if (props.setMaxAttempts) {
-                                        props.setMaxAttempts(parseInt(e.target.value));
-                                    }
-                                }}
-                            >
-                                <option value="1">1 lần (Nộp xong ĐÓNG BĂNG)</option>
-                                <option value="2">2 lần làm bài</option>
-                                <option value="3">3 lần làm bài</option>
-                                <option value="5">5 lần làm bài</option>
-                                <option value="0">Không giới hạn số lần</option>
-                            </select>
+
+                    {/* Hàng tóm tắt thống kê tình trạng đề thi */}
+                    {props.questions.length > 0 && (
+                        <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-slate-200/60">
+                            {/* Thống kê số câu đã gán mức độ */}
+                            <div className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-50/80 border border-emerald-200 rounded-xl text-[10px] font-bold text-emerald-900" title="Số lượng câu hỏi trong đề đã được gán mức độ nhận thức (B, H, VD, VDC)">
+                                <span className={`w-2 h-2 rounded-full ${unassignedLevelsCount === 0 ? 'bg-emerald-500' : 'bg-amber-500 animate-pulse'}`}></span>
+                                <span>Mức độ:</span>
+                                <span className={`font-black ${unassignedLevelsCount === 0 ? 'text-emerald-700' : 'text-amber-700'}`}>
+                                    {props.questions.length - unassignedLevelsCount}/{props.questions.length} câu đã gán
+                                </span>
+                            </div>
+
+                            {/* Thống kê số câu đã gán chương */}
+                            <div className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-50/80 border border-indigo-200 rounded-xl text-[10px] font-bold text-indigo-900" title="Số lượng câu hỏi trong đề đã được gắn chương">
+                                <BookOpen size={12} className="text-indigo-600" />
+                                <span>Gán chương:</span>
+                                <span className="font-black text-indigo-700">
+                                    {props.questions.filter(q => Boolean(q.chapterId || q.chapterName || q.quizCategory)).length}/{props.questions.length} câu
+                                </span>
+                            </div>
+
+                            {/* Thống kê số câu đã có lời giải */}
+                            <div className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-50/80 border border-amber-200 rounded-xl text-[10px] font-bold text-amber-900" title="Số lượng câu hỏi trong đề đã có lời giải chi tiết">
+                                <Lightbulb size={12} className="text-amber-600" />
+                                <span>Lời giải:</span>
+                                <span className={`font-black ${missingSolutionsCount === 0 ? 'text-emerald-700' : 'text-amber-700'}`}>
+                                    {props.questions.length - missingSolutionsCount}/{props.questions.length} câu
+                                </span>
+                            </div>
                         </div>
                     )}
-                    <div className="space-y-1.5">
-                        <label className="text-[10px] font-black text-slate-500 uppercase ml-1">Thứ tự luyện</label>
-                        <input 
-                            type="number" 
-                            min="0"
-                            className="w-full border-2 border-slate-200 rounded-xl p-2.5 text-xs font-black bg-slate-50 focus:border-blue-400 outline-none" 
-                            value={props.orderIndex} 
-                            onChange={e => {
-                                const val = parseInt(e.target.value);
-                                props.setOrderIndex(isNaN(val) ? 0 : val);
-                            }} 
-                        />
-                    </div>
-                    <div className="space-y-1.5">
-                        <label className="text-[10px] font-black text-slate-500 uppercase ml-1">Thời lượng (phút)</label>
-                        <input type="number" className="w-full border-2 border-slate-200 rounded-xl p-2.5 text-xs font-black bg-slate-50 focus:border-blue-400 outline-none" value={props.duration} onChange={e => props.setDuration(parseInt(e.target.value))} />
-                    </div>
+
+                    {/* Cảnh báo Cloud Storage nếu có lỗi */}
+                    {storageWarningBanner && (
+                        <div className="p-3 bg-amber-50 border-2 border-amber-200 rounded-2xl flex flex-wrap items-center justify-between gap-3 text-xs text-amber-900 shadow-sm animate-fade-in">
+                            <div className="flex items-center gap-2">
+                                <span className="px-2 py-0.5 bg-amber-200 text-amber-900 rounded-md font-black text-[9px] uppercase tracking-wider">Lưu trữ ảnh</span>
+                                <span className="font-bold text-slate-800">{storageWarningBanner}</span>
+                                <span className="text-slate-500 text-[11px] hidden md:inline">(Ảnh đã được lưu tạm an toàn dạng Base64)</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                                <button
+                                    type="button"
+                                    onClick={() => setIsStorageModalOpen(true)}
+                                    className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded-xl text-[10px] font-black uppercase transition-all shadow-sm active:scale-95"
+                                >
+                                    Cấu hình nơi lưu ảnh
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => setStorageWarningBanner(null)}
+                                    className="p-1 text-slate-400 hover:text-slate-700 rounded-lg"
+                                    title="Đóng thông báo"
+                                >
+                                    <X size={14} />
+                                </button>
+                            </div>
+                        </div>
+                    )}
                 </div>
 
                 {/* Khung thời gian và cài đặt kỳ thi */}
