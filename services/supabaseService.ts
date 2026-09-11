@@ -355,9 +355,21 @@ export const supabaseDb = {
   async getUsers(): Promise<User[]> {
     const client = getSupabase();
     if (!client) return [];
-    const { data, error } = await client.from('users').select('*').order('created_at', { ascending: false });
-    if (error || !data) return [];
-    return data.map(mapUserFromDb);
+    const allUsers: any[] = [];
+    const CHUNK_SIZE = 1000;
+    let offset = 0;
+    while (true) {
+      const { data, error } = await client
+        .from('users')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .range(offset, offset + CHUNK_SIZE - 1);
+      if (error || !data || data.length === 0) break;
+      allUsers.push(...data);
+      if (data.length < CHUNK_SIZE) break;
+      offset += CHUNK_SIZE;
+    }
+    return allUsers.map(mapUserFromDb);
   },
 
   async getUsersPage(page: number, pageSize: number = 50, search?: string): Promise<{ data: User[]; total: number }> {
@@ -499,39 +511,92 @@ export const supabaseDb = {
   async getBankQuestions(filters?: { subject?: string; grade?: string; limit?: number; offset?: number }): Promise<Question[]> {
     const client = getSupabase();
     if (!client) return [];
-    let query = client.from('bank_questions').select('*');
 
-    if (filters?.grade && filters.grade !== 'all') {
-      query = query.eq('quiz_grade', filters.grade);
-    }
-
-    if (filters?.subject && filters.subject !== 'all') {
-      const norm = normalizeSubject(filters.subject);
-      if (norm === 'vật lý') {
-        query = query.or('subject.ilike.%vật lí%,subject.ilike.%vật lý%');
-      } else if (norm === 'địa lý') {
-        query = query.or('subject.ilike.%địa lí%,subject.ilike.%địa lý%');
-      } else if (norm === 'hóa học') {
-        query = query.or('subject.ilike.%hóa%,subject.ilike.%hoá%');
-      } else {
-        query = query.ilike('subject', `%${filters.subject.trim()}%`);
-      }
-    }
-
+    // 1. Trường hợp có chỉ định limit cụ thể (phân trang thủ công)
     if (filters?.limit) {
+      let query = client.from('bank_questions').select('*');
+
+      if (filters?.grade && filters.grade !== 'all') {
+        query = query.eq('quiz_grade', filters.grade);
+      }
+
+      if (filters?.subject && filters.subject !== 'all') {
+        const norm = normalizeSubject(filters.subject);
+        if (norm === 'vật lý') {
+          query = query.or('subject.ilike.%vật lí%,subject.ilike.%vật lý%');
+        } else if (norm === 'địa lý') {
+          query = query.or('subject.ilike.%địa lí%,subject.ilike.%địa lý%');
+        } else if (norm === 'hóa học') {
+          query = query.or('subject.ilike.%hóa%,subject.ilike.%hoá%');
+        } else {
+          query = query.ilike('subject', `%${filters.subject.trim()}%`);
+        }
+      }
+
       if (filters.offset !== undefined) {
         query = query.range(filters.offset, filters.offset + filters.limit - 1);
       } else {
         query = query.limit(filters.limit);
       }
+
+      const { data, error } = await query.order('created_at', { ascending: false });
+      if (error || !data) {
+        if (error) console.error("Lỗi Supabase getBankQuestions:", error);
+        return [];
+      }
+      return data.map(mapBankQuestionFromDb);
     }
 
-    const { data, error } = await query.order('created_at', { ascending: false });
-    if (error || !data) {
-      if (error) console.error("Lỗi Supabase getBankQuestions:", error);
-      return [];
+    // 2. Trường hợp không truyền limit (muốn lấy toàn bộ ngân hàng câu hỏi)
+    // Tự động phân trang từng khối 1000 dòng (.range) để vượt qua giới hạn 1000 mặc định của PostgREST / Supabase
+    const allData: any[] = [];
+    const CHUNK_SIZE = 1000;
+    let currentOffset = 0;
+    let hasMore = true;
+
+    while (hasMore) {
+      let query = client.from('bank_questions').select('*');
+
+      if (filters?.grade && filters.grade !== 'all') {
+        query = query.eq('quiz_grade', filters.grade);
+      }
+
+      if (filters?.subject && filters.subject !== 'all') {
+        const norm = normalizeSubject(filters.subject);
+        if (norm === 'vật lý') {
+          query = query.or('subject.ilike.%vật lí%,subject.ilike.%vật lý%');
+        } else if (norm === 'địa lý') {
+          query = query.or('subject.ilike.%địa lí%,subject.ilike.%địa lý%');
+        } else if (norm === 'hóa học') {
+          query = query.or('subject.ilike.%hóa%,subject.ilike.%hoá%');
+        } else {
+          query = query.ilike('subject', `%${filters.subject.trim()}%`);
+        }
+      }
+
+      const { data, error } = await query
+        .order('created_at', { ascending: false })
+        .range(currentOffset, currentOffset + CHUNK_SIZE - 1);
+
+      if (error) {
+        console.error("Lỗi Supabase getBankQuestions chunk:", error);
+        break;
+      }
+
+      if (!data || data.length === 0) {
+        break;
+      }
+
+      allData.push(...data);
+
+      if (data.length < CHUNK_SIZE) {
+        hasMore = false;
+      } else {
+        currentOffset += CHUNK_SIZE;
+      }
     }
-    return data.map(mapBankQuestionFromDb);
+
+    return allData.map(mapBankQuestionFromDb);
   },
 
   async saveBankQuestion(q: Question): Promise<void> {
@@ -588,25 +653,49 @@ export const supabaseDb = {
   async getQuizzes(grade?: Grade): Promise<Quiz[]> {
     const client = getSupabase();
     if (!client) return [];
-    let q = client.from('quizzes').select('*');
-    if (grade && grade !== 'all') {
-      q = q.eq('grade', grade);
+    const allQuizzes: any[] = [];
+    const CHUNK_SIZE = 1000;
+    let offset = 0;
+    while (true) {
+      let q = client.from('quizzes').select('*');
+      if (grade && grade !== 'all') {
+        q = q.eq('grade', grade);
+      }
+      const { data, error } = await q
+        .order('order_index', { ascending: true })
+        .order('created_at', { ascending: false })
+        .range(offset, offset + CHUNK_SIZE - 1);
+
+      if (error || !data || data.length === 0) break;
+      allQuizzes.push(...data);
+      if (data.length < CHUNK_SIZE) break;
+      offset += CHUNK_SIZE;
     }
-    const { data, error } = await q.order('order_index', { ascending: true }).order('created_at', { ascending: false });
-    if (error || !data) return [];
-    return data.map(mapQuizFromDb);
+    return allQuizzes.map(mapQuizFromDb);
   },
 
   async getQuizzesMetadata(grade?: Grade): Promise<Quiz[]> {
     const client = getSupabase();
     if (!client) return [];
-    let q = client.from('quizzes').select('id, title, description, type, grade, category, subject, start_time, end_time, duration_minutes, question_count, attempt_count, max_attempts, created_at, is_published, is_monitored, show_result_answers, disable_practice, is_unlisted, order_index, created_by, created_by_name, is_shared_with_teachers, academic_year, target_type, assigned_class_ids, assigned_classes');
-    if (grade && grade !== 'all') {
-      q = q.eq('grade', grade);
+    const allQuizzes: any[] = [];
+    const CHUNK_SIZE = 1000;
+    let offset = 0;
+    while (true) {
+      let q = client.from('quizzes').select('id, title, description, type, grade, category, subject, start_time, end_time, duration_minutes, question_count, attempt_count, max_attempts, created_at, is_published, is_monitored, show_result_answers, disable_practice, is_unlisted, order_index, created_by, created_by_name, is_shared_with_teachers, academic_year, target_type, assigned_class_ids, assigned_classes');
+      if (grade && grade !== 'all') {
+        q = q.eq('grade', grade);
+      }
+      const { data, error } = await q
+        .order('order_index', { ascending: true })
+        .order('created_at', { ascending: false })
+        .range(offset, offset + CHUNK_SIZE - 1);
+
+      if (error || !data || data.length === 0) break;
+      allQuizzes.push(...data);
+      if (data.length < CHUNK_SIZE) break;
+      offset += CHUNK_SIZE;
     }
-    const { data, error } = await q.order('order_index', { ascending: true }).order('created_at', { ascending: false });
-    if (error || !data) return [];
-    return data.map(mapQuizFromDb);
+    return allQuizzes.map(mapQuizFromDb);
   },
 
   async getQuizById(id: string): Promise<Quiz | null> {
