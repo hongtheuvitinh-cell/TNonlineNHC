@@ -1236,6 +1236,32 @@ export default function QuizEditor(props: QuizEditorProps) {
         }).length;
     }, [props.questions]);
 
+    // Thống kê chi tiết số lượng câu theo từng mức độ nhận thức (B, H, VD, VDC)
+    const levelCounts = useMemo(() => {
+        let b = 0;
+        let h = 0;
+        let vd = 0;
+        let vdc = 0;
+        let unassigned = 0;
+
+        props.questions.forEach(q => {
+            const lvl = (q.level || '').toUpperCase().trim();
+            if (lvl === 'B' || lvl === 'NB' || lvl === 'BIẾT' || lvl === 'NHẬN BIẾT') {
+                b++;
+            } else if (lvl === 'H' || lvl === 'TH' || lvl === 'HIỂU' || lvl === 'THÔNG HIỂU') {
+                h++;
+            } else if (lvl === 'VD' || lvl === 'VẬN DỤNG') {
+                vd++;
+            } else if (lvl === 'VDC' || lvl === 'VẬN DỤNG CAO') {
+                vdc++;
+            } else {
+                unassigned++;
+            }
+        });
+
+        return { b, h, vd, vdc, unassigned };
+    }, [props.questions]);
+
     // Tiến trình Timeline thời gian thực hiển thị trạng thái AI giải đề thi
     const [solveTimelineProgress, setSolveTimelineProgress] = useState<{
         isOpen: boolean;
@@ -2079,9 +2105,9 @@ export default function QuizEditor(props: QuizEditorProps) {
 
                     {/* Hàng tóm tắt thống kê tình trạng đề thi */}
                     {props.questions.length > 0 && (
-                        <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-slate-200/60">
+                        <div className="flex flex-wrap items-center gap-2.5 pt-1 border-t border-slate-200/60">
                             {/* Thống kê số câu đã gán mức độ */}
-                            <div className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-50/80 border border-emerald-200 rounded-xl text-[10px] font-bold text-emerald-900" title="Số lượng câu hỏi trong đề đã được gán mức độ nhận thức (B, H, VD, VDC)">
+                            <div className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-50/80 border border-emerald-200 rounded-xl text-[10px] font-bold text-emerald-900 shadow-xs" title="Số lượng câu hỏi trong đề đã được gán mức độ nhận thức (B, H, VD, VDC)">
                                 <span className={`w-2 h-2 rounded-full ${unassignedLevelsCount === 0 ? 'bg-emerald-500' : 'bg-amber-500 animate-pulse'}`}></span>
                                 <span>Mức độ:</span>
                                 <span className={`font-black ${unassignedLevelsCount === 0 ? 'text-emerald-700' : 'text-amber-700'}`}>
@@ -2089,8 +2115,19 @@ export default function QuizEditor(props: QuizEditorProps) {
                                 </span>
                             </div>
 
+                            {/* Thống kê số lượng chi tiết B, H, VD, VDC */}
+                            <div className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200/90 rounded-xl text-xs font-bold text-slate-800 shadow-xs" title="Thống kê số lượng câu hỏi theo từng mức độ: Biết (B), Hiểu (H), Vận dụng (VD), Vận dụng cao (VDC)">
+                                <span className="text-emerald-700 font-extrabold">{levelCounts.b} <span className="font-bold text-emerald-800 text-[11px]">(B)</span></span>
+                                <span className="text-slate-400 font-normal">,</span>
+                                <span className="text-blue-700 font-extrabold">{levelCounts.h} <span className="font-bold text-blue-800 text-[11px]">(H)</span></span>
+                                <span className="text-slate-400 font-normal">,</span>
+                                <span className="text-amber-700 font-extrabold">{levelCounts.vd} <span className="font-bold text-amber-800 text-[11px]">(VD)</span></span>
+                                <span className="text-slate-400 font-normal">,</span>
+                                <span className="text-rose-700 font-extrabold">{levelCounts.vdc} <span className="font-bold text-rose-800 text-[11px]">(VDC)</span></span>
+                            </div>
+
                             {/* Thống kê số câu đã gán chương */}
-                            <div className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-50/80 border border-indigo-200 rounded-xl text-[10px] font-bold text-indigo-900" title="Số lượng câu hỏi trong đề đã được gắn chương">
+                            <div className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-50/80 border border-indigo-200 rounded-xl text-[10px] font-bold text-indigo-900 shadow-xs" title="Số lượng câu hỏi trong đề đã được gắn chương">
                                 <BookOpen size={12} className="text-indigo-600" />
                                 <span>Gán chương:</span>
                                 <span className="font-black text-indigo-700">
@@ -2099,7 +2136,7 @@ export default function QuizEditor(props: QuizEditorProps) {
                             </div>
 
                             {/* Thống kê số câu đã có lời giải */}
-                            <div className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-50/80 border border-amber-200 rounded-xl text-[10px] font-bold text-amber-900" title="Số lượng câu hỏi trong đề đã có lời giải chi tiết">
+                            <div className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-50/80 border border-amber-200 rounded-xl text-[10px] font-bold text-amber-900 shadow-xs" title="Số lượng câu hỏi trong đề đã có lời giải chi tiết">
                                 <Lightbulb size={12} className="text-amber-600" />
                                 <span>Lời giải:</span>
                                 <span className={`font-black ${missingSolutionsCount === 0 ? 'text-emerald-700' : 'text-amber-700'}`}>
