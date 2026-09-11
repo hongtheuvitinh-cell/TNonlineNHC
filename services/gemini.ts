@@ -1237,3 +1237,148 @@
         });
     };
 
+    export interface QuestionLevelAssignment {
+        questionId: string;
+        level: QuestionLevel;
+        subQuestionLevels?: {
+            index: number;
+            level: QuestionLevel;
+        }[];
+    }
+
+    /**
+     * Dùng AI Gemini quét toàn bộ câu hỏi và tự động phân loại mức độ nhận thức (B, H, VD, VDC)
+     * cho các câu hỏi hoặc ý trắc nghiệm chưa được phân mức độ theo chuẩn khảo thí THPT.
+     */
+    export const classifyQuestionsIntoLevels = async (
+        questions: Question[],
+        options?: {
+            subject?: string;
+            grade?: string;
+            customApiKey?: string;
+        }
+    ): Promise<QuestionLevelAssignment[]> => {
+        if (!questions || questions.length === 0) return [];
+
+        const unassignedQuestions = questions.filter(q => {
+            if (!q.level) return true;
+            if (q.type === 'group-tf' && q.subQuestions && q.subQuestions.some(sq => !sq.level)) return true;
+            return false;
+        });
+
+        if (unassignedQuestions.length === 0) return [];
+
+        const ai = getAiClient(options?.customApiKey);
+
+        // Chuẩn bị tóm tắt câu hỏi cần phân mức độ
+        const questionsSummary = unassignedQuestions.map((q, idx) => {
+            let content = `--- CÂU ${idx + 1} [ID: "${q.id}"] ---
+Loại: ${q.type}
+Nội dung: ${q.text}`;
+            if (q.options && q.options.length > 0) {
+                content += `\nCác phương án: ${q.options.map((opt, i) => `${String.fromCharCode(65 + i)}. ${opt}`).join(' | ')}`;
+            }
+            if (q.subQuestions && q.subQuestions.length > 0) {
+                content += `\nCác ý: ${q.subQuestions.map((sq, i) => `${String.fromCharCode(97 + i)}) ${sq.text} (Hiện tại: ${sq.level || 'Chưa gán'})`).join(' | ')}`;
+            }
+            if (q.solution) {
+                content += `\nLời giải: ${q.solution.substring(0, 150)}...`;
+            }
+            return content;
+        }).join('\n\n');
+
+        const prompt = `Bạn là chuyên gia thẩm định ma trận đề thi và khảo thí THPT quốc gia môn ${options?.subject || 'Toán'} Khối ${options?.grade || '12'}.
+Hãy phân tích nội dung, độ khó, số bước tư duy, mức độ phức tạp của từng câu hỏi dưới đây để gán mức độ nhận thức chuẩn xác:
+
+4 MỨC ĐỘ NHẬN THỨC CHUẨN:
+- "B" (Biết / Nhận biết): Nhận diện khái niệm, định nghĩa, công thức cơ bản, đọc đồ thị trực tiếp, tính toán 1 bước đơn giản.
+- "H" (Hiểu / Thông hiểu): Áp dụng trực tiếp định lý/công thức, giải phương trình/bất phương trình cơ bản, biến đổi 2 bước, hiểu bản chất định luật.
+- "VD" (Vận dụng): Phối hợp nhiều công thức, biến đổi trung bình khá, giải bài toán có tính liên môn hoặc bài toán thực tế.
+- "VDC" (Vận dụng cao): Bài toán cực trị/tham số khó, phân loại học sinh giỏi (điểm 9-10), cần phương pháp giải đặc biệt, biến đổi nhiều bước phức tạp.
+
+DANH SÁCH CÂU HỎI CẦN GÁN MỨC ĐỘ:
+${questionsSummary}
+
+YÊU CẦU:
+1. Xác định "level" ("B" | "H" | "VD" | "VDC") cho mỗi câu hỏi.
+2. Đối với câu hỏi loại Đúng/Sai ("group-tf"), BẮT BUỘC phân tích và trả về "subQuestionLevels" cho từng ý (index từ 0 đến 3 tương ứng a, b, c, d) với mức độ tương ứng ("B" | "H" | "VD" | "VDC").
+3. Trả về mảng JSON đúng cấu trúc:
+[
+  {
+    "questionId": "ID_câu_hỏi",
+    "level": "B" | "H" | "VD" | "VDC",
+    "subQuestionLevels": [
+      { "index": 0, "level": "B" },
+      { "index": 1, "level": "B" },
+      { "index": 2, "level": "H" },
+      { "index": 3, "level": "VD" }
+    ]
+  }
+]`;
+
+        let rawAssignments: any[] = [];
+        try {
+            const response = await callGeminiWithRetryAndFallback(ai, {
+                contents: prompt,
+                config: {
+                    responseMimeType: "application/json",
+                    responseSchema: {
+                        type: Type.ARRAY,
+                        items: {
+                            type: Type.OBJECT,
+                            properties: {
+                                questionId: { type: Type.STRING },
+                                level: { 
+                                    type: Type.STRING,
+                                    enum: ["B", "H", "VD", "VDC"]
+                                },
+                                subQuestionLevels: {
+                                    type: Type.ARRAY,
+                                    items: {
+                                        type: Type.OBJECT,
+                                        properties: {
+                                            index: { type: Type.INTEGER },
+                                            level: {
+                                                type: Type.STRING,
+                                                enum: ["B", "H", "VD", "VDC"]
+                                            }
+                                        },
+                                        required: ["index", "level"]
+                                    }
+                                }
+                            },
+                            required: ["questionId", "level"]
+                        }
+                    }
+                }
+            });
+
+            const textOutput = response.text || "[]";
+            rawAssignments = safeParseJsonWithLatex(textOutput) || [];
+        } catch (err: any) {
+            throw new Error("Lỗi AI phân loại mức độ: " + formatGeminiError(err));
+        }
+
+        if (!Array.isArray(rawAssignments)) {
+            return [];
+        }
+
+        return rawAssignments.map(item => {
+            const qId = String(item.questionId || '').trim();
+            const normalizedLvl = normalizeLevel(item.level) || 'H';
+            const subLvls = Array.isArray(item.subQuestionLevels) 
+                ? item.subQuestionLevels.map((sq: any) => ({
+                    index: Number(sq.index) || 0,
+                    level: normalizeLevel(sq.level) || 'H'
+                }))
+                : undefined;
+
+            return {
+                questionId: qId,
+                level: normalizedLvl,
+                subQuestionLevels: subLvls
+            };
+        });
+    };
+
+
