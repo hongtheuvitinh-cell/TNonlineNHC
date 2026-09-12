@@ -1452,16 +1452,28 @@ export default function QuizEditor(props: QuizEditorProps) {
             return;
         }
 
-        const candidateChapters = relevantChapters.length > 0 ? relevantChapters : props.chapters;
+        const isGenericChapter = (name: string) => {
+            const n = (name || '').trim().toLowerCase();
+            return n.includes('dethidh') || n.includes('đề thi') || n.includes('de thi') || 
+                   n.includes('tổng hợp') || n.includes('tong hop') || n.includes('ôn tập') || 
+                   n.includes('on tap') || n.includes('kiểm tra') || n.includes('kiem tra') ||
+                   n.includes('giữa kỳ') || n.includes('cuối kỳ') || n.includes('học kỳ') ||
+                   n.includes('chưa phân loại') || n.length <= 3;
+        };
+
+        const allCandidates = relevantChapters.length > 0 ? relevantChapters : props.chapters;
+        const knowledgeCandidates = allCandidates.filter(c => !isGenericChapter(c.name));
+        const candidateChapters = knowledgeCandidates.length > 0 ? knowledgeCandidates : allCandidates;
+
         if (!candidateChapters || candidateChapters.length === 0) {
             alert("Hệ thống chưa có danh sách chương nào phù hợp cho môn học và khối lớp này! Vui lòng vào mục Quản lý chương để tạo danh sách chương trước.");
             return;
         }
 
-        const unassignedCount = props.questions.filter(q => !q.chapterId && !q.chapterName && !q.quizCategory).length;
+        const unassignedCount = props.questions.filter(q => !q.chapterId && !q.chapterName).length;
         const confirmMsg = unassignedCount > 0 && unassignedCount < props.questions.length
-            ? `Đề thi có ${props.questions.length} câu hỏi (${unassignedCount} câu chưa gán chương).\n\nBạn có muốn AI Gemini quét toàn bộ các câu hỏi trong đề và tự động gán vào ${candidateChapters.length} chương tương ứng của môn ${props.subject || 'Toán'} Khối ${props.grade}?`
-            : `AI Gemini sẽ quét nội dung toàn bộ ${props.questions.length} câu hỏi trong đề và tự động phân loại, gán vào ${candidateChapters.length} chương tương ứng của môn ${props.subject || 'Toán'} Khối ${props.grade}.\n\nBạn có muốn tiếp tục?`;
+            ? `Đề thi có ${props.questions.length} câu hỏi (${unassignedCount} câu chưa gán chương).\n\nBạn có muốn AI Gemini quét toàn bộ các câu hỏi trong đề và tự động gán vào ${candidateChapters.length} chương kiến thức (${candidateChapters.map(c => c.name).join(', ')}) của môn ${props.subject || 'Vật lí'} Khối ${props.grade}?`
+            : `AI Gemini sẽ quét nội dung toàn bộ ${props.questions.length} câu hỏi trong đề và tự động phân loại, gán vào ${candidateChapters.length} chương kiến thức (${candidateChapters.map(c => c.name).join(', ')}) của môn ${props.subject || 'Vật lí'} Khối ${props.grade}.\n\nBạn có muốn tiếp tục?`;
 
         if (!window.confirm(confirmMsg)) return;
 
