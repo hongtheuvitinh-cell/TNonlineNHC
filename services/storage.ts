@@ -2500,13 +2500,17 @@ export const syncQuizzesToBank = async (targetSubject?: string): Promise<SyncBan
           }
 
           totalScanned++;
+          const specificChapter = q.chapterName || (q.quizCategory && q.quizCategory !== quiz.category ? q.quizCategory : undefined);
+          const finalChapterName = specificChapter || quiz.category || undefined;
+          const finalQuizCategory = specificChapter || quiz.category || '';
+
           const enrichedQ: Question = {
             ...q,
             quizTitle: quiz.title,
             quizGrade: quiz.grade,
-            quizCategory: q.quizCategory || q.chapterName || quiz.category || '',
+            quizCategory: finalQuizCategory,
             chapterId: q.chapterId || undefined,
-            chapterName: q.chapterName || q.quizCategory || quiz.category || undefined,
+            chapterName: finalChapterName,
             subject: qSubject,
             createdBy: q.createdBy || quiz.createdBy || '',
             createdByName: q.createdByName || quiz.createdByName || ''
