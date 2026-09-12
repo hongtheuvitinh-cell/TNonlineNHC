@@ -1424,18 +1424,55 @@ Trả về JSON array chính xác: [{"questionId": "ID", "chapterId": "ID_chuong
     }
 
     /**
-     * Nhận diện nhanh mức độ nhận thức (B, H, VD, VDC) từ tag [NB], [TH], [VD], [VDC] hoặc mẫu câu (0.001s)
+     * Nhận diện nhanh mức độ nhận thức CHỈ KHI có thẻ tag rõ ràng do giáo viên/nguồn đề ghi trong văn bản:
+     * [NB], [TH], [VD], [VDC], [B], [H], [Nhận biết], [Thông hiểu], [Vận dụng], [Vận dụng cao]
      */
     const detectLevelFast = (q: Question): { level?: QuestionLevel; subLevels?: { index: number; level: QuestionLevel }[] } | null => {
-        let detectedLevel: QuestionLevel | undefined = undefined;
-        let detectedSubLevels: { index: number; level: QuestionLevel }[] | undefined = undefined;
+        // 1. Đối với câu hỏi Đúng/Sai (Group-TF):
+        // Chỉ chấp nhận nhận diện nhanh nếu TẤT CẢ các ý con đều có tag mức độ tường minh trong văn bản.
+        // Nếu bất kỳ ý nào chưa có tag, BẮT BUỘC chuyển cho AI đọc và phân tích chiều sâu.
+        if (q.type === 'group-tf' && q.subQuestions && q.subQuestions.length > 0) {
+            const subLvs: { index: number; level: QuestionLevel }[] = [];
+            let allSubHaveExplicitTag = true;
 
-        // 1. Kiểm tra nếu câu hỏi đã có sẵn level hợp lệ
+            q.subQuestions.forEach((sq, idx) => {
+                let sLvl: QuestionLevel | undefined = undefined;
+                if (sq.level) {
+                    sLvl = normalizeLevel(sq.level);
+                }
+                if (!sLvl && sq.text) {
+                    const match = sq.text.match(/(?:\[|\(|\<|\{)\s*(NB|B|TH|H|VD|VDC|Nhận\s*biết|Thông\s*hiểu|Vận\s*dụng\s*cao|Vận\s*dụng|Biết|Hiểu)\s*(?:\]|\)|\>|\})/i);
+                    if (match) {
+                        sLvl = normalizeLevel(match[1]);
+                    }
+                }
+
+                if (sLvl) {
+                    subLvs.push({ index: idx, level: sLvl });
+                } else {
+                    allSubHaveExplicitTag = false;
+                }
+            });
+
+            // Nếu toàn bộ ý a, b, c, d đã có tag rõ ràng, dùng luôn kết quả tag
+            if (allSubHaveExplicitTag && subLvs.length === q.subQuestions.length) {
+                const mainLvl = q.level ? normalizeLevel(q.level) : (subLvs[1]?.level || subLvs[0]?.level || 'H');
+                return {
+                    level: mainLvl,
+                    subLevels: subLvs
+                };
+            }
+
+            // Nếu chưa đủ tag rõ ràng cho từng ý -> trả về null để AI đọc và phân tích từng ý
+            return null;
+        }
+
+        // 2. Đối với câu hỏi trắc nghiệm đơn hoặc trả lời ngắn:
+        let detectedLevel: QuestionLevel | undefined = undefined;
         if (q.level) {
             detectedLevel = normalizeLevel(q.level);
         }
 
-        // 2. Quét thẻ tag [NB], [TH], [VD], [VDC], [B], [H], (NB), (TH), ... trong nội dung câu hỏi hoặc lời giải
         if (!detectedLevel) {
             const combinedText = `${q.text || ''} ${q.solution || ''}`;
             const matchTag = combinedText.match(/(?:\[|\(|\<|\{)\s*(NB|B|TH|H|VD|VDC|Nhận\s*biết|Thông\s*hiểu|Vận\s*dụng\s*cao|Vận\s*dụng|Biết|Hiểu)\s*(?:\]|\)|\>|\})/i);
@@ -1443,7 +1480,6 @@ Trả về JSON array chính xác: [{"questionId": "ID", "chapterId": "ID_chuong
                 detectedLevel = normalizeLevel(matchTag[1]);
             }
             
-            // Quét tiền tố "Mức độ: Nhận biết / Thông hiểu / ..."
             if (!detectedLevel) {
                 const prefixMatch = combinedText.match(/(?:Mức\s*(?:độ)?|Cấp\s*độ)\s*:\s*(Nhận\s*biết|Thông\s*hiểu|Vận\s*dụng\s*cao|Vận\s*dụng|NB|TH|VD|VDC|B|H)/i);
                 if (prefixMatch) {
@@ -1452,73 +1488,16 @@ Trả về JSON array chính xác: [{"questionId": "ID", "chapterId": "ID_chuong
             }
         }
 
-        // 3. Đối với dạng câu hỏi Đúng/Sai (Group-TF)
-        if (q.type === 'group-tf' && q.subQuestions && q.subQuestions.length > 0) {
-            const subLvs: { index: number; level: QuestionLevel }[] = [];
-            let allSubMatched = true;
-
-            q.subQuestions.forEach((sq, idx) => {
-                let sLvl = normalizeLevel(sq.level);
-                if (!sLvl) {
-                    const match = (sq.text || '').match(/(?:\[|\(|\<|\{)\s*(NB|B|TH|H|VD|VDC|Nhận\s*biết|Thông\s*hiểu|Vận\s*dụng\s*cao|Vận\s*dụng)\s*(?:\]|\)|\>|\})/i);
-                    if (match) {
-                        sLvl = normalizeLevel(match[1]);
-                    }
-                }
-
-                // Nếu không có tag trong từng ý, áp dụng chuẩn khảo thí THPT 2025: a: B, b: H, c: VD, d: VDC
-                if (!sLvl) {
-                    const standardProgression: QuestionLevel[] = ['B', 'H', 'VD', 'VDC'];
-                    sLvl = standardProgression[idx] || 'H';
-                }
-
-                subLvs.push({ index: idx, level: sLvl });
-            });
-
-            detectedSubLevels = subLvs;
-            if (!detectedLevel) {
-                detectedLevel = 'H'; // Mức độ tổng quan cho câu đúng/sai thường là Thông hiểu
-            }
-        }
-
-        // 4. Nhận diện các câu hỏi lý thuyết / khái niệm đặc thù (Nhận biết 100%)
-        if (!detectedLevel && q.text) {
-            const t = q.text.toLowerCase();
-            if (
-                t.includes('tập xác định của hàm số') ||
-                t.includes('khẳng định nào sau đây đúng') ||
-                t.includes('mệnh đề nào sau đây đúng') ||
-                t.includes('đồ thị của hàm số nào dưới đây') ||
-                t.includes('tiệm cận đứng của đồ thị') ||
-                t.includes('tiệm cận ngang của đồ thị') ||
-                t.includes('số phức liên hợp của') ||
-                t.includes('phần thực và phần ảo của số phức') ||
-                t.includes('nguyên hàm của hàm số') ||
-                t.includes('vectơ pháp tuyến của mặt phẳng') ||
-                t.includes('vectơ chỉ phương của đường thẳng') ||
-                t.includes('toạ độ tâm và bán kính mặt cầu') ||
-                t.includes('công thức nào sau đây đúng') ||
-                t.includes('chu kỳ dao động của con lắc') ||
-                t.includes('este có công thức phân tử') ||
-                t.includes('kim loại nào sau đây')
-            ) {
-                detectedLevel = 'B';
-            }
-        }
-
         if (detectedLevel) {
-            return {
-                level: detectedLevel,
-                subLevels: detectedSubLevels
-            };
+            return { level: detectedLevel };
         }
 
         return null;
     };
 
     /**
-     * Dùng Hybrid AI (Nhận diện nhanh thẻ tag [NB, TH, VD, VDC] + AI Flash siêu nhẹ)
-     * quét toàn bộ câu hỏi và tự động phân loại mức độ nhận thức (B, H, VD, VDC) trong tích tắc.
+     * Dùng AI Gemini đọc sâu nội dung từng câu hỏi và từng mệnh đề a, b, c, d
+     * để phân tích mức độ nhận thức (B: Nhận biết, H: Thông hiểu, VD: Vận dụng, VDC: Vận dụng cao) chuẩn xác.
      */
     export const classifyQuestionsIntoLevels = async (
         questions: Question[],
@@ -1533,7 +1512,7 @@ Trả về JSON array chính xác: [{"questionId": "ID", "chapterId": "ID_chuong
         const results: QuestionLevelAssignment[] = [];
         const questionsNeedingAi: Question[] = [];
 
-        // BƯỚC 1: Quét nhận diện nhanh cực tốc qua thẻ tag [NB], [TH], [VD], [VDC] và mẫu câu đặc thù (0.001s)
+        // BƯỚC 1: Quét nhanh các câu đã có sẵn thẻ Tag rõ ràng ([NB], [TH], [VD], [VDC])
         questions.forEach(q => {
             const fastMatch = detectLevelFast(q);
             if (fastMatch && fastMatch.level) {
@@ -1547,92 +1526,137 @@ Trả về JSON array chính xác: [{"questionId": "ID", "chapterId": "ID_chuong
             }
         });
 
-        // NẾU TẤT CẢ ĐÃ ĐƯỢC NHẬN DIỆN NHANH: Hoàn tất ngay lập tức (0.01s)!
+        // Nếu tất cả đã có sẵn tag từ trước thì trả về ngay
         if (questionsNeedingAi.length === 0) {
             return results;
         }
 
-        // BƯỚC 2: Chỉ gửi số lượng ít các câu chưa rõ mức độ cho AI Gemini Flash xử lý siêu nhẹ
+        // BƯỚC 2: Gửi cho AI Gemini đọc và phân tích chi tiết
         const ai = getAiClient(options?.customApiKey);
 
-        // Nén ngắn gọn nội dung để AI phản hồi trong 1-2 giây
-        const compactQuestions = questionsNeedingAi.map((q, idx) => {
-            const shortText = q.text ? q.text.replace(/\s+/g, ' ').substring(0, 140) : '';
-            return `Q${idx + 1}[ID:"${q.id}"] (${q.type}): ${shortText}`;
-        }).join('\n');
+        // Chia theo từng nhóm (batch) tối đa 15 câu để AI đọc kỹ và không bị quá tải token
+        const BATCH_SIZE = 15;
+        for (let i = 0; i < questionsNeedingAi.length; i += BATCH_SIZE) {
+            const batch = questionsNeedingAi.slice(i, i + BATCH_SIZE);
 
-        const prompt = `Phân loại mức độ nhận thức (B: Biết, H: Hiểu, VD: Vận dụng, VDC: Vận dụng cao) cho ${questionsNeedingAi.length} câu hỏi môn ${options?.subject || 'Toán'} lớp ${options?.grade || '12'}:
-${compactQuestions}
+            const questionsDetailedText = batch.map((q, idx) => {
+                let textBlock = `=== CÂU ${i + idx + 1} [ID: "${q.id}"] ===\nDạng câu: ${q.type}\nĐề bài: ${q.text || ''}`;
+                
+                if (q.type === 'group-tf' && q.subQuestions && q.subQuestions.length > 0) {
+                    textBlock += '\nCác mệnh đề con (cần phân tích độ khó từng ý):';
+                    q.subQuestions.forEach((sq, sIdx) => {
+                        const letter = String.fromCharCode(97 + sIdx); // a, b, c, d
+                        textBlock += `\n  - Ý ${letter}) [ID_SUB: ${sIdx}]: ${sq.text || ''}`;
+                    });
+                } else if (q.options && q.options.length > 0) {
+                    textBlock += `\nCác phương án: ${q.options.map((opt, oIdx) => `${String.fromCharCode(65 + oIdx)}. ${opt}`).join(' | ')}`;
+                }
 
-Trả về mảng JSON rút gọn:
-[{"questionId": "ID", "level": "B"|"H"|"VD"|"VDC", "subQuestionLevels": [{"index": 0, "level": "B"}, {"index": 1, "level": "H"}, {"index": 2, "level": "VD"}, {"index": 3, "level": "VDC"}]}]`;
+                if (q.solution) {
+                    textBlock += `\nLời giải / Hướng dẫn: ${q.solution.substring(0, 300)}`;
+                }
 
-        try {
-            const response = await callGeminiWithRetryAndFallback(ai, {
-                contents: prompt,
-                config: {
-                    responseMimeType: "application/json",
-                    responseSchema: {
-                        type: Type.ARRAY,
-                        items: {
-                            type: Type.OBJECT,
-                            properties: {
-                                questionId: { type: Type.STRING },
-                                level: { 
-                                    type: Type.STRING,
-                                    enum: ["B", "H", "VD", "VDC"]
-                                },
-                                subQuestionLevels: {
-                                    type: Type.ARRAY,
-                                    items: {
-                                        type: Type.OBJECT,
-                                        properties: {
-                                            index: { type: Type.INTEGER },
-                                            level: {
-                                                type: Type.STRING,
-                                                enum: ["B", "H", "VD", "VDC"]
-                                            }
-                                        },
-                                        required: ["index", "level"]
+                return textBlock;
+            }).join('\n\n');
+
+            const prompt = `Bạn là chuyên gia thẩm định ma trận đề thi và khảo thí THPT Quốc gia môn ${options?.subject || 'Toán'} lớp ${options?.grade || '12'}.
+Nhiệm vụ: Đọc kỹ đề bài, các ý hỏi và lời giải của ${batch.length} câu hỏi dưới đây để phân tích tư duy và đánh giá chính xác mức độ nhận thức:
+
+THANG ĐO 4 MỨC ĐỘ NHẬN THỨC CHUẨN:
+- "B" (Biết / Nhận biết): Nhận diện khái niệm, công thức, định lý trực tiếp, đọc đồ thị/bảng số liệu trực quan 1 bước đơn giản.
+- "H" (Hiểu / Thông hiểu): Áp dụng công thức, giải phương trình/bất phương trình cơ bản, biến đổi suy luận 2-3 bước, hiểu bản chất định luật.
+- "VD" (Vận dụng): Phối hợp nhiều kiến thức, biến đổi tính toán tổng hợp, giải quyết bài toán thực tế mức độ trung bình khá.
+- "VDC" (Vận dụng cao): Bài toán cực trị/tham số khó, phân loại học sinh giỏi (mục tiêu 9-10 điểm), đòi hỏi kỹ thuật giải đặc biệt, biến đổi nhiều bước phức tạp.
+
+QUY TẮC ĐẶC BIỆT CHO CÂU HỎI ĐÚNG/SAI ("group-tf"):
+1. Đọc và phân tích ĐỘC LẬP từng mệnh đề a, b, c, d theo đúng độ phức tạp và lượng phép tính của từng ý.
+2. TUYỆT ĐỐI KHÔNG gán rập khuôn máy móc theo thứ tự a=B, b=H, c=VD, d=VDC. Phân bố mức độ thực tế tùy thuộc hoàn toàn vào nội dung từng ý (ví dụ: a:B, b:B, c:H, d:VD hoặc a:H, b:H, c:VD, d:VDC hoặc a:B, b:H, c:H, d:VD, v.v.).
+3. Trả về mảng "subQuestionLevels" với "index" tương ứng 0 (ý a), 1 (ý b), 2 (ý c), 3 (ý d) và "level" tương ứng ("B", "H", "VD", "VDC").
+4. Mức độ chung "level" của câu là mức độ chủ đạo của bài toán.
+
+DANH SÁCH CÂU HỎI:
+${questionsDetailedText}
+
+Hãy trả về JSON Array:
+[
+  {
+    "questionId": "ID_câu",
+    "level": "B" | "H" | "VD" | "VDC",
+    "subQuestionLevels": [
+      { "index": 0, "level": "B" | "H" | "VD" | "VDC" },
+      { "index": 1, "level": "B" | "H" | "VD" | "VDC" },
+      { "index": 2, "level": "B" | "H" | "VD" | "VDC" },
+      { "index": 3, "level": "B" | "H" | "VD" | "VDC" }
+    ]
+  }
+]`;
+
+            try {
+                const response = await callGeminiWithRetryAndFallback(ai, {
+                    contents: prompt,
+                    config: {
+                        responseMimeType: "application/json",
+                        responseSchema: {
+                            type: Type.ARRAY,
+                            items: {
+                                type: Type.OBJECT,
+                                properties: {
+                                    questionId: { type: Type.STRING },
+                                    level: { 
+                                        type: Type.STRING,
+                                        enum: ["B", "H", "VD", "VDC"]
+                                    },
+                                    subQuestionLevels: {
+                                        type: Type.ARRAY,
+                                        items: {
+                                            type: Type.OBJECT,
+                                            properties: {
+                                                index: { type: Type.INTEGER },
+                                                level: {
+                                                    type: Type.STRING,
+                                                    enum: ["B", "H", "VD", "VDC"]
+                                                }
+                                            },
+                                            required: ["index", "level"]
+                                        }
                                     }
-                                }
-                            },
-                            required: ["questionId", "level"]
+                                },
+                                required: ["questionId", "level"]
+                            }
                         }
                     }
+                });
+
+                const textOutput = response.text || "[]";
+                const rawAssignments = safeParseJsonWithLatex(textOutput) || [];
+
+                if (Array.isArray(rawAssignments)) {
+                    rawAssignments.forEach(item => {
+                        const qId = String(item.questionId || '').trim();
+                        const normalizedLvl = normalizeLevel(item.level) || 'H';
+                        const subLvls = Array.isArray(item.subQuestionLevels) 
+                            ? item.subQuestionLevels.map((sq: any) => ({
+                                index: Number(sq.index) || 0,
+                                level: normalizeLevel(sq.level) || 'H'
+                            }))
+                            : undefined;
+
+                        results.push({
+                            questionId: qId,
+                            level: normalizedLvl,
+                            subQuestionLevels: subLvls
+                        });
+                    });
                 }
-            });
-
-            const textOutput = response.text || "[]";
-            const rawAssignments = safeParseJsonWithLatex(textOutput) || [];
-
-            if (Array.isArray(rawAssignments)) {
-                rawAssignments.forEach(item => {
-                    const qId = String(item.questionId || '').trim();
-                    const normalizedLvl = normalizeLevel(item.level) || 'H';
-                    const subLvls = Array.isArray(item.subQuestionLevels) 
-                        ? item.subQuestionLevels.map((sq: any) => ({
-                            index: Number(sq.index) || 0,
-                            level: normalizeLevel(sq.level) || 'H'
-                        }))
-                        : undefined;
-
+            } catch (err: any) {
+                console.warn("AI error during batch level classify:", err);
+                batch.forEach(q => {
                     results.push({
-                        questionId: qId,
-                        level: normalizedLvl,
-                        subQuestionLevels: subLvls
+                        questionId: q.id,
+                        level: q.type === 'short' ? 'VD' : 'H'
                     });
                 });
             }
-        } catch (err: any) {
-            console.warn("AI fallback error during level classify, using default heuristic:", err);
-            // Fallback an toàn nếu mạng ngắt quãng
-            questionsNeedingAi.forEach(q => {
-                results.push({
-                    questionId: q.id,
-                    level: q.type === 'short' ? 'VD' : 'H'
-                });
-            });
         }
 
         return results;
