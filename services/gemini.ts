@@ -237,9 +237,10 @@
     };
 
     const CANDIDATE_MODELS = [
+        'gemini-3.7-flash',
         'gemini-3.6-flash',
-        'gemini-3.8-flash',
         'gemini-flash-latest',
+        'gemini-3.8-flash',
         'gemini-3.1-flash-lite'
     ];
 
@@ -1318,8 +1319,8 @@
     };
 
     /**
-     * Dùng Hybrid AI (Nhận diện nhanh thẻ tag/từ khóa + AI Flash siêu nhẹ)
-     * tự động phân loại vào chương học tương ứng trong tích tắc.
+     * Dùng Hybrid AI (Nhận diện nhanh thẻ tag/từ khóa + AI Gemini Flash phân tích sâu)
+     * tự động phân loại các câu hỏi vào chương học tương ứng một cách chính xác.
      */
     export const classifyQuestionsIntoChapters = async (
         questions: Question[],
@@ -1355,79 +1356,146 @@
             return results;
         }
 
-        // BƯỚC 2: Chỉ gửi số lượng ít các câu chưa nhận diện được cho AI Gemini Flash xử lý siêu nhẹ
+        // BƯỚC 2: Gửi cho AI Gemini xử lý theo từng nhóm (batch)
         const ai = getAiClient(options?.customApiKey);
-        const chaptersListText = chapters.map((c, idx) => `${idx + 1}. [ID: "${c.id}"] "${c.name}"`).join('\n');
+        const chaptersListText = chapters.map((c, idx) => `  ${idx + 1}. [MÃ_CHƯƠNG: "${c.id}"] "${c.name}"`).join('\n');
 
-        // Nén ngắn gọn nội dung để AI phản hồi trong 1-2 giây
-        const compactQuestions = questionsNeedingAi.map((q, idx) => {
-            const shortText = q.text ? q.text.replace(/\s+/g, ' ').substring(0, 150) : '';
-            return `Q${idx + 1}[ID:"${q.id}"]: ${shortText}`;
-        }).join('\n');
+        const chapterMapById = new Map<string, typeof chapters[0]>();
+        const chapterMapByName = new Map<string, typeof chapters[0]>();
+        chapters.forEach(c => {
+            chapterMapById.set(c.id, c);
+            chapterMapByName.set(c.name.trim().toLowerCase(), c);
+        });
 
-        const prompt = `Phân loại ${questionsNeedingAi.length} câu hỏi môn ${options?.subject || 'Toán'} lớp ${options?.grade || '12'} vào danh sách chương:
-DANH SÁCH CHƯƠNG:
+        const BATCH_SIZE = 15;
+        for (let i = 0; i < questionsNeedingAi.length; i += BATCH_SIZE) {
+            const batch = questionsNeedingAi.slice(i, i + BATCH_SIZE);
+
+            const detailedQuestionsText = batch.map((q, idx) => {
+                let block = `=== CÂU ${i + idx + 1} [ID: "${q.id}"] ===\nDạng: ${q.type}\nNội dung: ${q.text || ''}`;
+                if (q.options && q.options.length > 0) {
+                    block += `\nPhương án: ${q.options.slice(0, 4).join(' | ')}`;
+                } else if (q.subQuestions && q.subQuestions.length > 0) {
+                    block += `\nCác ý: ${q.subQuestions.map(sq => sq.text).join(' | ')}`;
+                }
+                if (q.solution) {
+                    block += `\nLời giải tóm tắt: ${q.solution.substring(0, 200)}`;
+                }
+                return block;
+            }).join('\n\n');
+
+            const prompt = `Bạn là chuyên gia thẩm định và phân loại đề thi môn ${options?.subject || 'Toán'} lớp ${options?.grade || '12'}.
+Nhiệm vụ: Đọc kỹ nội dung của ${batch.length} câu hỏi dưới đây và gán từng câu vào đúng 1 chương trong danh sách chương cho sẵn.
+
+DANH SÁCH CHƯƠNG ĐANG CÓ TRONG HỆ THỐNG:
 ${chaptersListText}
 
-CÂU HỎI:
-${compactQuestions}
+DANH SÁCH CÂU HỎI CẦN GÁN CHƯƠNG:
+${detailedQuestionsText}
 
-Trả về JSON array chính xác: [{"questionId": "ID", "chapterId": "ID_chuong", "chapterName": "Ten_chuong"}]`;
+YÊU CẦU:
+1. Đọc kiến thức trọng tâm của từng câu hỏi để chọn chương phù hợp nhất.
+2. "chapterId" PHẢI là chuỗi [MÃ_CHƯƠNG] của chương tương ứng trong danh sách trên.
+3. "chapterName" là tên chính xác của chương đó.
 
-        try {
-            const response = await callGeminiWithRetryAndFallback(ai, {
-                contents: prompt,
-                config: {
-                    responseMimeType: "application/json",
-                    responseSchema: {
-                        type: Type.ARRAY,
-                        items: {
-                            type: Type.OBJECT,
-                            properties: {
-                                questionId: { type: Type.STRING },
-                                chapterId: { type: Type.STRING },
-                                chapterName: { type: Type.STRING }
-                            },
-                            required: ["questionId", "chapterId", "chapterName"]
+Trả về JSON Array:
+[
+  {
+    "questionId": "ID_của_câu",
+    "chapterId": "MÃ_CHƯƠNG",
+    "chapterName": "Tên_chương"
+  }
+]`;
+
+            try {
+                const response = await callGeminiWithRetryAndFallback(ai, {
+                    contents: prompt,
+                    config: {
+                        responseMimeType: "application/json",
+                        responseSchema: {
+                            type: Type.ARRAY,
+                            items: {
+                                type: Type.OBJECT,
+                                properties: {
+                                    questionId: { type: Type.STRING },
+                                    chapterId: { type: Type.STRING },
+                                    chapterName: { type: Type.STRING }
+                                },
+                                required: ["questionId", "chapterId", "chapterName"]
+                            }
                         }
                     }
-                }
-            });
-
-            const textOutput = response.text || "[]";
-            const rawAssignments = safeParseJsonWithLatex(textOutput) || [];
-            
-            if (Array.isArray(rawAssignments)) {
-                const chapterMapById = new Map<string, typeof chapters[0]>();
-                const chapterMapByName = new Map<string, typeof chapters[0]>();
-                chapters.forEach(c => {
-                    chapterMapById.set(c.id, c);
-                    chapterMapByName.set(c.name.trim().toLowerCase(), c);
                 });
 
-                rawAssignments.forEach(item => {
-                    const qId = String(item.questionId || '').trim();
-                    let targetChapter = chapterMapById.get(item.chapterId);
-                    if (!targetChapter && item.chapterName) {
-                        targetChapter = chapterMapByName.get(String(item.chapterName).trim().toLowerCase());
-                    }
+                const textOutput = response.text || "[]";
+                const rawAssignments = safeParseJsonWithLatex(textOutput) || [];
+                
+                if (Array.isArray(rawAssignments)) {
+                    const batchResultMap = new Map<string, QuestionChapterAssignment>();
+
+                    rawAssignments.forEach(item => {
+                        const qId = String(item.questionId || '').trim();
+                        let targetChapter = chapterMapById.get(item.chapterId);
+                        if (!targetChapter && item.chapterName) {
+                            const cNameLower = String(item.chapterName).trim().toLowerCase();
+                            targetChapter = chapterMapByName.get(cNameLower);
+                            if (!targetChapter) {
+                                // Tìm kiếm gần đúng theo tên chương
+                                targetChapter = chapters.find(c => {
+                                    const raw = c.name.toLowerCase();
+                                    return raw.includes(cNameLower) || cNameLower.includes(raw);
+                                });
+                            }
+                        }
+
+                        if (targetChapter) {
+                            batchResultMap.set(qId, {
+                                questionId: qId,
+                                chapterId: targetChapter.id,
+                                chapterName: targetChapter.name
+                            });
+                        }
+                    });
+
+                    // Ghép vào kết quả, nếu câu nào AI chưa trả về thì tìm chương phù hợp nhất
+                    batch.forEach(q => {
+                        const found = batchResultMap.get(q.id);
+                        if (found) {
+                            results.push(found);
+                        } else {
+                            const fallbackMatch = detectChapterFast(q, chapters, options?.subject, options?.grade) || {
+                                chapterId: chapters[0].id,
+                                chapterName: chapters[0].name
+                            };
+                            results.push({
+                                questionId: q.id,
+                                chapterId: fallbackMatch.chapterId || chapters[0].id,
+                                chapterName: fallbackMatch.chapterName || chapters[0].name
+                            });
+                        }
+                    });
+                }
+            } catch (err: any) {
+                console.error(`Lỗi khi gán chương nhóm câu ${i + 1}-${i + batch.length}:`, err);
+                // Nếu gặp lỗi API, thử nhận diện từ khóa hoặc báo lỗi rõ ràng
+                const errStr = formatGeminiError(err);
+                if (errStr.includes('Lỗi 403') || errStr.includes('Lỗi 400') || errStr.includes('API Key')) {
+                    throw new Error(errStr);
+                }
+
+                // Fallback từ khóa tốt nhất cho batch này
+                batch.forEach(q => {
+                    const fallbackMatch = detectChapterFast(q, chapters, options?.subject, options?.grade) || {
+                        chapterId: chapters[0].id,
+                        chapterName: chapters[0].name
+                    };
                     results.push({
-                        questionId: qId,
-                        chapterId: targetChapter ? targetChapter.id : item.chapterId,
-                        chapterName: targetChapter ? targetChapter.name : (item.chapterName || '')
+                        questionId: q.id,
+                        chapterId: fallbackMatch.chapterId || chapters[0].id,
+                        chapterName: fallbackMatch.chapterName || chapters[0].name
                     });
                 });
             }
-        } catch (err: any) {
-            console.warn("AI fallback error during chapter classify, using best-effort matches:", err);
-            // Nếu AI gặp lỗi, gắn vào chương đầu tiên phù hợp
-            questionsNeedingAi.forEach(q => {
-                results.push({
-                    questionId: q.id,
-                    chapterId: chapters[0].id,
-                    chapterName: chapters[0].name
-                });
-            });
         }
 
         return results;
