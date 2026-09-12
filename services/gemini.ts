@@ -1199,44 +1199,64 @@
         // --- VẬT LÍ (4 Chương chuẩn Lớp 12 & các lớp khác) ---
         if (sLower.includes('lý') || sLower.includes('vật lí') || sLower.includes('vật lý') || sLower.includes('physic')) {
             const physicsScores: { chapter: typeof chapters[0]; score: number }[] = [];
+            
+            // Kiểm tra dấu hiệu ưu tiên đặc thù của Khí lí tưởng
+            const hasGasStrongKeywords = textToCheck.includes('khí lí tưởng') || textToCheck.includes('chất khí') || 
+                textToCheck.includes('khối khí') || textToCheck.includes('đẳng áp') || textToCheck.includes('đẳng nhiệt') || 
+                textToCheck.includes('đẳng tích') || textToCheck.includes('boyle') || textToCheck.includes('charles') || 
+                textToCheck.includes('clapeyron') || textToCheck.includes('mendeleev') || textToCheck.includes('phương trình trạng thái') || 
+                textToCheck.includes('động học phân tử chất khí') || textToCheck.includes('áp suất khí') || textToCheck.includes('piston') || 
+                textToCheck.includes('xi lanh') || textToCheck.includes('bình kín chứa') || textToCheck.includes('boltzmann') ||
+                textToCheck.includes('căn bậc hai của trung bình bình phương') || textToCheck.includes('tốc độ căn quân phương');
+
             for (const c of chapters) {
                 if (isGenericChapter(c.name)) continue;
                 const cName = c.name.toLowerCase();
                 let score = 0;
 
-                // Chương 1: Vật lí nhiệt
-                if (cName.includes('nhiệt')) {
-                    if (textToCheck.includes('nhiệt độ') || textToCheck.includes('nhiệt dung riêng') || textToCheck.includes('nóng chảy') || textToCheck.includes('hóa hơi') || textToCheck.includes('nhiệt lượng') || textToCheck.includes('nội năng') || textToCheck.includes('kelvin') || textToCheck.includes('độ c') || textToCheck.includes('nhiệt kế') || textToCheck.includes('thang nhiệt độ') || textToCheck.includes('nguyên lý i') || textToCheck.includes('nguyên lí i') || textToCheck.includes('nhiệt độ tuyệt đối')) {
+                // Chương 2: Khí lí tưởng (Ưu tiên cao nhất khi có từ khóa khí / quá trình biến đổi trạng thái)
+                if (cName.includes('khí') || cName.includes('lí tưởng') || cName.includes('ly tuong') || cName.includes('chất khí')) {
+                    if (hasGasStrongKeywords) {
+                        score += 20;
+                    }
+                    if (textToCheck.includes('áp suất') || textToCheck.includes('thể tích v') || textToCheck.includes('mol') || textToCheck.includes('p.v')) {
                         score += 5;
                     }
                 }
-                // Chương 2: Khí lí tưởng
-                else if (cName.includes('khí') || cName.includes('lí tưởng') || cName.includes('ly tuong')) {
-                    if (textToCheck.includes('chất khí') || textToCheck.includes('khí lí tưởng') || textToCheck.includes('boyle') || textToCheck.includes('charles') || textToCheck.includes('áp suất') || textToCheck.includes('đẳng nhiệt') || textToCheck.includes('đẳng áp') || textToCheck.includes('đẳng tích') || textToCheck.includes('clapeyron') || textToCheck.includes('mol') || textToCheck.includes('p.v') || textToCheck.includes('mô hình động học phân tử')) {
-                        score += 5;
+                // Chương 1: Vật lí nhiệt (Chỉ nhận diện khi là bài toán chuyển thể, nhiệt lượng, nhiệt dung, thang đo nhiệt)
+                else if (cName.includes('nhiệt') && !cName.includes('hạt nhân')) {
+                    // Nếu câu hỏi có từ khóa khí lí tưởng rõ rệt thì KHÔNG gán nhầm vào Nhiệt
+                    if (!hasGasStrongKeywords) {
+                        if (textToCheck.includes('nhiệt dung riêng') || textToCheck.includes('nhiệt nóng chảy') || textToCheck.includes('nhiệt hóa hơi') || textToCheck.includes('nóng chảy riêng') || textToCheck.includes('hóa hơi riêng')) {
+                            score += 25;
+                        } else if (textToCheck.includes('nhiệt lượng') || textToCheck.includes('nội năng') || textToCheck.includes('cân bằng nhiệt') || textToCheck.includes('nhiệt kế') || textToCheck.includes('thang nhiệt độ') || textToCheck.includes('celsius') || textToCheck.includes('fahrenheit') || textToCheck.includes('nguyên lí i') || textToCheck.includes('nguyên lý 1')) {
+                            score += 15;
+                        } else if (textToCheck.includes('nhiệt độ') || textToCheck.includes('độ c') || textToCheck.includes('kelvin') || textToCheck.includes('sôi') || textToCheck.includes('bay hơi') || textToCheck.includes('ngưng tụ')) {
+                            score += 5;
+                        }
                     }
                 }
                 // Chương 3: Từ trường
                 else if (cName.includes('từ trường') || cName.includes('cảm ứng từ') || cName.includes('từ thông')) {
                     if (textToCheck.includes('từ trường') || textToCheck.includes('cảm ứng từ') || textToCheck.includes('lực từ') || textToCheck.includes('lorentz') || textToCheck.includes('từ thông') || textToCheck.includes('cảm ứng điện từ') || textToCheck.includes('lenz') || textToCheck.includes('faraday') || textToCheck.includes('suất điện động cảm ứng') || textToCheck.includes('tesla') || textToCheck.includes('weber')) {
-                        score += 5;
+                        score += 20;
                     }
                 }
                 // Chương 4: Vật lí hạt nhân
                 else if (cName.includes('hạt nhân') || cName.includes('phóng xạ') || cName.includes('nguyên tử')) {
                     if (textToCheck.includes('hạt nhân') || textToCheck.includes('phóng xạ') || textToCheck.includes('chu kỳ bán rã') || textToCheck.includes('chu kì bán rã') || textToCheck.includes('độ hụt khối') || textToCheck.includes('năng lượng liên kết') || textToCheck.includes('phân hạch') || textToCheck.includes('nhiệt hạch') || textToCheck.includes('proton') || textToCheck.includes('nơtron') || textToCheck.includes('neutron') || textToCheck.includes('tia alpha') || textToCheck.includes('tia beta') || textToCheck.includes('tia gamma') || textToCheck.includes('mev') || textToCheck.includes('u =')) {
-                        score += 5;
+                        score += 20;
                     }
                 }
                 // Dao động cơ & Sóng (Chương trình cũ / Lớp 11)
                 else if (cName.includes('dao động')) {
-                    if (textToCheck.includes('dao động điều hòa') || textToCheck.includes('con lắc lò xo') || textToCheck.includes('con lắc đơn') || textToCheck.includes('biên độ') || textToCheck.includes('tần số góc')) score += 4;
+                    if (textToCheck.includes('dao động điều hòa') || textToCheck.includes('con lắc lò xo') || textToCheck.includes('con lắc đơn') || textToCheck.includes('biên độ') || textToCheck.includes('tần số góc')) score += 10;
                 }
                 else if (cName.includes('sóng')) {
-                    if (textToCheck.includes('bước sóng') || textToCheck.includes('giao thoa sóng') || textToCheck.includes('sóng dừng') || textToCheck.includes('sóng âm') || textToCheck.includes('mức cường độ âm')) score += 4;
+                    if (textToCheck.includes('bước sóng') || textToCheck.includes('giao thoa sóng') || textToCheck.includes('sóng dừng') || textToCheck.includes('sóng âm') || textToCheck.includes('mức cường độ âm')) score += 10;
                 }
                 else if (cName.includes('điện')) {
-                    if (textToCheck.includes('dòng điện xoay chiều') || textToCheck.includes('điện áp xoay chiều') || textToCheck.includes('mạch rlc') || textToCheck.includes('hệ số công suất')) score += 4;
+                    if (textToCheck.includes('dòng điện xoay chiều') || textToCheck.includes('điện áp xoay chiều') || textToCheck.includes('mạch rlc') || textToCheck.includes('hệ số công suất')) score += 10;
                 }
 
                 if (score > 0) {
@@ -1444,8 +1464,11 @@ ${detailedQuestionsText}
 
 YÊU CẦU:
 1. Đọc kiến thức trọng tâm của từng câu hỏi để chọn chương phù hợp nhất.
-2. "chapterId" PHẢI là chuỗi [MÃ_CHƯƠNG] của chương tương ứng trong danh sách trên.
-3. "chapterName" là tên chính xác của chương đó.
+2. ĐỐI VỚI MÔN VẬT LÍ:
+   - Các câu hỏi về "khối khí", "khí lí tưởng", "đẳng áp", "đẳng nhiệt", "đẳng tích", "phương trình trạng thái pV/T", "định luật Boyle/Charles", "mô hình động học phân tử chất khí", "áp suất khí", "tốc độ căn quân phương" BẮT BUỘC PHẢI THUỘC CHƯƠNG "Khí lí tưởng" (hoặc "Chất khí"), dù đề bài có chứa từ "nhiệt độ" hay "nhiệt độ tuyệt đối".
+   - Các câu hỏi về "nhiệt dung riêng", "nhiệt nóng chảy riêng", "nhiệt hóa hơi riêng", "nhiệt lượng", "thang nhiệt độ", "chuyển thể (nóng chảy, bay hơi, sôi, đông đặc)", "nội năng và nguyên lí 1 NĐLH (ΔU=A+Q)" BẮT BUỘC THUỘC CHƯƠNG "Vật lí nhiệt".
+3. "chapterId" PHẢI là chuỗi [MÃ_CHƯƠNG] của chương tương ứng trong danh sách trên.
+4. "chapterName" là tên chính xác của chương đó.
 
 Trả về JSON Array:
 [
