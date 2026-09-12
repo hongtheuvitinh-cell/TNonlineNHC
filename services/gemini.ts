@@ -218,6 +218,9 @@
 
     const formatGeminiError = (error: any): string => {
         const errorStr = error?.message || (typeof error === 'object' ? JSON.stringify(error) : String(error));
+        if (errorStr.includes('404') || errorStr.includes('NOT_FOUND') || errorStr.includes('not found') || errorStr.includes('is not found for API version') || errorStr.includes('no longer available')) {
+            return "Lỗi 404 (Không tìm thấy Model): Mô hình AI cũ không khả dụng với API Key của bạn.\n• Khắc phục: Hệ thống đã tự động chuyển sang mô hình mới 'gemini-3.6-flash' / 'gemini-flash-latest'. Vui lòng bấm thử lại nếu chưa nhận được kết quả.";
+        }
         if (errorStr.includes('503') || errorStr.includes('UNAVAILABLE') || errorStr.includes('high demand') || errorStr.includes('overloaded') || errorStr.includes('temporary')) {
             return "Máy chủ AI của Google đang chịu tải cao tạm thời (Lỗi 503 - High Demand).\n• Khắc phục: Hệ thống đã tự động thử các kênh dự phòng. Vui lòng bấm 'Tạo Đề' lại sau vài giây, hoặc cấu hình Gemini API Key riêng ở góc trên để được ưu tiên xử lý tốt nhất.";
         }
@@ -234,15 +237,15 @@
     };
 
     const CANDIDATE_MODELS = [
-        'gemini-2.5-flash',
-        'gemini-flash-latest',
+        'gemini-3.6-flash',
         'gemini-3.8-flash',
-        'gemini-2.5-pro'
+        'gemini-flash-latest',
+        'gemini-3.1-flash-lite'
     ];
 
     /**
      * Gọi Gemini API với cơ chế tự động thử lại (Retry with Exponential Backoff)
-     * và tự động chuyển đổi sang các mô hình dự phòng (Fallback Models) khi gặp lỗi 503 / 429 / Quá tải.
+     * và tự động chuyển đổi sang các mô hình dự phòng (Fallback Models) khi gặp lỗi 404 / 503 / 429 / Quá tải.
      */
     export const callGeminiWithRetryAndFallback = async (
         ai: GoogleGenAI,
@@ -269,6 +272,14 @@
                 } catch (err: any) {
                     lastError = err;
                     const errStr = err?.message || (typeof err === 'object' ? JSON.stringify(err) : String(err));
+                    
+                    const isNotFoundOrDeprecated = 
+                        errStr.includes('404') || 
+                        errStr.includes('NOT_FOUND') || 
+                        errStr.includes('not found') || 
+                        errStr.includes('no longer available') ||
+                        errStr.includes('is not found for API version');
+
                     const isOverloadedOrUnavailable = 
                         errStr.includes('503') || 
                         errStr.includes('UNAVAILABLE') || 
@@ -281,6 +292,14 @@
                         errStr.includes('overloaded');
 
                     console.warn(`[Gemini API] Model ${model} (lần ${attempt + 1}/${maxRetries + 1}) gặp lỗi:`, errStr);
+
+                    // Nếu là lỗi model không tồn tại / 404 -> Chuyển ngay sang model tiếp theo trong danh sách dự phòng
+                    if (isNotFoundOrDeprecated) {
+                        if (mIdx < preferredModels.length - 1) {
+                            console.log(`[Gemini API] Model ${model} không khả dụng (404), tự động chuyển sang model: ${preferredModels[mIdx + 1]}`);
+                            break; // thoát vòng lặp retry của model này, chuyển model tiếp theo
+                        }
+                    }
 
                     // Nếu là lỗi sai Key (400, 403 không phải 503), throw ngay không retry
                     if (errStr.includes('API_KEY_INVALID') || errStr.includes('API key not valid') || (errStr.includes('403') && !errStr.includes('503'))) {
