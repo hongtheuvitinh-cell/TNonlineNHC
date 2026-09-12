@@ -1123,15 +1123,18 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
       endTime: normalizeDateTimeForStorage(endTime) || '',
       targetType: finalTargetType, 
       assignedClassIds: finalTargetType === 'all' ? [] : (assignedClassIds || []),
-      questions: questions.map(q => ({
-        ...q,
-        subject: q.subject || finalQuizSubject,
-        chapterId: q.chapterId || undefined,
-        chapterName: q.chapterName || q.quizCategory || (category || undefined),
-        quizCategory: q.quizCategory || q.chapterName || (category || ''),
-        createdBy: q.createdBy || currentUser?.id,
-        createdByName: q.createdByName || currentUser?.fullName
-      })), 
+      questions: questions.map(q => {
+        const specificChapter = q.chapterName || (q.quizCategory && q.quizCategory !== category ? q.quizCategory : undefined);
+        return {
+          ...q,
+          subject: q.subject || finalQuizSubject,
+          chapterId: q.chapterId || undefined,
+          chapterName: specificChapter || (category || undefined),
+          quizCategory: specificChapter || (category || ''),
+          createdBy: q.createdBy || currentUser?.id,
+          createdByName: q.createdByName || currentUser?.fullName
+        };
+      }), 
       createdAt: existingQuiz ? existingQuiz.createdAt : new Date().toISOString(), 
       description: ''
     };
