@@ -1162,7 +1162,21 @@
         grade?: string
     ): { chapterId?: string; chapterName?: string } | null => {
         if (!chapters || chapters.length === 0) return null;
-        const textToCheck = `${q.text || ''} ${q.solution || ''} ${q.chapterName || ''}`.toLowerCase();
+
+        // Bỏ qua các danh mục đề thi / nhãn chung chung khi tìm chương kiến thức
+        const isGenericChapter = (name: string) => {
+            const n = name.trim().toLowerCase();
+            return n.includes('dethidh') || n.includes('đề thi') || n.includes('de thi') || 
+                   n.includes('tổng hợp') || n.includes('tong hop') || n.includes('ôn tập') || 
+                   n.includes('on tap') || n.includes('kiểm tra') || n.includes('kiem tra') ||
+                   n.includes('giữa kỳ') || n.includes('cuối kỳ') || n.includes('học kỳ') ||
+                   n.includes('chưa phân loại') || n.length <= 3;
+        };
+
+        // Chỉ kiểm tra nội dung thực sự của câu hỏi (KHÔNG lấy chapterName/quizCategory cũ để tránh dính nhãn dethidh)
+        const optionsText = (q.options || []).join(' ');
+        const subQuestionsText = (q.subQuestions || []).map(sq => sq.text).join(' ');
+        const textToCheck = `${q.text || ''} ${optionsText} ${subQuestionsText} ${q.solution || ''}`.toLowerCase();
 
         // 1. Quét thẻ Tag chương rõ ràng: [Chương 1: ...], [Chương I], [Chủ đề: ...]
         const tagRegex = /(?:\[|\(|\<)\s*(?:chương|chuong|chủ đề|chu de|bài)\s*([0-9ivx]+)?\s*[:\-–]?\s*([^\]\)>]+)\s*(?:\]|\)|\>)/i;
@@ -1171,6 +1185,7 @@
             const rawTag = tagMatch[0].toLowerCase();
             const tagContent = tagMatch[2] ? tagMatch[2].toLowerCase().trim() : '';
             for (const c of chapters) {
+                if (isGenericChapter(c.name)) continue;
                 const cNameLower = c.name.toLowerCase();
                 if (cNameLower.includes(tagContent) || (tagContent && tagContent.includes(cNameLower)) || textToCheck.includes(cNameLower)) {
                     return { chapterId: c.id, chapterName: c.name };
@@ -1178,21 +1193,68 @@
             }
         }
 
-        // 2. So khớp trực tiếp tên chương trong danh sách
-        for (const c of chapters) {
-            const cleanCName = c.name.replace(/^chương\s*[0-9ivx]+[:\.\-–\s]*/i, '').trim().toLowerCase();
-            if (cleanCName.length > 4 && textToCheck.includes(cleanCName)) {
-                return { chapterId: c.id, chapterName: c.name };
+        // 2. Hệ thống từ khóa đặc thù chuyên sâu theo môn học và chương trình chuẩn
+        const sLower = (subject || q.subject || '').toLowerCase();
+
+        // --- VẬT LÍ (4 Chương chuẩn Lớp 12 & các lớp khác) ---
+        if (sLower.includes('lý') || sLower.includes('vật lí') || sLower.includes('vật lý') || sLower.includes('physic')) {
+            const physicsScores: { chapter: typeof chapters[0]; score: number }[] = [];
+            for (const c of chapters) {
+                if (isGenericChapter(c.name)) continue;
+                const cName = c.name.toLowerCase();
+                let score = 0;
+
+                // Chương 1: Vật lí nhiệt
+                if (cName.includes('nhiệt')) {
+                    if (textToCheck.includes('nhiệt độ') || textToCheck.includes('nhiệt dung riêng') || textToCheck.includes('nóng chảy') || textToCheck.includes('hóa hơi') || textToCheck.includes('nhiệt lượng') || textToCheck.includes('nội năng') || textToCheck.includes('kelvin') || textToCheck.includes('độ c') || textToCheck.includes('nhiệt kế') || textToCheck.includes('thang nhiệt độ') || textToCheck.includes('nguyên lý i') || textToCheck.includes('nguyên lí i') || textToCheck.includes('nhiệt độ tuyệt đối')) {
+                        score += 5;
+                    }
+                }
+                // Chương 2: Khí lí tưởng
+                else if (cName.includes('khí') || cName.includes('lí tưởng') || cName.includes('ly tuong')) {
+                    if (textToCheck.includes('chất khí') || textToCheck.includes('khí lí tưởng') || textToCheck.includes('boyle') || textToCheck.includes('charles') || textToCheck.includes('áp suất') || textToCheck.includes('đẳng nhiệt') || textToCheck.includes('đẳng áp') || textToCheck.includes('đẳng tích') || textToCheck.includes('clapeyron') || textToCheck.includes('mol') || textToCheck.includes('p.v') || textToCheck.includes('mô hình động học phân tử')) {
+                        score += 5;
+                    }
+                }
+                // Chương 3: Từ trường
+                else if (cName.includes('từ trường') || cName.includes('cảm ứng từ') || cName.includes('từ thông')) {
+                    if (textToCheck.includes('từ trường') || textToCheck.includes('cảm ứng từ') || textToCheck.includes('lực từ') || textToCheck.includes('lorentz') || textToCheck.includes('từ thông') || textToCheck.includes('cảm ứng điện từ') || textToCheck.includes('lenz') || textToCheck.includes('faraday') || textToCheck.includes('suất điện động cảm ứng') || textToCheck.includes('tesla') || textToCheck.includes('weber')) {
+                        score += 5;
+                    }
+                }
+                // Chương 4: Vật lí hạt nhân
+                else if (cName.includes('hạt nhân') || cName.includes('phóng xạ') || cName.includes('nguyên tử')) {
+                    if (textToCheck.includes('hạt nhân') || textToCheck.includes('phóng xạ') || textToCheck.includes('chu kỳ bán rã') || textToCheck.includes('chu kì bán rã') || textToCheck.includes('độ hụt khối') || textToCheck.includes('năng lượng liên kết') || textToCheck.includes('phân hạch') || textToCheck.includes('nhiệt hạch') || textToCheck.includes('proton') || textToCheck.includes('nơtron') || textToCheck.includes('neutron') || textToCheck.includes('tia alpha') || textToCheck.includes('tia beta') || textToCheck.includes('tia gamma') || textToCheck.includes('mev') || textToCheck.includes('u =')) {
+                        score += 5;
+                    }
+                }
+                // Dao động cơ & Sóng (Chương trình cũ / Lớp 11)
+                else if (cName.includes('dao động')) {
+                    if (textToCheck.includes('dao động điều hòa') || textToCheck.includes('con lắc lò xo') || textToCheck.includes('con lắc đơn') || textToCheck.includes('biên độ') || textToCheck.includes('tần số góc')) score += 4;
+                }
+                else if (cName.includes('sóng')) {
+                    if (textToCheck.includes('bước sóng') || textToCheck.includes('giao thoa sóng') || textToCheck.includes('sóng dừng') || textToCheck.includes('sóng âm') || textToCheck.includes('mức cường độ âm')) score += 4;
+                }
+                else if (cName.includes('điện')) {
+                    if (textToCheck.includes('dòng điện xoay chiều') || textToCheck.includes('điện áp xoay chiều') || textToCheck.includes('mạch rlc') || textToCheck.includes('hệ số công suất')) score += 4;
+                }
+
+                if (score > 0) {
+                    physicsScores.push({ chapter: c, score });
+                }
+            }
+
+            physicsScores.sort((a, b) => b.score - a.score);
+            if (physicsScores.length > 0 && physicsScores[0].score >= 4) {
+                return { chapterId: physicsScores[0].chapter.id, chapterName: physicsScores[0].chapter.name };
             }
         }
-
-        // 3. Hệ thống từ khóa đặc thù theo môn học và chương trình chuẩn
-        const sLower = (subject || '').toLowerCase();
         
         // --- TOÁN HỌC ---
         if (sLower.includes('toán') || sLower.includes('math')) {
             const mathScores: { chapter: typeof chapters[0]; score: number }[] = [];
             for (const c of chapters) {
+                if (isGenericChapter(c.name)) continue;
                 const cName = c.name.toLowerCase();
                 let score = 0;
 
@@ -1239,44 +1301,10 @@
             }
         }
 
-        // --- VẬT LÍ ---
-        if (sLower.includes('lý') || sLower.includes('vật lí') || sLower.includes('vật lý') || sLower.includes('physic')) {
-            for (const c of chapters) {
-                const cName = c.name.toLowerCase();
-                // Vật lí nhiệt
-                if (cName.includes('nhiệt') && (textToCheck.includes('nhiệt độ') || textToCheck.includes('nhiệt dung riêng') || textToCheck.includes('nóng chảy') || textToCheck.includes('hóa hơi') || textToCheck.includes('nhiệt lượng') || textToCheck.includes('nội năng'))) {
-                    return { chapterId: c.id, chapterName: c.name };
-                }
-                // Khí lí tưởng
-                if ((cName.includes('khí') || cName.includes('lí tưởng')) && (textToCheck.includes('chất khí') || textToCheck.includes('khí lí tưởng') || textToCheck.includes('định luật boyle') || textToCheck.includes('charles') || textToCheck.includes('áp suất p') || textToCheck.includes('đẳng nhiệt') || textToCheck.includes('đẳng áp'))) {
-                    return { chapterId: c.id, chapterName: c.name };
-                }
-                // Từ trường
-                if (cName.includes('từ trường') && (textToCheck.includes('từ trường') || textToCheck.includes('cảm ứng từ') || textToCheck.includes('lực từ') || textToCheck.includes('lorentz') || textToCheck.includes('từ thông') || textToCheck.includes('cảm ứng điện từ'))) {
-                    return { chapterId: c.id, chapterName: c.name };
-                }
-                // Hạt nhân nguyên tử
-                if (cName.includes('hạt nhân') && (textToCheck.includes('hạt nhân') || textToCheck.includes('phóng xạ') || textToCheck.includes('chu kỳ bán rã') || textToCheck.includes('độ hụt khối') || textToCheck.includes('năng lượng liên kết') || textToCheck.includes('phân hạch'))) {
-                    return { chapterId: c.id, chapterName: c.name };
-                }
-                // Dao động cơ
-                if (cName.includes('dao động') && (textToCheck.includes('dao động điều hòa') || textToCheck.includes('con lắc lò xo') || textToCheck.includes('con lắc đơn') || textToCheck.includes('biên độ') || textToCheck.includes('tần số góc'))) {
-                    return { chapterId: c.id, chapterName: c.name };
-                }
-                // Sóng
-                if (cName.includes('sóng') && (textToCheck.includes('bước sóng') || textToCheck.includes('giao thoa sóng') || textToCheck.includes('sóng dừng') || textToCheck.includes('sóng âm') || textToCheck.includes('mức cường độ âm'))) {
-                    return { chapterId: c.id, chapterName: c.name };
-                }
-                // Dòng điện
-                if ((cName.includes('điện') || cName.includes('mạch')) && (textToCheck.includes('dòng điện xoay chiều') || textToCheck.includes('điện áp xoay chiều') || textToCheck.includes('mạch rlc') || textToCheck.includes('hệ số công suất') || textToCheck.includes('cuộn cảm'))) {
-                    return { chapterId: c.id, chapterName: c.name };
-                }
-            }
-        }
-
         // --- HÓA HỌC ---
         if (sLower.includes('hóa') || sLower.includes('chem')) {
             for (const c of chapters) {
+                if (isGenericChapter(c.name)) continue;
                 const cName = c.name.toLowerCase();
                 if ((cName.includes('este') || cName.includes('lipit')) && (textToCheck.includes('este') || textToCheck.includes('lipit') || textToCheck.includes('chất béo') || textToCheck.includes('xà phòng hóa') || textToCheck.includes('triglyxerit') || textToCheck.includes('etyl axetat'))) {
                     return { chapterId: c.id, chapterName: c.name };
@@ -1302,6 +1330,7 @@
         // --- SINH HỌC ---
         if (sLower.includes('sinh') || sLower.includes('bio')) {
             for (const c of chapters) {
+                if (isGenericChapter(c.name)) continue;
                 const cName = c.name.toLowerCase();
                 if (cName.includes('di truyền') && (textToCheck.includes('gen') || textToCheck.includes('alen') || textToCheck.includes('nhiễm sắc thể') || textToCheck.includes('đột biến') || textToCheck.includes('adn') || textToCheck.includes('marn') || textToCheck.includes('phép lai'))) {
                     return { chapterId: c.id, chapterName: c.name };
@@ -1312,6 +1341,15 @@
                 if (cName.includes('sinh thái') && (textToCheck.includes('quần thể') || textToCheck.includes('quần xã') || textToCheck.includes('hệ sinh thái') || textToCheck.includes('chuỗi thức ăn') || textToCheck.includes('lưới thức ăn'))) {
                     return { chapterId: c.id, chapterName: c.name };
                 }
+            }
+        }
+
+        // 3. So khớp trực tiếp tên chương cụ thể (độ dài > 5 ký tự và không phải nhãn chung)
+        for (const c of chapters) {
+            if (isGenericChapter(c.name)) continue;
+            const cleanCName = c.name.replace(/^chương\s*[0-9ivx]+[:\.\-–\s]*/i, '').trim().toLowerCase();
+            if (cleanCName.length > 5 && textToCheck.includes(cleanCName)) {
+                return { chapterId: c.id, chapterName: c.name };
             }
         }
 
@@ -1334,12 +1372,23 @@
         if (!questions || questions.length === 0) return [];
         if (!chapters || chapters.length === 0) return [];
 
+        // Lọc danh sách chương kiến thức thực tế (bỏ qua các danh mục đề thi / ôn tập tổng hợp nếu có chương chuyên đề)
+        const knowledgeChapters = chapters.filter(c => {
+            const n = c.name.trim().toLowerCase();
+            return !n.includes('dethidh') && !n.includes('đề thi') && !n.includes('de thi') && 
+                   !n.includes('tổng hợp') && !n.includes('tong hop') && !n.includes('ôn tập') && 
+                   !n.includes('on tap') && !n.includes('kiểm tra') && !n.includes('kiem tra') &&
+                   !n.includes('giữa kỳ') && !n.includes('cuối kỳ') && !n.includes('học kỳ') &&
+                   !n.includes('chưa phân loại') && n.length > 3;
+        });
+        const effectiveChapters = knowledgeChapters.length > 0 ? knowledgeChapters : chapters;
+
         const results: QuestionChapterAssignment[] = [];
         const questionsNeedingAi: Question[] = [];
 
         // BƯỚC 1: Quét nhận diện nhanh cực tốc qua Thẻ Tag & Từ khóa đặc thù (0.001s)
         questions.forEach(q => {
-            const fastMatch = detectChapterFast(q, chapters, options?.subject, options?.grade);
+            const fastMatch = detectChapterFast(q, effectiveChapters, options?.subject, options?.grade);
             if (fastMatch && fastMatch.chapterName) {
                 results.push({
                     questionId: q.id,
@@ -1358,11 +1407,11 @@
 
         // BƯỚC 2: Gửi cho AI Gemini xử lý theo từng nhóm (batch)
         const ai = getAiClient(options?.customApiKey);
-        const chaptersListText = chapters.map((c, idx) => `  ${idx + 1}. [MÃ_CHƯƠNG: "${c.id}"] "${c.name}"`).join('\n');
+        const chaptersListText = effectiveChapters.map((c, idx) => `  ${idx + 1}. [MÃ_CHƯƠNG: "${c.id}"] "${c.name}"`).join('\n');
 
-        const chapterMapById = new Map<string, typeof chapters[0]>();
-        const chapterMapByName = new Map<string, typeof chapters[0]>();
-        chapters.forEach(c => {
+        const chapterMapById = new Map<string, typeof effectiveChapters[0]>();
+        const chapterMapByName = new Map<string, typeof effectiveChapters[0]>();
+        effectiveChapters.forEach(c => {
             chapterMapById.set(c.id, c);
             chapterMapByName.set(c.name.trim().toLowerCase(), c);
         });
