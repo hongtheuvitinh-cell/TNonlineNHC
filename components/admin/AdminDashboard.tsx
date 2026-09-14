@@ -7,6 +7,7 @@ import {
   getBankQuestions, saveBankQuestion, deleteBankQuestion, deleteBatchBankQuestions,
   getClasses, saveClass, deleteClass, saveClassesBatch, assignStudentsToClass,
   getTeachers, saveTeacher, deleteTeacher,
+  getQuizFolders, saveQuizFolder, deleteQuizFolder, moveQuizToFolder,
   clearLocalCache,
   isDatabaseConnected,
   syncAllQuizzesMetadata,
@@ -21,7 +22,7 @@ import { generateQuizFromPrompt, parseQuestionsFromPDF, parseQuestionsFromText }
 import { normalizeFullText } from '../../services/vietnameseFixer';
 import { isSameSubject, STANDARD_SUBJECTS } from '../../services/subjectUtils';
 import { getCurrentAcademicYear, getQuizAcademicYear } from '../../services/academicUtils';
-import { Quiz, User, Result, Chapter, Question, QuestionType, Grade, QuizType, Role, ClassRoom } from '../../types';
+import { Quiz, User, Result, Chapter, Question, QuestionType, Grade, QuizType, Role, ClassRoom, QuizFolder } from '../../types';
 import { v4 as uuidv4 } from 'uuid';
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import Papa from 'papaparse';
@@ -74,6 +75,7 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
   const [resultsTotal, setResultsTotal] = useState(0);
   const [resultsPage, setResultsPage] = useState(1);
   const [chapters, setChapters] = useState<Chapter[]>([]);
+  const [folders, setFolders] = useState<QuizFolder[]>([]);
   const [bankQuestions, setBankQuestions] = useState<Question[]>([]);
 
   const loadedTabsRef = useRef<Set<string>>(new Set());
@@ -90,16 +92,18 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
 
     try {
       if (tab === 'quizzes') {
-        const [q, c, cls, t] = await Promise.all([
+        const [q, c, cls, t, fld] = await Promise.all([
           getQuizzesMetadata(undefined, undefined, forceRefresh), 
           getChapters(forceRefresh),
           getClasses(forceRefresh),
-          getTeachers(forceRefresh)
+          getTeachers(forceRefresh),
+          getQuizFolders(currentUser?.id, forceRefresh)
         ]);
         setQuizzes(q);
         setChapters(c);
         setClasses(cls);
         setTeachers(t);
+        setFolders(fld);
         loadedTabsRef.current.add('quizzes');
       } else if (tab === 'teachers') {
         const [t, q, cls] = await Promise.all([
@@ -247,6 +251,8 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
   const [duration, setDuration] = useState(45);
   const [orderIndex, setOrderIndex] = useState(1);
   const [category, setCategory] = useState('');
+  const [quizFolderId, setQuizFolderId] = useState<string>('');
+  const [quizFolderName, setQuizFolderName] = useState<string>('');
   const [startTime, setStartTime] = useState('');
   const [endTime, setEndTime] = useState('');
   const [questions, setQuestions] = useState<Question[]>([]);
@@ -422,8 +428,11 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
         if (!effectiveSubj || isSameSubject(effectiveSubj, mySubj)) return true;
       }
 
-      // Đề không có creator nhưng cùng bộ môn
-      if (!q.createdBy && q.subject && mySubj && isSameSubject(q.subject, mySubj)) {
+      // Đề không có creator nhưng cùng bộ môn hoặc đề chung
+      if (!q.createdBy) {
+        if (!q.subject || !mySubj || isSameSubject(q.subject, mySubj)) return true;
+      }
+      if (!mySubj) {
         return true;
       }
       return false;
@@ -720,6 +729,7 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
     setIsSharedWithTeachers(false);
     setTargetType(isSuperAdmin ? 'all' : 'classes'); setAssignedClassIds([]);
     setDuration(45); setOrderIndex(1); setCategory('');
+    setQuizFolderId(''); setQuizFolderName('');
     setStartTime(''); setEndTime(''); setQuestions([]); setIsEditingQuiz(true);
     setActiveTab('quizzes');
   };
@@ -746,9 +756,18 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
             console.warn("getQuizById exception, fallback to provided quiz object:", e);
         }
 
-        const qData: Quiz = (fullQuiz && fullQuiz.questions && fullQuiz.questions.length > 0)
+        let qData: Quiz = (fullQuiz && fullQuiz.questions && fullQuiz.questions.length > 0)
             ? fullQuiz
             : { ...quiz, ...(fullQuiz || {}) };
+        
+        // Retain local folder mapping always, since local assignments (localStorage) override DB
+        if (quiz.folderId !== undefined) {
+            qData = {
+                ...qData,
+                folderId: quiz.folderId,
+                folderName: quiz.folderName
+            };
+        }
 
         setEditingQuizId(qData.id); 
         setQuizTitle(qData.title || ''); 
@@ -767,6 +786,8 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
         setDuration(qData.durationMinutes || 45); 
         setOrderIndex(qData.orderIndex || 1); 
         setCategory(qData.category || ''); 
+        setQuizFolderId(qData.folderId || '');
+        setQuizFolderName(qData.folderName || '');
         setStartTime(formatToDatetimeLocal(qData.startTime));
         setEndTime(formatToDatetimeLocal(qData.endTime)); 
         setQuestions(qData.questions || []); 
@@ -781,6 +802,8 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
         setQuizSubject(quiz.subject || mySubject || currentUser?.subject || 'Toán');
         setQuizMaxAttempts(quiz.maxAttempts !== undefined ? quiz.maxAttempts : (quiz.type === 'test' ? 1 : 0));
         setShowResultAnswers(quiz.showResultAnswers !== false);
+        setQuizFolderId(quiz.folderId || '');
+        setQuizFolderName(quiz.folderName || '');
         setStartTime(formatToDatetimeLocal(quiz.startTime));
         setEndTime(formatToDatetimeLocal(quiz.endTime));
         setQuestions(quiz.questions || []);
@@ -852,6 +875,100 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
     } catch (e: any) {
       console.error("Lỗi cập nhật thời gian mở đề:", e);
       showAlert("Lỗi cập nhật thời gian", e.message || "Không thể lưu thời gian mở đề thi.", "error");
+    }
+  };
+
+  const handleSaveFolder = async (folder: QuizFolder) => {
+    try {
+      const folderToSave: QuizFolder = {
+        ...folder,
+        createdBy: folder.createdBy || currentUser?.id || '',
+        createdByName: folder.createdByName || currentUser?.fullName || ''
+      };
+      await saveQuizFolder(folderToSave);
+      setFolders(prev => {
+        const idx = prev.findIndex(f => f.id === folderToSave.id);
+        if (idx >= 0) {
+          const updated = [...prev];
+          updated[idx] = folderToSave;
+          return updated;
+        }
+        return [...prev, folderToSave];
+      });
+      // Cập nhật tên thư mục trong danh sách đề thi nếu tên thư mục thay đổi
+      setQuizzes(prev => prev.map(q => q.folderId === folderToSave.id ? { ...q, folderName: folderToSave.name } : q));
+      showAlert("Thành công", `Đã lưu thư mục "${folderToSave.name}"!`, "success");
+    } catch (e: any) {
+      console.error("Lỗi lưu thư mục:", e);
+      showAlert("Lỗi", "Không thể lưu thư mục: " + (e.message || "Lỗi không xác định"), "error");
+    }
+  };
+
+  const handleDeleteFolder = async (folderId: string) => {
+    const fld = folders.find(f => f.id === folderId);
+    showConfirm(
+      "Xác nhận xóa thư mục",
+      `Bạn có chắc chắn muốn xóa thư mục "${fld?.name || 'này'}" không? Các đề thi bên trong sẽ không bị xóa mà chỉ chuyển về trạng thái Chưa phân thư mục.`,
+      async () => {
+        try {
+          await deleteQuizFolder(folderId);
+          setFolders(prev => prev.filter(f => f.id !== folderId));
+          setQuizzes(prev => prev.map(q => q.folderId === folderId ? { ...q, folderId: undefined, folderName: undefined } : q));
+          showAlert("Thành công", "Đã xóa thư mục đề thi!", "success");
+        } catch (e: any) {
+          console.error("Lỗi xóa thư mục:", e);
+          showAlert("Lỗi", "Không thể xóa thư mục: " + (e.message || "Lỗi không xác định"), "error");
+        }
+      }
+    );
+  };
+
+  const handleMoveQuizToFolder = async (quizId: string, folderId?: string, folderName?: string) => {
+    try {
+      await moveQuizToFolder(quizId, folderId, folderName);
+      setQuizzes(prev => prev.map(q => {
+        if (q.id === quizId) {
+          return {
+            ...q,
+            folderId: folderId || undefined,
+            folderName: folderName || undefined
+          };
+        }
+        return q;
+      }));
+      showAlert(
+        "Chuyển thư mục thành công",
+        folderName ? `Đã chuyển đề thi vào thư mục "${folderName}".` : "Đã gỡ đề thi ra khỏi thư mục.",
+        "success"
+      );
+    } catch (e: any) {
+      console.error("Lỗi chuyển thư mục đề thi:", e);
+      showAlert("Lỗi", "Không thể chuyển thư mục: " + (e.message || "Lỗi không xác định"), "error");
+    }
+  };
+
+  const handleBatchMoveQuizzesToFolder = async (quizIds: string[], folderId?: string, folderName?: string) => {
+    try {
+      await Promise.all(quizIds.map(id => moveQuizToFolder(id, folderId, folderName)));
+      const idSet = new Set(quizIds);
+      setQuizzes(prev => prev.map(q => {
+        if (idSet.has(q.id)) {
+          return {
+            ...q,
+            folderId: folderId || undefined,
+            folderName: folderName || undefined
+          };
+        }
+        return q;
+      }));
+      showAlert(
+        "Chuyển thư mục thành công",
+        folderName ? `Đã chuyển ${quizIds.length} đề thi vào thư mục "${folderName}".` : `Đã gỡ ${quizIds.length} đề thi ra khỏi thư mục.`,
+        "success"
+      );
+    } catch (e: any) {
+      console.error("Lỗi chuyển nhiều đề thi vào thư mục:", e);
+      showAlert("Lỗi", "Không thể chuyển thư mục: " + (e.message || "Lỗi không xác định"), "error");
     }
   };
 
@@ -1119,6 +1236,8 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
       durationMinutes: duration, 
       orderIndex, 
       category, 
+      folderId: quizFolderId || undefined,
+      folderName: quizFolderName || undefined,
       startTime: normalizeDateTimeForStorage(startTime) || '', 
       endTime: normalizeDateTimeForStorage(endTime) || '',
       targetType: finalTargetType, 
@@ -1675,18 +1794,6 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
                     showAlert("Quyền hạn", `Chức năng "${tab.label}" chỉ dành riêng cho Tổng Quản Trị (SuperAdmin).`, "warning");
                     return;
                   }
-                  if (tab.id === 'quizzes') {
-                    if (!isSuperAdmin) {
-                      setQAcademicYearFilter(getCurrentAcademicYear());
-                      setQGradeFilter('12');
-                      setQAuthorFilter('mine');
-                      if (currentUser?.subject) {
-                        setQSubjectFilter(currentUser.subject);
-                      }
-                      setQChapterFilter('all');
-                      setQSearch('');
-                    }
-                  }
                   if (tab.id === 'bank') {
                     if (currentUser?.subject && (!bSubjectFilter || bSubjectFilter === 'all')) {
                       setBSubjectFilter(currentUser.subject);
@@ -1802,11 +1909,15 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
                     </div>
                 )}
                 <QuizEditor
+                    currentUser={currentUser}
                     editingId={editingQuizId} title={quizTitle} setTitle={setQuizTitle}
                     grade={quizGrade} setGrade={setQuizGrade} quizType={quizType} setQuizType={setQuizType}
                     maxAttempts={quizMaxAttempts} setMaxAttempts={setQuizMaxAttempts}
                     academicYear={quizAcademicYear} setAcademicYear={setQuizAcademicYear}
                     subject={quizSubject} setSubject={setQuizSubject}
+                    folderId={quizFolderId} setFolderId={setQuizFolderId}
+                    folderName={quizFolderName} setFolderName={setQuizFolderName}
+                    folders={folders} onSaveFolder={handleSaveFolder}
                     isPublished={isPublished} setIsPublished={setIsPublished} isMonitored={isMonitored} setIsMonitored={setIsMonitored}
                     showResultAnswers={showResultAnswers} setShowResultAnswers={setShowResultAnswers}
                     isUnlisted={isUnlisted} setIsUnlisted={setIsUnlisted}
@@ -1884,6 +1995,11 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
                     <QuizList 
                         quizzes={accessibleQuizzes} results={accessibleResults} chapters={accessibleChapters} classes={accessibleClasses}
                         currentUser={currentUser} teachers={teachers}
+                        folders={folders}
+                        onSaveFolder={handleSaveFolder}
+                        onDeleteFolder={handleDeleteFolder}
+                        onMoveQuizToFolder={handleMoveQuizToFolder}
+                        onBatchMoveQuizzesToFolder={handleBatchMoveQuizzesToFolder}
                         onEdit={handleEditQuiz} onDelete={handleDeleteQuiz} onPreview={handlePreviewQuiz}
                         onAssignClasses={handleAssignClasses}
                         onToggleShare={handleToggleQuizShare}
