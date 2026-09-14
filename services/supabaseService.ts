@@ -1,5 +1,5 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
-import { User, Quiz, Result, Chapter, Question, ExamSession, PublishedResult, Grade, ClassRoom } from '../types';
+import { User, Quiz, Result, Chapter, Question, ExamSession, PublishedResult, Grade, ClassRoom, QuizFolder } from '../types';
 import { getSavedSupabaseConfig } from './supabaseMigration';
 import { normalizeDateTimeForStorage } from './dateUtils';
 import { normalizeSubject } from './subjectUtils';
@@ -187,6 +187,38 @@ export function mapBankQuestionToDb(q: Question): any {
   };
 }
 
+export function mapQuizFolderFromDb(row: any): QuizFolder {
+  return {
+    id: row.id,
+    name: row.name || 'Thư mục',
+    grade: row.grade || undefined,
+    subject: row.subject || undefined,
+    chapterId: row.chapter_id || row.chapterId || undefined,
+    chapterName: row.chapter_name || row.chapterName || undefined,
+    createdBy: row.created_by || row.createdBy || '',
+    createdByName: row.created_by_name || row.createdByName || '',
+    color: row.color || '#3b82f6',
+    orderIndex: row.order_index ?? row.orderIndex ?? 0,
+    createdAt: row.created_at || row.createdAt || new Date().toISOString()
+  };
+}
+
+export function mapQuizFolderToDb(f: QuizFolder): any {
+  return {
+    id: f.id || uuidv4(),
+    name: f.name.trim(),
+    grade: f.grade || null,
+    subject: f.subject || null,
+    chapter_id: f.chapterId || null,
+    chapter_name: f.chapterName || null,
+    created_by: f.createdBy || null,
+    created_by_name: f.createdByName || null,
+    color: f.color || '#3b82f6',
+    order_index: f.orderIndex ?? 0,
+    created_at: f.createdAt || new Date().toISOString()
+  };
+}
+
 export function mapQuizFromDb(row: any): Quiz {
   const questionsList = Array.isArray(row.questions) ? row.questions : [];
   return {
@@ -197,6 +229,8 @@ export function mapQuizFromDb(row: any): Quiz {
     grade: row.grade || '12',
     category: row.category || undefined,
     subject: row.subject || undefined,
+    folderId: row.folder_id || row.folderId || (row.data && (row.data.folderId || row.data.folder_id)) || undefined,
+    folderName: row.folder_name || row.folderName || (row.data && (row.data.folderName || row.data.folder_name)) || undefined,
     startTime: row.start_time || row.startTime || undefined,
     endTime: row.end_time || row.endTime || undefined,
     durationMinutes: row.duration_minutes || row.durationMinutes || 45,
@@ -230,6 +264,8 @@ export function mapQuizToDb(q: Quiz): any {
     type: q.type || 'practice',
     grade: q.grade || '12',
     category: q.category || null,
+    folder_id: q.folderId || null,
+    folder_name: q.folderName || null,
     subject: q.subject || null,
     start_time: normalizeDateTimeForStorage(q.startTime),
     end_time: normalizeDateTimeForStorage(q.endTime),
@@ -680,22 +716,95 @@ export const supabaseDb = {
     const allQuizzes: any[] = [];
     const CHUNK_SIZE = 1000;
     let offset = 0;
+    let hasFolderCol = true;
+    const baseFields = 'id, title, description, type, grade, category, subject, start_time, end_time, duration_minutes, question_count, attempt_count, max_attempts, created_at, is_published, is_monitored, show_result_answers, disable_practice, is_unlisted, order_index, created_by, created_by_name, is_shared_with_teachers, academic_year, target_type, assigned_class_ids, assigned_classes';
+    const fieldsWithFolder = `${baseFields}, folder_id, folder_name`;
+
     while (true) {
-      let q = client.from('quizzes').select('id, title, description, type, grade, category, subject, start_time, end_time, duration_minutes, question_count, attempt_count, max_attempts, created_at, is_published, is_monitored, show_result_answers, disable_practice, is_unlisted, order_index, created_by, created_by_name, is_shared_with_teachers, academic_year, target_type, assigned_class_ids, assigned_classes');
+      let q: any = (client.from('quizzes') as any).select(hasFolderCol ? fieldsWithFolder : baseFields);
       if (grade && grade !== 'all') {
         q = q.eq('grade', grade);
       }
-      const { data, error } = await q
+      let res: any = await q
         .order('order_index', { ascending: true })
         .order('created_at', { ascending: false })
         .range(offset, offset + CHUNK_SIZE - 1);
 
-      if (error || !data || data.length === 0) break;
-      allQuizzes.push(...data);
-      if (data.length < CHUNK_SIZE) break;
+      if (res.error && hasFolderCol) {
+        // Cột folder_id chưa có trong table PostgreSQL Supabase -> Fallback ngay sang select chuẩn
+        hasFolderCol = false;
+        let retryQ: any = (client.from('quizzes') as any).select(baseFields);
+        if (grade && grade !== 'all') {
+          retryQ = retryQ.eq('grade', grade);
+        }
+        res = await retryQ
+          .order('order_index', { ascending: true })
+          .order('created_at', { ascending: false })
+          .range(offset, offset + CHUNK_SIZE - 1);
+      }
+
+      if (res.error || !res.data || res.data.length === 0) break;
+      allQuizzes.push(...res.data);
+      if (res.data.length < CHUNK_SIZE) break;
       offset += CHUNK_SIZE;
     }
     return allQuizzes.map(mapQuizFromDb);
+  },
+
+  async moveQuizToFolder(quizId: string, folderId?: string, folderName?: string): Promise<void> {
+    const client = getSupabase();
+    if (!client) return;
+    try {
+      await client.from('quizzes').update({
+        folder_id: folderId || null,
+        folder_name: folderName || null
+      }).eq('id', quizId);
+    } catch (e) {
+      console.warn("Lỗi cập nhật folder_id quiz trên Supabase:", e);
+    }
+  },
+
+  // QUIZ FOLDERS
+  async getQuizFolders(teacherId?: string): Promise<QuizFolder[]> {
+    const client = getSupabase();
+    if (!client) return [];
+    try {
+      let q = client.from('quiz_folders').select('*');
+      if (teacherId && teacherId !== 'all') {
+        q = q.eq('created_by', teacherId);
+      }
+      const { data, error } = await q.order('created_at', { ascending: false });
+      if (error || !data) return [];
+      return data.map(mapQuizFolderFromDb);
+    } catch {
+      return [];
+    }
+  },
+
+  async saveQuizFolder(folder: QuizFolder): Promise<void> {
+    const client = getSupabase();
+    if (!client) return;
+    try {
+      const row = mapQuizFolderToDb(folder);
+      await client.from('quiz_folders').upsert(row, { onConflict: 'id' });
+    } catch (e) {
+      console.warn("Lỗi lưu quiz_folders sang Supabase:", e);
+    }
+  },
+
+  async deleteQuizFolder(folderId: string): Promise<void> {
+    const client = getSupabase();
+    if (!client) return;
+    try {
+      await client.from('quiz_folders').delete().eq('id', folderId);
+      // Gỡ liên kết folder_id của các đề thi đang trong thư mục này
+      await client.from('quizzes').update({
+        folder_id: null,
+        folder_name: null
+      }).eq('folder_id', folderId);
+    } catch (e) {
+      console.warn("Lỗi xóa quiz_folders trên Supabase:", e);
+    }
   },
 
   async getQuizById(id: string): Promise<Quiz | null> {
@@ -710,7 +819,12 @@ export const supabaseDb = {
     const client = getSupabase();
     if (!client) throw new Error('Supabase client chưa kết nối');
     const row = mapQuizToDb(quiz);
-    const { error } = await client.from('quizzes').upsert(row, { onConflict: 'id' });
+    let { error } = await client.from('quizzes').upsert(row, { onConflict: 'id' });
+    if (error && (error.message?.includes('folder_id') || error.message?.includes('folder_name'))) {
+      const { folder_id, folder_name, ...safeRow } = row;
+      const retry = await client.from('quizzes').upsert(safeRow, { onConflict: 'id' });
+      error = retry.error;
+    }
     if (error) throw new Error(`Lỗi lưu đề thi: ${error.message}`);
   },
 
