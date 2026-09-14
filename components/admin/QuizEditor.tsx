@@ -1,12 +1,12 @@
 
 import React, { useState, useMemo, useRef } from 'react';
-import { Quiz, Question, Grade, QuestionType, Chapter, QuizType, ClassRoom } from '../../types';
+import { Quiz, Question, Grade, QuestionType, Chapter, QuizType, ClassRoom, QuizFolder, User } from '../../types';
 import { 
   Save, FileUp, Database, CheckCircle2, HelpCircle, AlignLeft, Trash2, 
   Target as TargetIcon, Plus, ImageIcon, Loader2, Lightbulb, Eye, ImageMinus, 
   ShieldAlert, ShieldCheck, Sparkles, Zap, Type as TypeIcon, X, Link as LinkIcon, 
   EyeOff, FileCode, GraduationCap, CheckSquare, Square, Users, Copy, Images, Check, Layers, ArrowRight,
-  Key, BookOpen, ClipboardPaste, PauseCircle, Cloud, CloudUpload, HardDrive, Settings2
+  Key, BookOpen, ClipboardPaste, PauseCircle, Cloud, CloudUpload, HardDrive, Settings2, Folder
 } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 import LatexText from '../LatexText';
@@ -27,7 +27,21 @@ import { uploadBase64ToStorage, batchUploadQuizImagesToStorage, formatToDatetime
 import { STANDARD_SUBJECTS, isSameSubject } from '../../services/subjectUtils';
 import { getAcademicYearOptions, getCurrentAcademicYear } from '../../services/academicUtils';
 
+function matchChapterName(folderChapter?: string, filterChapter?: string): boolean {
+    if (!filterChapter || filterChapter === 'all') return true;
+    if (!folderChapter) return false;
+    const clean = (s: string) => s.toLowerCase()
+        .replace(/^chương\s*\d+\s*[:.-]?\s*/i, '')
+        .replace(/ý/g, 'i')
+        .replace(/\s+/g, ' ')
+        .trim();
+    const fNorm = clean(folderChapter);
+    const cNorm = clean(filterChapter);
+    return fNorm === cNorm || fNorm.includes(cNorm) || cNorm.includes(fNorm);
+}
+
 interface QuizEditorProps {
+    currentUser?: User;
     editingId: string | null;
     title: string;
     setTitle: (val: string) => void;
@@ -57,6 +71,12 @@ interface QuizEditorProps {
     setDuration: (val: number) => void;
     category: string;
     setCategory: (val: string) => void;
+    folderId?: string;
+    setFolderId?: (val: string) => void;
+    folderName?: string;
+    setFolderName?: (val: string) => void;
+    folders?: QuizFolder[];
+    onSaveFolder?: (folder: QuizFolder) => Promise<void>;
     startTime: string;
     setStartTime: (val: string) => void;
     endTime: string;
@@ -1319,6 +1339,31 @@ export default function QuizEditor(props: QuizEditorProps) {
     const [isBatchMigratingImages, setIsBatchMigratingImages] = useState(false);
     const [batchMigrateProgress, setBatchMigrateProgress] = useState<{ current: number; total: number } | null>(null);
 
+    // Quản lý tạo thư mục cá nhân nhanh trong QuizEditor
+    const [isCreateFolderModalOpen, setIsCreateFolderModalOpen] = useState(false);
+    const [newFolderName, setNewFolderName] = useState('');
+    const [newFolderColor, setNewFolderColor] = useState('blue');
+
+    const handleQuickCreateFolder = async () => {
+        if (!newFolderName.trim()) return;
+        const newFolder: QuizFolder = {
+            id: 'fld_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
+            name: newFolderName.trim(),
+            color: newFolderColor,
+            subject: props.subject || '',
+            grade: props.grade || '12',
+            createdBy: props.currentUser?.id || 'admin',
+            createdAt: new Date().toISOString()
+        };
+        if (props.onSaveFolder) {
+            await props.onSaveFolder(newFolder);
+        }
+        if (props.setFolderId) props.setFolderId(newFolder.id);
+        if (props.setFolderName) props.setFolderName(newFolder.name);
+        setNewFolderName('');
+        setIsCreateFolderModalOpen(false);
+    };
+
     const handleBatchMigrateImagesToCloud = async () => {
         if (base64ImagesCount === 0) {
             alert("Toàn bộ hình ảnh trong đề thi đã được lưu trên Cloud Storage hoặc chưa có hình ảnh nào!");
@@ -1837,8 +1882,8 @@ export default function QuizEditor(props: QuizEditorProps) {
                         />
                     </div>
 
-                    {/* Lưới 7 thông số cốt lõi đề thi: Gọn gàng, rõ nét */}
-                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-7 gap-3">
+                    {/* Lưới các thông số cốt lõi đề thi: Gọn gàng, rõ nét */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-8 gap-3">
                         <div className="space-y-1.5">
                             <label className="text-[10px] font-black text-slate-500 uppercase ml-1 flex items-center gap-1">
                                 <BookOpen size={11} className="text-blue-500"/> Môn học
@@ -1888,11 +1933,53 @@ export default function QuizEditor(props: QuizEditorProps) {
                             </select>
                         </div>
                         <div className="space-y-1.5">
-                            <label className="text-[10px] font-black text-slate-500 uppercase ml-1">Chương học</label>
+                            <label className="text-[10px] font-black text-slate-500 uppercase ml-1">Chương học (Bank AI)</label>
                             <select className="w-full border-2 border-slate-200 rounded-xl p-2.5 text-xs font-black uppercase bg-slate-50 focus:border-blue-400 outline-none cursor-pointer" value={props.category} onChange={e => props.setCategory(e.target.value)}>
                                 <option value="">Chọn chương...</option>
                                 {relevantChapters.map(c => <option key={c.id} value={c.name}>{(c.name || (c as any).title || "Chương chưa đặt tên").toUpperCase()}</option>)}
                             </select>
+                        </div>
+                        <div className="space-y-1.5">
+                            <label className="text-[10px] font-black text-amber-700 uppercase ml-1 flex items-center justify-between">
+                                <span className="flex items-center gap-1"><Folder size={11} className="text-amber-600"/> Thư mục đề</span>
+                                <button
+                                    type="button"
+                                    onClick={() => setIsCreateFolderModalOpen(true)}
+                                    className="text-[9px] text-blue-600 hover:text-blue-800 font-bold hover:underline"
+                                    title="Tạo thư mục mới"
+                                >
+                                    + Mới
+                                </button>
+                            </label>
+                            <div className="flex items-center gap-1">
+                                {(() => {
+                                    const allFolders = props.folders || [];
+                                    const chapterFolders = props.category 
+                                        ? allFolders.filter(f => matchChapterName(f.chapterName, props.category))
+                                        : [];
+
+                                    return (
+                                        <select 
+                                            className="w-full border-2 border-amber-200 bg-amber-50/50 rounded-xl p-2.5 text-xs font-black text-amber-900 focus:border-amber-400 outline-none cursor-pointer"
+                                            value={props.folderId || ''} 
+                                            onChange={e => {
+                                                const val = e.target.value;
+                                                if (props.setFolderId) props.setFolderId(val);
+                                                if (props.setFolderName) {
+                                                    const fld = allFolders.find(f => f.id === val);
+                                                    props.setFolderName(fld ? fld.name : '');
+                                                }
+                                            }}
+                                        >
+                                            <option value="">📁 Chưa phân thư mục</option>
+                                            
+                                            {chapterFolders.map(f => (
+                                                <option key={f.id} value={f.id}>📁 {f.name}</option>
+                                            ))}
+                                        </select>
+                                    );
+                                })()}
+                            </div>
                         </div>
                         <div className="space-y-1.5">
                             <label className="text-[10px] font-black text-slate-500 uppercase ml-1">Hình thức</label>
@@ -1908,8 +1995,8 @@ export default function QuizEditor(props: QuizEditorProps) {
                                     }
                                 }
                             }}>
-                                <option value="practice">📖 Luyện tập (Xem ngay đáp án)</option>
-                                <option value="test">✍️ Làm bài / Test (Chấm điểm)</option>
+                                <option value="practice">📖 Luyện tập (Xem ngay)</option>
+                                <option value="test">✍️ Làm bài (Chấm điểm)</option>
                             </select>
                         </div>
                         {props.quizType === 'test' && (
@@ -1926,27 +2013,14 @@ export default function QuizEditor(props: QuizEditorProps) {
                                         }
                                     }}
                                 >
-                                    <option value="1">1 lần (Nộp xong ĐÓNG BĂNG)</option>
+                                    <option value="1">1 lần (Khóa sau nộp)</option>
                                     <option value="2">2 lần làm bài</option>
                                     <option value="3">3 lần làm bài</option>
                                     <option value="5">5 lần làm bài</option>
-                                    <option value="0">Không giới hạn số lần</option>
+                                    <option value="0">Không giới hạn</option>
                                 </select>
                             </div>
                         )}
-                        <div className="space-y-1.5">
-                            <label className="text-[10px] font-black text-slate-500 uppercase ml-1">Thứ tự luyện</label>
-                            <input 
-                                type="number" 
-                                min="0"
-                                className="w-full border-2 border-slate-200 rounded-xl p-2.5 text-xs font-black bg-slate-50 focus:border-blue-400 outline-none" 
-                                value={props.orderIndex} 
-                                onChange={e => {
-                                    const val = parseInt(e.target.value);
-                                    props.setOrderIndex(isNaN(val) ? 0 : val);
-                                }} 
-                            />
-                        </div>
                         <div className="space-y-1.5">
                             <label className="text-[10px] font-black text-slate-500 uppercase ml-1">Thời lượng (phút)</label>
                             <input type="number" className="w-full border-2 border-slate-200 rounded-xl p-2.5 text-xs font-black bg-slate-50 focus:border-blue-400 outline-none" value={props.duration} onChange={e => props.setDuration(parseInt(e.target.value))} />
@@ -2717,6 +2791,87 @@ export default function QuizEditor(props: QuizEditorProps) {
                 isOpen={isStorageModalOpen}
                 onClose={() => setIsStorageModalOpen(false)}
             />
+
+            {/* MODAL TẠO NHANH THƯ MỤC CÁ NHÂN */}
+            {isCreateFolderModalOpen && (
+                <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-[3000] flex items-center justify-center p-4">
+                    <div className="bg-white rounded-3xl p-6 w-full max-w-md shadow-2xl border-2 border-slate-100 space-y-5 animate-in fade-in zoom-in-95 duration-200">
+                        <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                            <div className="flex items-center gap-2">
+                                <div className="p-2 bg-amber-50 text-amber-600 rounded-xl">
+                                    <Folder size={20} />
+                                </div>
+                                <h3 className="text-sm font-black text-slate-900 uppercase">Tạo thư mục đề mới</h3>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={() => setIsCreateFolderModalOpen(false)}
+                                className="p-1.5 text-slate-400 hover:text-slate-700 rounded-lg hover:bg-slate-100 transition-colors"
+                            >
+                                <X size={18} />
+                            </button>
+                        </div>
+
+                        <div className="space-y-3">
+                            <div className="space-y-1">
+                                <label className="text-[11px] font-black text-slate-600 uppercase">Tên thư mục</label>
+                                <input
+                                    type="text"
+                                    placeholder="VD: Đề thi thử THPT, Đề kiểm tra 15p, Nhóm A..."
+                                    value={newFolderName}
+                                    onChange={e => setNewFolderName(e.target.value)}
+                                    className="w-full border-2 border-slate-200 rounded-xl p-3 text-xs font-bold text-slate-800 outline-none focus:border-blue-500"
+                                    autoFocus
+                                    onKeyDown={e => {
+                                        if (e.key === 'Enter') handleQuickCreateFolder();
+                                    }}
+                                />
+                            </div>
+
+                            <div className="space-y-1">
+                                <label className="text-[11px] font-black text-slate-600 uppercase">Màu sắc nhận diện</label>
+                                <div className="flex items-center gap-2 pt-1">
+                                    {[
+                                        { id: 'blue', bg: 'bg-blue-500' },
+                                        { id: 'purple', bg: 'bg-purple-500' },
+                                        { id: 'emerald', bg: 'bg-emerald-500' },
+                                        { id: 'amber', bg: 'bg-amber-500' },
+                                        { id: 'rose', bg: 'bg-rose-500' },
+                                        { id: 'indigo', bg: 'bg-indigo-500' },
+                                    ].map(c => (
+                                        <button
+                                            key={c.id}
+                                            type="button"
+                                            onClick={() => setNewFolderColor(c.id)}
+                                            className={`w-7 h-7 rounded-xl ${c.bg} flex items-center justify-center text-white transition-transform ${newFolderColor === c.id ? 'ring-2 ring-offset-2 ring-slate-800 scale-110' : 'opacity-70 hover:opacity-100'}`}
+                                        >
+                                            {newFolderColor === c.id && <Check size={14} />}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="flex items-center justify-end gap-2 pt-2">
+                            <button
+                                type="button"
+                                onClick={() => setIsCreateFolderModalOpen(false)}
+                                className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-black text-xs uppercase rounded-xl transition-all"
+                            >
+                                Hủy
+                            </button>
+                            <button
+                                type="button"
+                                onClick={handleQuickCreateFolder}
+                                disabled={!newFolderName.trim()}
+                                className="px-5 py-2.5 bg-blue-600 hover:bg-black text-white font-black text-xs uppercase rounded-xl transition-all shadow-md disabled:opacity-50"
+                            >
+                                Tạo thư mục & Chọn
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }
