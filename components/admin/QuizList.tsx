@@ -1,11 +1,12 @@
 
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { Quiz, Result, Grade, Chapter, ClassRoom, User } from '../../types';
+import { Quiz, Result, Grade, Chapter, ClassRoom, User, QuizFolder } from '../../types';
 import { 
-  Edit, Trash2, Eye, Users, Filter, FileText, ChevronDown, Link as LinkIcon, 
+  Edit, Trash2, Eye, Users, Filter, FileText, ChevronDown, ChevronRight, ChevronLeft, Link as LinkIcon, 
   EyeOff, ShieldCheck, GraduationCap, Share2, User as UserIcon, Lock, BookOpen,
   Check, X, CheckSquare, Square, Info, Sparkles, Send, Layers, AlertCircle, PauseCircle,
-  Calendar, CalendarDays, CheckCircle2, Clock, Zap, Timer, Loader2, Printer
+  Calendar, CalendarDays, CheckCircle2, Clock, Zap, Timer, Loader2, Printer,
+  Folder, FolderPlus, FolderOpen, MoreVertical, Plus, MoveRight, FolderEdit, RefreshCw
 } from 'lucide-react';
 import { isSameSubject, STANDARD_SUBJECTS, normalizeSubject, getDisplaySubject } from '../../services/subjectUtils';
 import { getCurrentAcademicYear, getQuizAcademicYear, getAcademicYearOptions } from '../../services/academicUtils';
@@ -18,6 +19,11 @@ interface QuizListProps {
     classes?: ClassRoom[];
     currentUser?: User;
     teachers?: User[];
+    folders?: QuizFolder[];
+    onSaveFolder?: (folder: QuizFolder) => Promise<void>;
+    onDeleteFolder?: (folderId: string) => Promise<void>;
+    onMoveQuizToFolder?: (quizId: string, folderId?: string, folderName?: string) => Promise<void>;
+    onBatchMoveQuizzesToFolder?: (quizIds: string[], folderId?: string, folderName?: string) => Promise<void>;
     onEdit: (quiz: Quiz) => void;
     onDelete: (id: string) => void;
     onPreview: (quiz: Quiz) => void;
@@ -84,6 +90,19 @@ export const getQuizStatus = (q: Quiz) => {
     };
 };
 
+export function matchChapterName(folderChapter?: string, filterChapter?: string): boolean {
+    if (!filterChapter || filterChapter === 'all') return true;
+    if (!folderChapter) return false;
+    const clean = (s: string) => s.toLowerCase()
+        .replace(/^chương\s*\d+\s*[:.-]?\s*/i, '')
+        .replace(/ý/g, 'i')
+        .replace(/\s+/g, ' ')
+        .trim();
+    const fNorm = clean(folderChapter);
+    const cNorm = clean(filterChapter);
+    return fNorm === cNorm || fNorm.includes(cNorm) || cNorm.includes(fNorm);
+}
+
 interface QuizCardItemProps {
     quiz: Quiz;
     isMine: boolean;
@@ -91,11 +110,16 @@ interface QuizCardItemProps {
     canManage: boolean;
     creatorSubject?: string;
     classes?: ClassRoom[];
+    folders?: QuizFolder[];
     resultCount: number;
     quizYearOverride?: string;
     updatingYearQuizId: string | null;
     quizShareOverride?: boolean;
     updatingShareQuizId: string | null;
+    isSelected?: boolean;
+    onToggleSelect?: (id: string) => void;
+    onMoveToFolder?: (quizId: string, folderId?: string, folderName?: string) => Promise<void>;
+    onOpenMoveModal?: (quiz: Quiz) => void;
     onPreview: (q: Quiz) => void;
     onEdit: (q: Quiz) => void;
     onDelete: (id: string) => void;
@@ -113,11 +137,16 @@ const QuizCardItem = React.memo(function QuizCardItem({
     canManage,
     creatorSubject,
     classes = [],
+    folders = [],
     resultCount,
     quizYearOverride,
     updatingYearQuizId,
     quizShareOverride,
     updatingShareQuizId,
+    isSelected = false,
+    onToggleSelect,
+    onMoveToFolder,
+    onOpenMoveModal,
     onPreview,
     onEdit,
     onDelete,
@@ -181,14 +210,43 @@ const QuizCardItem = React.memo(function QuizCardItem({
     const effectiveYear = quizYearOverride || q.academicYear || getQuizAcademicYear(q);
     const effectiveIsShared = quizShareOverride !== undefined ? quizShareOverride : Boolean(q.isSharedWithTeachers);
 
+    // Phân loại thư mục: ưu tiên thư mục cùng chương với đề thi
+    const chapterFoldersForQuiz = useMemo(() => {
+        if (!q.category) return folders;
+        return folders.filter(f => matchChapterName(f.chapterName, q.category));
+    }, [folders, q.category]);
+
+    const otherFoldersForQuiz = useMemo(() => {
+        if (!q.category) return [];
+        return folders.filter(f => !matchChapterName(f.chapterName, q.category));
+    }, [folders, q.category]);
+
     return (
         <div 
-            className={`rounded-2xl p-4 sm:p-5 border transition-all flex flex-col md:flex-row gap-4 justify-between items-stretch group relative overflow-hidden border-l-4 sm:border-l-[6px] shadow-sm hover:shadow-md ${cardBg} ${cardBorder}`}
+            className={`rounded-2xl p-4 sm:p-5 border transition-all flex flex-col md:flex-row gap-4 justify-between items-stretch group relative overflow-hidden border-l-4 sm:border-l-[6px] shadow-sm hover:shadow-md ${cardBg} ${cardBorder} ${isSelected ? 'ring-2 ring-blue-500 ring-offset-1 bg-blue-50/20' : ''}`}
         >
             {/* Phía Trái & Giữa: Thông tin, Huy hiệu, Tiêu đề, Niên khóa */}
             <div className="flex-1 flex flex-col justify-between min-w-0 space-y-2.5">
                 {/* Dòng Huy hiệu (Badges) */}
                 <div className="flex items-center gap-1.5 flex-wrap">
+                    {onToggleSelect && canManage && (
+                        <button
+                            type="button"
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                onToggleSelect(q.id);
+                            }}
+                            className={`p-1 rounded-lg border transition-all ${
+                                isSelected 
+                                    ? 'bg-blue-600 border-blue-700 text-white shadow-xs' 
+                                    : 'bg-white/80 border-slate-300 text-slate-400 hover:border-blue-500'
+                            }`}
+                            title={isSelected ? "Bỏ chọn đề thi" : "Chọn đề thi để thao tác hàng loạt (chuyển thư mục)"}
+                        >
+                            {isSelected ? <CheckSquare size={13} /> : <Square size={13} />}
+                        </button>
+                    )}
+
                     <span className={`px-2 py-0.5 rounded-lg text-[9px] font-black uppercase tracking-tight ${q.isPublished ? (isExpired ? 'bg-amber-600 text-white' : (q.isUnlisted ? 'bg-indigo-600 text-white' : 'bg-blue-600 text-white')) : 'bg-slate-300 text-slate-700'}`}>
                         K{q.grade}
                     </span>
@@ -323,6 +381,70 @@ const QuizCardItem = React.memo(function QuizCardItem({
                     {q.durationMinutes ? (
                         <span className="text-slate-600 font-black">⏱️ {q.durationMinutes}p</span>
                     ) : null}
+
+                    {/* Sét nhanh Thư mục cá nhân */}
+                    <div className="flex items-center gap-1 bg-amber-50/90 px-2 py-0.5 rounded-lg border border-amber-200 shadow-2xs">
+                        <Folder size={11} className="text-amber-600 shrink-0"/>
+                        <span 
+                            className={`text-amber-900 font-black text-[9px] truncate max-w-[120px] ${canManage && onOpenMoveModal ? 'cursor-pointer hover:underline' : ''}`}
+                            title={q.folderName || (folders.find(f => f.id === q.folderId)?.name) || 'Chưa vào thư mục - Bấm để chọn thư mục'}
+                            onClick={() => {
+                                if (canManage && onOpenMoveModal) onOpenMoveModal(q);
+                            }}
+                        >
+                            {q.folderName || (folders.find(f => f.id === q.folderId)?.name) || 'Chưa phân thư mục'}
+                        </span>
+                        {canManage && onMoveToFolder && (
+                            <select
+                                className="text-[9px] font-black py-0.5 px-1 bg-white hover:bg-amber-100 border border-amber-300 rounded text-amber-900 outline-none cursor-pointer ml-1"
+                                value={q.folderId || ''}
+                                onChange={(e) => {
+                                    const targetId = e.target.value;
+                                    const targetFld = folders.find(f => f.id === targetId);
+                                    onMoveToFolder(q.id, targetId || undefined, targetFld?.name || undefined);
+                                }}
+                                title="Chuyển đề thi vào Thư mục cá nhân"
+                            >
+                                <option value="">📁 Chưa vào thư mục</option>
+                                {chapterFoldersForQuiz.length > 0 ? (
+                                    <>
+                                        <optgroup label={`Chương: ${q.category || 'Mặc định'}`}>
+                                            {chapterFoldersForQuiz.map(f => (
+                                                <option key={f.id} value={f.id}>
+                                                    📁 {f.name}
+                                                </option>
+                                            ))}
+                                        </optgroup>
+                                        {otherFoldersForQuiz.length > 0 && (
+                                            <optgroup label="Thư mục chương khác">
+                                                {otherFoldersForQuiz.map(f => (
+                                                    <option key={f.id} value={f.id}>
+                                                        📁 {f.name} ({f.chapterName || 'Chung'})
+                                                    </option>
+                                                ))}
+                                            </optgroup>
+                                        )}
+                                    </>
+                                ) : (
+                                    folders.map(f => (
+                                        <option key={f.id} value={f.id}>
+                                            📁 {f.name}
+                                        </option>
+                                    ))
+                                )}
+                            </select>
+                        )}
+                        {canManage && onOpenMoveModal && (
+                            <button
+                                type="button"
+                                onClick={() => onOpenMoveModal(q)}
+                                className="p-0.5 hover:bg-amber-200 rounded text-amber-800 transition-colors cursor-pointer shrink-0"
+                                title="Mở hộp thoại chọn thư mục có lọc theo chương"
+                            >
+                                <FolderOpen size={10} />
+                            </button>
+                        )}
+                    </div>
 
                     {/* Sét nhanh Niên khóa */}
                     <div className="flex items-center gap-1 bg-slate-100/80 px-2 py-0.5 rounded-lg border border-slate-200/70">
@@ -468,6 +590,7 @@ const QuizCardItem = React.memo(function QuizCardItem({
 
 export default function QuizList({ 
     quizzes, results, chapters, classes = [], currentUser, teachers = [],
+    folders = [], onSaveFolder, onDeleteFolder, onMoveQuizToFolder, onBatchMoveQuizzesToFolder,
     onEdit, onDelete, onPreview, onAssignClasses, onToggleShare, onUpdateSchedule,
     qSearch, setQSearch, qGradeFilter, setQGradeFilter,
     qChapterFilter, setQChapterFilter,
@@ -489,6 +612,36 @@ export default function QuizList({
     const setAuthorFilter = propSetAuthorFilter !== undefined ? propSetAuthorFilter : setLocalAuthorFilter;
     const [isLoadingShared, setIsLoadingShared] = useState(false);
 
+    // Personal Folders State with Session Memory
+    const [selectedFolderId, setSelectedFolderIdState] = useState<string>(() => {
+        try {
+            const saved = localStorage.getItem('eduquiz_quiz_list_folder_session');
+            if (saved) return saved;
+        } catch {}
+        return 'all';
+    });
+
+    const setSelectedFolderId = useCallback((id: string) => {
+        setSelectedFolderIdState(id);
+        try {
+            localStorage.setItem('eduquiz_quiz_list_folder_session', id);
+        } catch {}
+    }, []);
+
+    const [selectedQuizIds, setSelectedQuizIds] = useState<string[]>([]);
+    const [isFolderModalOpen, setIsFolderModalOpen] = useState(false);
+    const [editingFolder, setEditingFolder] = useState<QuizFolder | null>(null);
+    const [folderNameInput, setFolderNameInput] = useState('');
+    const [folderChapterInput, setFolderChapterInput] = useState('');
+    const [folderColorInput, setFolderColorInput] = useState('#3b82f6');
+    const [isSavingFolder, setIsSavingFolder] = useState(false);
+
+    // Batch Move Modal State
+    const [isBatchMoveModalOpen, setIsBatchMoveModalOpen] = useState(false);
+    const [isBatchMoving, setIsBatchMoving] = useState(false);
+    const [batchMoveChapterFilter, setBatchMoveChapterFilter] = useState<string>('all');
+    const [batchMoveSubjectFilter, setBatchMoveSubjectFilter] = useState<string>('all');
+
     const handleOpenSharedQuizzes = async () => {
         setAuthorFilter('shared');
         if (onLoadSharedQuizzes) {
@@ -505,6 +658,8 @@ export default function QuizList({
 
     const [quickFilter, setQuickFilter] = useState<QuickFilterType>('all');
     const [localSubjectFilter, setLocalSubjectFilter] = useState<string>('all');
+    const qSubjectFilter = propSubjectFilter !== undefined ? propSubjectFilter : localSubjectFilter;
+    const setQSubjectFilter = propSetSubjectFilter !== undefined ? propSetSubjectFilter : setLocalSubjectFilter;
     const [localAcademicYearFilter, setLocalAcademicYearFilter] = useState<string>(getCurrentAcademicYear());
 
     // Academic Year state & overrides
@@ -519,6 +674,44 @@ export default function QuizList({
     const [quizShareOverrides, setQuizShareOverrides] = useState<Record<string, boolean>>({});
     const [updatingShareQuizId, setUpdatingShareQuizId] = useState<string | null>(null);
     const [shareNotification, setShareNotification] = useState<{ id: string; isShared: boolean } | null>(null);
+
+    // Lọc chương thông minh: phù hợp với CẢ Khối và Môn học được chọn
+    const relevantChapters = useMemo(() => {
+        return chapters.filter(c => {
+            // Lọc theo Khối
+            if (qGradeFilter !== 'all' && String(c.grade) !== String(qGradeFilter)) return false;
+            
+            // Lọc theo Môn học
+            if (isSuperAdmin) {
+                if (qSubjectFilter !== 'all') {
+                    if (c.subject && c.subject.trim()) {
+                        if (!isSameSubject(c.subject, qSubjectFilter)) return false;
+                    } else {
+                        // Chương chưa gán môn: kiểm tra đề thi thuộc chương hoặc fallback môn Vật lí
+                        const hasQuizWithSubj = quizzes.some(q => 
+                            q.category === c.name && (
+                                (q.subject && isSameSubject(q.subject, qSubjectFilter)) ||
+                                (!q.subject && (isSameSubject('Vật lí', qSubjectFilter) || isSameSubject('Vật lý', qSubjectFilter)))
+                            )
+                        );
+                        const isPhysics = isSameSubject('Vật lí', qSubjectFilter) || isSameSubject('Vật lý', qSubjectFilter);
+                        if (!hasQuizWithSubj && !isPhysics) return false;
+                    }
+                }
+            } else if (currentUser?.subject) {
+                if (c.subject && c.subject.trim()) {
+                    if (!isSameSubject(c.subject, currentUser.subject)) return false;
+                }
+            }
+            return true;
+        });
+    }, [chapters, qGradeFilter, qSubjectFilter, isSuperAdmin, currentUser?.subject, quizzes]);
+
+    // Filter personal folders applicable to current teacher
+    const myFolders = useMemo(() => {
+        if (isSuperAdmin) return folders;
+        return folders.filter(f => !f.createdBy || f.createdBy === currentUser?.id);
+    }, [folders, isSuperAdmin, currentUser?.id]);
 
     const handleToggleShare = async (quizId: string, newShareStatus: boolean) => {
         setUpdatingShareQuizId(quizId);
@@ -553,9 +746,151 @@ export default function QuizList({
         }
     };
 
-    // Subject filter state (sync between prop and local state)
-    const qSubjectFilter = propSubjectFilter !== undefined ? propSubjectFilter : localSubjectFilter;
-    const setQSubjectFilter = propSetSubjectFilter !== undefined ? propSetSubjectFilter : setLocalSubjectFilter;
+    // Folder Actions
+    const handleOpenCreateFolder = () => {
+        setEditingFolder(null);
+        setFolderNameInput('');
+        setFolderChapterInput(qChapterFilter !== 'all' ? qChapterFilter : '');
+        setFolderColorInput('#3b82f6');
+        setIsFolderModalOpen(true);
+    };
+
+    const handleOpenEditFolder = (f: QuizFolder, e: React.MouseEvent) => {
+        e.stopPropagation();
+        setEditingFolder(f);
+        setFolderNameInput(f.name);
+        setFolderChapterInput(f.chapterName || '');
+        setFolderColorInput(f.color || '#3b82f6');
+        setIsFolderModalOpen(true);
+    };
+
+    const handleSaveCurrentFolder = async () => {
+        if (!folderNameInput.trim()) {
+            alert("Vui lòng nhập tên thư mục!");
+            return;
+        }
+        setIsSavingFolder(true);
+        try {
+            const trimmedChapter = folderChapterInput.trim();
+            const matchedChapter = relevantChapters.find(c => c.name === trimmedChapter);
+            const folderData: QuizFolder = {
+                id: editingFolder ? editingFolder.id : `folder_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+                name: folderNameInput.trim(),
+                color: folderColorInput,
+                chapterId: matchedChapter ? matchedChapter.id : (editingFolder?.chapterId || undefined),
+                chapterName: trimmedChapter || undefined,
+                grade: qGradeFilter !== 'all' ? (qGradeFilter as Grade) : (editingFolder?.grade || '12'),
+                subject: qSubjectFilter !== 'all' ? qSubjectFilter : (batchMoveSubjectFilter !== 'all' ? batchMoveSubjectFilter : (currentUser?.subject || undefined)),
+                createdBy: editingFolder?.createdBy || currentUser?.id || 'admin',
+                createdByName: currentUser?.fullName || 'Giáo viên',
+                createdAt: editingFolder?.createdAt || new Date().toISOString()
+            };
+            const isNew = !editingFolder;
+            if (onSaveFolder) {
+                await onSaveFolder(folderData);
+            }
+            setIsFolderModalOpen(false);
+            if (isBatchMoveModalOpen && folderData.chapterName) {
+                setBatchMoveChapterFilter(folderData.chapterName);
+            } else if (isNew) {
+                setSelectedFolderId('all');
+            }
+        } catch (err: any) {
+            console.error("Lỗi lưu thư mục:", err);
+            alert("Không thể lưu thư mục: " + (err.message || 'Không rõ lỗi'));
+        } finally {
+            setIsSavingFolder(false);
+        }
+    };
+
+    const handleOpenCreateFolderForChapter = (chapterName: string) => {
+        setEditingFolder(null);
+        setFolderNameInput('');
+        setFolderChapterInput(chapterName !== 'all' ? chapterName : '');
+        setFolderColorInput('#f59e0b');
+        setIsFolderModalOpen(true);
+    };
+
+    const handleDeleteCurrentFolder = async (folderId: string, _folderName: string, e: React.MouseEvent) => {
+        e.stopPropagation();
+        try {
+            if (onDeleteFolder) {
+                await onDeleteFolder(folderId);
+            }
+            if (selectedFolderId === folderId) {
+                setSelectedFolderId('all');
+            }
+        } catch (err: any) {
+            console.error("Lỗi xóa thư mục:", err);
+            alert("Không thể xóa thư mục: " + (err.message || 'Không rõ lỗi'));
+        }
+    };
+
+    const handleToggleSelectQuiz = useCallback((id: string) => {
+        setSelectedQuizIds(prev => 
+            prev.includes(id) ? prev.filter(item => item !== id) : [...prev, id]
+        );
+    }, []);
+
+    const handleOpenBatchMoveModal = useCallback((quizOrQuizIds?: Quiz | string | string[]) => {
+        let targetIds = selectedQuizIds;
+        let singleQuiz: Quiz | undefined;
+
+        if (quizOrQuizIds && typeof quizOrQuizIds === 'object' && !Array.isArray(quizOrQuizIds)) {
+            singleQuiz = quizOrQuizIds as Quiz;
+            targetIds = [singleQuiz.id];
+            setSelectedQuizIds(targetIds);
+        } else if (typeof quizOrQuizIds === 'string') {
+            targetIds = [quizOrQuizIds];
+            setSelectedQuizIds(targetIds);
+            singleQuiz = quizzes.find(q => q.id === quizOrQuizIds);
+        } else if (Array.isArray(quizOrQuizIds)) {
+            targetIds = quizOrQuizIds;
+            setSelectedQuizIds(targetIds);
+        }
+
+        const selQuizzes = singleQuiz ? [singleQuiz] : quizzes.filter(q => targetIds.includes(q.id));
+
+        // 1. Nhận diện Chương: ưu tiên bộ lọc chương đang chọn trên trang, nếu trang là 'all' thì lấy theo chương của đề thi được chọn
+        let initChapter = 'all';
+        if (qChapterFilter !== 'all') {
+            initChapter = qChapterFilter;
+        } else if (selQuizzes.length > 0 && selQuizzes[0]?.category) {
+            initChapter = selQuizzes[0].category;
+        }
+        setBatchMoveChapterFilter(initChapter);
+
+        // 2. Nhận diện Môn học
+        let initSubj = 'all';
+        if (qSubjectFilter !== 'all') {
+            initSubj = qSubjectFilter;
+        } else if (selQuizzes.length > 0 && selQuizzes[0]?.subject) {
+            initSubj = selQuizzes[0].subject;
+        } else if (currentUser?.subject) {
+            initSubj = currentUser.subject;
+        } else {
+            initSubj = 'Vật lí';
+        }
+        setBatchMoveSubjectFilter(initSubj);
+
+        setIsBatchMoveModalOpen(true);
+    }, [selectedQuizIds, quizzes, qChapterFilter, qSubjectFilter, currentUser?.subject]);
+
+    const handleExecuteBatchMove = async (targetFolderId?: string) => {
+        if (!onBatchMoveQuizzesToFolder || selectedQuizIds.length === 0) return;
+        setIsBatchMoving(true);
+        try {
+            const targetFld = targetFolderId ? myFolders.find(f => f.id === targetFolderId) : undefined;
+            await onBatchMoveQuizzesToFolder(selectedQuizIds, targetFolderId, targetFld?.name);
+            setSelectedQuizIds([]);
+            setIsBatchMoveModalOpen(false);
+        } catch (err: any) {
+            console.error("Lỗi chuyển đề vào thư mục hàng loạt:", err);
+            alert("Không thể chuyển thư mục hàng loạt: " + (err.message || 'Không rõ lỗi'));
+        } finally {
+            setIsBatchMoving(false);
+        }
+    };
 
     // Danh sách tất cả môn học có sẵn trong hệ thống (đã chuẩn hóa và khử trùng lặp)
     const availableSubjects = useMemo(() => {
@@ -596,38 +931,6 @@ export default function QuizList({
         if (qSubjectFilter === 'all') return teachers;
         return teachers.filter(t => t.subject && isSameSubject(t.subject, qSubjectFilter));
     }, [teachers, isSuperAdmin, qSubjectFilter]);
-
-    // Lọc chương thông minh: phù hợp với CẢ Khối và Môn học được chọn
-    const relevantChapters = useMemo(() => {
-        return chapters.filter(c => {
-            // Lọc theo Khối
-            if (qGradeFilter !== 'all' && String(c.grade) !== String(qGradeFilter)) return false;
-            
-            // Lọc theo Môn học
-            if (isSuperAdmin) {
-                if (qSubjectFilter !== 'all') {
-                    if (c.subject && c.subject.trim()) {
-                        if (!isSameSubject(c.subject, qSubjectFilter)) return false;
-                    } else {
-                        // Chương chưa gán môn: kiểm tra đề thi thuộc chương hoặc fallback môn Vật lí
-                        const hasQuizWithSubj = quizzes.some(q => 
-                            q.category === c.name && (
-                                (q.subject && isSameSubject(q.subject, qSubjectFilter)) ||
-                                (!q.subject && (isSameSubject('Vật lí', qSubjectFilter) || isSameSubject('Vật lý', qSubjectFilter)))
-                            )
-                        );
-                        const isPhysics = isSameSubject('Vật lí', qSubjectFilter) || isSameSubject('Vật lý', qSubjectFilter);
-                        if (!hasQuizWithSubj && !isPhysics) return false;
-                    }
-                }
-            } else if (currentUser?.subject) {
-                if (c.subject && c.subject.trim()) {
-                    if (!isSameSubject(c.subject, currentUser.subject)) return false;
-                }
-            }
-            return true;
-        });
-    }, [chapters, qGradeFilter, qSubjectFilter, isSuperAdmin, currentUser?.subject, quizzes]);
 
     // Tự động reset bộ lọc Chương khi chương đang chọn không còn nằm trong danh sách chương phù hợp
     useEffect(() => {
@@ -719,6 +1022,93 @@ export default function QuizList({
         });
     }, [quizzes, quizYearOverrides, quizShareOverrides, qAcademicYearFilter, qSubjectFilter, qGradeFilter, qChapterFilter, qSearch, isSuperAdmin, authorFilter, currentUser, teachers]);
 
+    // Thống kê số lượng đề theo từng Thư mục cá nhân
+    const folderCounts = useMemo(() => {
+        const countsMap: Record<string, number> = { all: 0, unassigned: 0 };
+        myFolders.forEach(f => { countsMap[f.id] = 0; });
+        baseFiltered.forEach(q => {
+            countsMap.all++;
+            if (q.folderId && countsMap[q.folderId] !== undefined) {
+                countsMap[q.folderId]++;
+            } else {
+                countsMap.unassigned++;
+            }
+        });
+        return countsMap;
+    }, [baseFiltered, myFolders]);
+
+    // Áp dụng lọc theo Thư mục cá nhân
+    const baseFilteredWithFolder = useMemo(() => {
+        if (selectedFolderId === 'all') return baseFiltered;
+        if (selectedFolderId === 'unassigned') {
+            return baseFiltered.filter(q => !q.folderId || !myFolders.some(f => f.id === q.folderId));
+        }
+        return baseFiltered.filter(q => q.folderId === selectedFolderId);
+    }, [baseFiltered, selectedFolderId, myFolders]);
+
+    // Tự động kiểm tra nếu thư mục đang chọn bị xóa thì quay về 'all'
+    useEffect(() => {
+        if (selectedFolderId !== 'all' && selectedFolderId !== 'unassigned') {
+            const exists = myFolders.some(f => f.id === selectedFolderId);
+            if (!exists) {
+                setSelectedFolderId('all');
+            }
+        }
+    }, [myFolders, selectedFolderId]);
+
+    // Chuẩn hóa so sánh Chương / Chủ đề linh hoạt (hỗ trợ "Vật lí nhiệt" == "Vật lý nhiệt", bỏ tiền tố "Chương 1:")
+    const isMatchingChapter = useCallback((folderChapter?: string, filterChapter?: string) => {
+        return matchChapterName(folderChapter, filterChapter);
+    }, []);
+
+    // Danh sách thư mục phù hợp với Chương đang lọc (hoặc tất cả nếu chọn Tất cả chương)
+    const chapterFolders = useMemo(() => {
+        if (qChapterFilter === 'all') return myFolders;
+        return myFolders.filter(f => isMatchingChapter(f.chapterName, qChapterFilter));
+    }, [myFolders, qChapterFilter, isMatchingChapter]);
+
+    // Thông tin các đề thi được chọn cho hộp thoại chuyển thư mục
+    const selectedQuizzesForModal = useMemo(() => {
+        return quizzes.filter(q => selectedQuizIds.includes(q.id));
+    }, [quizzes, selectedQuizIds]);
+
+    // Danh sách các chương liên quan trong hộp thoại chuyển thư mục
+    const modalRelevantChapters = useMemo(() => {
+        const list = [...relevantChapters];
+        if (batchMoveChapterFilter && batchMoveChapterFilter !== 'all') {
+            const exists = list.some(c => matchChapterName(c.name, batchMoveChapterFilter));
+            if (!exists) {
+                const foundInAll = chapters.find(c => matchChapterName(c.name, batchMoveChapterFilter));
+                if (foundInAll) {
+                    list.unshift(foundInAll);
+                } else {
+                    list.unshift({
+                        id: `modal_chap_${batchMoveChapterFilter}`,
+                        name: batchMoveChapterFilter,
+                        grade: '12',
+                        subject: batchMoveSubjectFilter
+                    } as any);
+                }
+            }
+        }
+        return list;
+    }, [relevantChapters, chapters, batchMoveChapterFilter, batchMoveSubjectFilter]);
+
+    // Thư mục hiển thị trong hộp thoại chuyển thư mục - LỌC THEO CHƯƠNG ĐANG CHỌN (VD: Vật lý Chất khí)
+    const filteredBatchMoveFolders = useMemo(() => {
+        return myFolders.filter(fld => {
+            // 1. Lọc theo Môn học nếu thư mục có gán môn cụ thể
+            if (fld.subject && batchMoveSubjectFilter && batchMoveSubjectFilter !== 'all') {
+                if (!isSameSubject(fld.subject, batchMoveSubjectFilter)) return false;
+            }
+            // 2. Lọc theo Chương đang chọn trong hộp thoại
+            if (batchMoveChapterFilter && batchMoveChapterFilter !== 'all') {
+                return matchChapterName(fld.chapterName, batchMoveChapterFilter);
+            }
+            return true;
+        });
+    }, [myFolders, batchMoveSubjectFilter, batchMoveChapterFilter]);
+
     const myQuizCount = useMemo(() => {
         if (!currentUser) return 0;
         return quizzes.filter(q => {
@@ -759,7 +1149,7 @@ export default function QuizList({
         let byClass = 0;
         let byGrade = 0;
 
-        baseFiltered.forEach(q => {
+        baseFilteredWithFolder.forEach(q => {
             all++;
             const status = getQuizStatus(q);
             if (status.isOpen) open++;
@@ -770,10 +1160,10 @@ export default function QuizList({
         });
 
         return { all, open, draft, expired, byClass, byGrade };
-    }, [baseFiltered]);
+    }, [baseFilteredWithFolder]);
 
     const filtered = useMemo(() => {
-        return baseFiltered.filter(q => {
+        return baseFilteredWithFolder.filter(q => {
             if (quickFilter === 'all') return true;
             const status = getQuizStatus(q);
             if (quickFilter === 'open') return status.isOpen;
@@ -783,7 +1173,7 @@ export default function QuizList({
             if (quickFilter === 'grade') return status.isGradeTargeted;
             return true;
         }).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-    }, [baseFiltered, quickFilter]);
+    }, [baseFilteredWithFolder, quickFilter]);
 
     useEffect(() => {
         setVisibleCount(PAGE_SIZE);
@@ -999,8 +1389,8 @@ export default function QuizList({
                             ))}
                         </select>
 
-                        {/* Dropdown Giáo viên (Tự động lọc theo Môn học) */}
-                        {isSuperAdmin ? (
+                        {/* Dropdown Giáo viên dành cho SuperAdmin */}
+                        {isSuperAdmin && (
                             <select 
                                 className="flex-1 lg:w-48 px-4 py-3 bg-amber-50/50 border border-amber-200 text-amber-900 rounded-xl text-[10px] font-black uppercase outline-none cursor-pointer"
                                 value={authorFilter}
@@ -1017,128 +1407,377 @@ export default function QuizList({
                                     ))}
                                 </optgroup>
                             </select>
-                        ) : (
+                        )}
+
+                        {/* Nút Xem Đề của tôi / Đề chia sẻ (Dành cho Giáo viên) */}
+                        {!isSuperAdmin && (
                             <div className="flex items-center gap-1.5 p-1 bg-slate-100 rounded-2xl border border-slate-200 shadow-xs">
                                 <button
                                     type="button"
                                     onClick={() => setAuthorFilter('mine')}
-                                    className={`px-3 py-2 rounded-xl text-[10px] font-black uppercase transition-all flex items-center gap-1.5 ${
+                                    className={`px-3.5 py-2 rounded-xl text-[10px] font-black uppercase transition-all flex items-center gap-1.5 cursor-pointer ${
                                         authorFilter === 'mine'
                                             ? 'bg-blue-600 text-white shadow-sm'
                                             : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
                                     }`}
-                                    title="Mặc định: Chỉ hiển thị các đề thi do bạn tạo"
                                 >
-                                    <FileText size={13} />
-                                    <span>Đề của tôi</span>
-                                    <span className={`px-1.5 py-0.5 rounded-full text-[9px] font-bold ${
-                                        authorFilter === 'mine' ? 'bg-blue-700 text-white' : 'bg-slate-200 text-slate-700'
-                                    }`}>
-                                        {myQuizCount}
-                                    </span>
+                                    <UserIcon size={13} /> Đề của tôi
                                 </button>
                                 <button
                                     type="button"
-                                    onClick={handleOpenSharedQuizzes}
-                                    disabled={isLoadingShared}
-                                    className={`px-3 py-2 rounded-xl text-[10px] font-black uppercase transition-all flex items-center gap-1.5 ${
+                                    onClick={() => setAuthorFilter('shared')}
+                                    className={`px-3.5 py-2 rounded-xl text-[10px] font-black uppercase transition-all flex items-center gap-1.5 cursor-pointer ${
                                         authorFilter === 'shared'
                                             ? 'bg-indigo-600 text-white shadow-sm'
                                             : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
                                     }`}
-                                    title="Đọc tiếp và hiển thị đề các giáo viên khác trong tổ bộ môn chia sẻ"
                                 >
-                                    {isLoadingShared ? <Loader2 size={13} className="animate-spin text-indigo-600" /> : <Share2 size={13} />}
-                                    <span>Đề GV khác chia sẻ</span>
-                                    <span className={`px-1.5 py-0.5 rounded-full text-[9px] font-bold ${
-                                        authorFilter === 'shared' ? 'bg-indigo-700 text-white' : 'bg-slate-200 text-slate-700'
-                                    }`}>
-                                        {sharedQuizCount}
-                                    </span>
+                                    <Share2 size={13} /> Đề chia sẻ
                                 </button>
                             </div>
                         )}
+
+                        {/* Menu Điều Hướng: TẤT CẢ THƯ MỤC / Đề Chưa Phân */}
+                        <div className="flex items-center gap-1.5 p-1 bg-slate-100 rounded-2xl border border-slate-200 shadow-xs">
+                            <button
+                                type="button"
+                                onClick={() => setSelectedFolderId('all')}
+                                className={`px-3.5 py-2 rounded-xl text-[10px] font-black uppercase transition-all flex items-center gap-1.5 cursor-pointer ${
+                                    selectedFolderId === 'all'
+                                        ? 'bg-amber-600 text-white shadow-sm'
+                                        : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
+                                }`}
+                                title="Chỉ hiển thị danh sách tất cả các thư mục đề thi"
+                            >
+                                <Folder size={13} />
+                                <span>Tất cả thư mục</span>
+                                <span className={`px-1.5 py-0.5 rounded-full text-[9px] font-bold ${
+                                    selectedFolderId === 'all' ? 'bg-amber-700 text-white' : 'bg-slate-200 text-slate-700'
+                                }`}>
+                                    {chapterFolders.length}
+                                </span>
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setSelectedFolderId('unassigned')}
+                                className={`px-3.5 py-2 rounded-xl text-[10px] font-black uppercase transition-all flex items-center gap-1.5 cursor-pointer ${
+                                    selectedFolderId === 'unassigned'
+                                        ? 'bg-slate-900 text-white shadow-sm'
+                                        : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
+                                }`}
+                                title="Hiển thị các đề thi chưa được gán vào thư mục nào"
+                            >
+                                <FileText size={13} />
+                                <span>Đề chưa phân</span>
+                                <span className={`px-1.5 py-0.5 rounded-full text-[9px] font-bold ${
+                                    selectedFolderId === 'unassigned' ? 'bg-slate-800 text-white' : 'bg-slate-200 text-slate-700'
+                                }`}>
+                                    {folderCounts.unassigned}
+                                </span>
+                            </button>
+                        </div>
+
+                        {/* Nút Tạo Thư Mục Mới */}
+                        <button
+                            type="button"
+                            onClick={handleOpenCreateFolder}
+                            className="px-3.5 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-[10px] font-black uppercase transition-all shadow-xs flex items-center gap-1.5 cursor-pointer shrink-0"
+                            title="Tạo thư mục mới để gom và phân loại đề thi"
+                        >
+                            <Plus size={13} /> Tạo Thư Mục Mới
+                        </button>
                     </div>
                 </div>
-
-                {/* Quick Filter Pill Sub-bar */}
-                <div className="flex flex-wrap items-center gap-2 pt-3 border-t border-slate-100">
-                    <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 shrink-0 select-none mr-1">
-                        LỌC NHANH:
-                    </span>
-                    
-                    <button
-                        onClick={() => setQuickFilter('all')}
-                        className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-black uppercase transition-all shadow-sm ${
-                            quickFilter === 'all'
-                                ? 'bg-slate-900 text-white shadow-md'
-                                : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-50'
-                        }`}
-                    >
-                        TẤT CẢ ({counts.all})
-                    </button>
-
-                    <button
-                        onClick={() => setQuickFilter('open')}
-                        className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-black uppercase transition-all shadow-sm ${
-                            quickFilter === 'open'
-                                ? 'bg-slate-900 text-white shadow-md'
-                                : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 hover:border-emerald-300'
-                        }`}
-                    >
-                        <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 shrink-0 inline-block"/>
-                        ĐANG MỞ ({counts.open})
-                    </button>
-
-                    <button
-                        onClick={() => setQuickFilter('draft')}
-                        className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-black uppercase transition-all shadow-sm ${
-                            quickFilter === 'draft'
-                                ? 'bg-slate-900 text-white shadow-md'
-                                : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 hover:border-slate-300'
-                        }`}
-                    >
-                        <span className="w-2.5 h-2.5 rounded-full border-2 border-slate-400 bg-white shrink-0 inline-block"/>
-                        BẢN NHÁP ({counts.draft})
-                    </button>
-
-                    <button
-                        onClick={() => setQuickFilter('expired')}
-                        className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-black uppercase transition-all shadow-sm ${
-                            quickFilter === 'expired'
-                                ? 'bg-slate-900 text-white shadow-md'
-                                : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 hover:border-amber-300'
-                        }`}
-                    >
-                        <span className="w-2.5 h-2.5 rounded-full bg-amber-400 shrink-0 inline-block"/>
-                        HẾT HẠN ({counts.expired})
-                    </button>
-
-                    <button
-                        onClick={() => setQuickFilter('class')}
-                        className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-black uppercase transition-all shadow-sm ${
-                            quickFilter === 'class'
-                                ? 'bg-slate-900 text-white shadow-md'
-                                : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 hover:border-indigo-300'
-                        }`}
-                    >
-                        <span className="text-sm leading-none">🏫</span>
-                        THEO LỚP ({counts.byClass})
-                    </button>
-
-                    <button
-                        onClick={() => setQuickFilter('grade')}
-                        className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-black uppercase transition-all shadow-sm ${
-                            quickFilter === 'grade'
-                                ? 'bg-slate-900 text-white shadow-md'
-                                : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 hover:border-sky-300'
-                        }`}
-                    >
-                        <span className="text-sm leading-none">🌐</span>
-                        TOÀN KHỐI ({counts.byGrade})
-                    </button>
-                </div>
             </div>
+
+            {/* Khung Hiển Thị Thư Mục Khi Ở Chế Độ 'Tất Cả Thư Mục' */}
+            {selectedFolderId === 'all' && (
+                <div className="p-4 bg-gradient-to-br from-amber-50/50 via-white to-orange-50/30 border border-amber-200/80 rounded-2xl shadow-xs space-y-3">
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                        <div className="flex items-center gap-2">
+                            <Folder size={18} className="text-amber-600" />
+                            <h3 className="text-xs font-black uppercase text-slate-800 tracking-wider">
+                                {qChapterFilter !== 'all' 
+                                    ? `THƯ MỤC TRONG CHƯƠNG: ${qChapterFilter.toUpperCase()}` 
+                                    : 'DANH MỤC THƯ MỤC ĐỀ THI'}
+                            </h3>
+                            <span className="px-2 py-0.5 bg-amber-100 text-amber-800 rounded-full text-[10px] font-black">
+                                {chapterFolders.length} thư mục
+                            </span>
+                        </div>
+                        <div className="flex items-center gap-2.5 flex-wrap">
+                            <div className="text-[11px] text-amber-700/90 font-semibold items-center gap-1.5 hidden md:flex">
+                                <span>💡 Mẹo:</span>
+                                <span><b>Bấm vào thư mục</b> hoặc bấm <b>"Mở thư mục"</b> để xem danh sách đề thi</span>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={handleOpenCreateFolder}
+                                className="px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-xs font-black uppercase transition-all shadow-xs flex items-center gap-1 cursor-pointer"
+                            >
+                                <Plus size={13} /> Tạo thư mục mới
+                            </button>
+                        </div>
+                    </div>
+
+                    {chapterFolders.length === 0 ? (
+                        <div className="py-6 px-4 bg-white/80 border-2 border-dashed border-amber-200 rounded-2xl text-center space-y-2.5">
+                            <FolderPlus size={28} className="mx-auto text-amber-500" />
+                            <p className="text-xs text-slate-600 font-semibold max-w-md mx-auto">
+                                {qChapterFilter !== 'all' 
+                                    ? `Chưa có thư mục nào được tạo cho chương "${qChapterFilter}". Bạn có thể tạo thư mục để gom các đề thi thuộc chương này.`
+                                    : 'Chưa có thư mục nào trong danh sách. Hãy tạo thư mục đầu tiên để phân loại đề thi.'}
+                            </p>
+                            <button
+                                type="button"
+                                onClick={handleOpenCreateFolder}
+                                className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-black uppercase transition-all inline-flex items-center gap-1.5 cursor-pointer shadow-xs"
+                            >
+                                <Plus size={13} /> {qChapterFilter !== 'all' ? `Tạo thư mục cho chương ${qChapterFilter}` : 'Tạo thư mục mới'}
+                            </button>
+                        </div>
+                    ) : (
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+                            {chapterFolders.map(fld => {
+                                const count = folderCounts[fld.id] || 0;
+                                return (
+                                    <div
+                                        key={fld.id}
+                                        onClick={() => setSelectedFolderId(fld.id)}
+                                        className="group relative p-3.5 bg-white hover:bg-amber-50/40 border-2 border-slate-200 hover:border-amber-400 rounded-2xl transition-all shadow-xs hover:shadow-md cursor-pointer flex flex-col justify-between select-none"
+                                        title="Bấm để mở xem các đề thi trong thư mục này"
+                                    >
+                                        <div>
+                                            <div className="flex items-start justify-between gap-2 mb-2">
+                                                <div 
+                                                    className="w-9 h-9 rounded-xl flex items-center justify-center text-white shadow-xs shrink-0"
+                                                    style={{ backgroundColor: fld.color || '#f59e0b' }}
+                                                >
+                                                    <Folder size={18} />
+                                                </div>
+                                                <div className="flex items-center gap-1 opacity-80 group-hover:opacity-100 transition-opacity">
+                                                    <button
+                                                        type="button"
+                                                        onClick={(e) => handleOpenEditFolder(fld, e)}
+                                                        className="p-1.5 rounded-lg text-slate-400 hover:text-slate-800 hover:bg-slate-100 transition-colors cursor-pointer"
+                                                        title="Sửa thư mục"
+                                                    >
+                                                        <Edit size={13} />
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        onClick={(e) => handleDeleteCurrentFolder(fld.id, fld.name, e)}
+                                                        className="p-1.5 rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50 transition-colors cursor-pointer"
+                                                        title="Xóa thư mục"
+                                                    >
+                                                        <Trash2 size={13} />
+                                                    </button>
+                                                </div>
+                                            </div>
+
+                                            <h4 className="text-sm font-black text-slate-800 line-clamp-1 group-hover:text-amber-700 transition-colors">
+                                                {fld.name}
+                                            </h4>
+
+                                            <div className="mt-1 flex items-center gap-1.5 flex-wrap">
+                                                {fld.chapterName ? (
+                                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-blue-50 text-blue-700 border border-blue-200/60 rounded-md text-[10px] font-bold">
+                                                        <BookOpen size={10} />
+                                                        {fld.chapterName}
+                                                    </span>
+                                                ) : (
+                                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-slate-50 text-slate-600 border border-slate-200/60 rounded-md text-[10px] font-medium">
+                                                        Thư mục chung
+                                                    </span>
+                                                )}
+                                            </div>
+                                        </div>
+
+                                        <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between text-xs">
+                                            <span className="font-bold text-slate-500">
+                                                {count} đề thi
+                                            </span>
+                                            <button
+                                                type="button"
+                                                onClick={() => setSelectedFolderId(fld.id)}
+                                                className="px-2.5 py-1 bg-amber-500 hover:bg-amber-600 text-white rounded-lg text-[10px] font-black uppercase transition-all shadow-xs flex items-center gap-1 cursor-pointer"
+                                            >
+                                                Mở thư mục <ChevronRight size={12} />
+                                            </button>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    )}
+                </div>
+            )}
+
+            {/* Vùng Hiển Thị Đề Thi (Chỉ hiển thị khi mở một Thư mục cụ thể hoặc chọn 'Đề chưa phân') */}
+            {selectedFolderId !== 'all' && (
+                <>
+                    {/* Banner Điều Hướng Khi Đang Trong Thư Mục Cụ Thể */}
+                    <div className="p-4 bg-white border-2 border-amber-300 rounded-2xl shadow-xs flex items-center justify-between gap-4 flex-wrap">
+                        <div className="flex items-center gap-3">
+                            <button
+                                type="button"
+                                onClick={() => setSelectedFolderId('all')}
+                                className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-black uppercase transition-all flex items-center gap-1.5 cursor-pointer shadow-xs"
+                            >
+                                <ChevronLeft size={15} /> Tất cả thư mục
+                            </button>
+                            
+                            <div className="h-6 w-px bg-slate-200 hidden sm:block" />
+
+                            <div className="flex items-center gap-2">
+                                {selectedFolderId === 'unassigned' ? (
+                                    <>
+                                        <FileText size={18} className="text-slate-600" />
+                                        <div>
+                                            <div className="text-xs font-black uppercase text-slate-800">
+                                                Đề thi chưa phân thư mục
+                                            </div>
+                                            <div className="text-[11px] text-slate-500">
+                                                Đang hiển thị {folderCounts.unassigned} đề thi
+                                            </div>
+                                        </div>
+                                    </>
+                                ) : (
+                                    (() => {
+                                        const activeFld = myFolders.find(f => f.id === selectedFolderId);
+                                        return (
+                                            <>
+                                                <div 
+                                                    className="w-7 h-7 rounded-lg flex items-center justify-center text-white shrink-0 shadow-xs"
+                                                    style={{ backgroundColor: activeFld?.color || '#f59e0b' }}
+                                                >
+                                                    <Folder size={15} />
+                                                </div>
+                                                <div>
+                                                    <div className="text-xs font-black uppercase text-slate-800 flex items-center gap-2">
+                                                        <span>{activeFld?.name || 'Thư mục'}</span>
+                                                        {activeFld?.chapterName && (
+                                                            <span className="px-2 py-0.5 bg-blue-50 text-blue-700 border border-blue-200 rounded-md text-[10px] font-bold normal-case">
+                                                                Chương: {activeFld.chapterName}
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                    <div className="text-[11px] text-slate-500">
+                                                        Đang hiển thị {folderCounts[selectedFolderId] || 0} đề thi trong thư mục này
+                                                    </div>
+                                                </div>
+                                            </>
+                                        );
+                                    })()
+                                )}
+                            </div>
+                        </div>
+
+                        {selectedFolderId !== 'unassigned' && (
+                            <div className="flex items-center gap-2">
+                                {(() => {
+                                    const activeFld = myFolders.find(f => f.id === selectedFolderId);
+                                    if (!activeFld) return null;
+                                    return (
+                                        <>
+                                            <button
+                                                type="button"
+                                                onClick={(e) => handleOpenEditFolder(activeFld, e)}
+                                                className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-all flex items-center gap-1 cursor-pointer"
+                                            >
+                                                <Edit size={13} /> Sửa thư mục
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={(e) => handleDeleteCurrentFolder(activeFld.id, activeFld.name, e)}
+                                                className="px-3 py-1.5 bg-red-50 hover:bg-red-100 text-red-600 rounded-xl text-xs font-bold transition-all flex items-center gap-1 cursor-pointer"
+                                            >
+                                                <Trash2 size={13} /> Xóa thư mục
+                                            </button>
+                                        </>
+                                    );
+                                })()}
+                            </div>
+                        )}
+                    </div>
+
+                    {/* Quick Filter Pill Sub-bar */}
+                    <div className="flex flex-wrap items-center gap-2 py-1">
+                        <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 shrink-0 select-none mr-1">
+                            LỌC NHANH:
+                        </span>
+                        
+                        <button
+                            onClick={() => setQuickFilter('all')}
+                            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-black uppercase transition-all shadow-sm ${
+                                quickFilter === 'all'
+                                    ? 'bg-slate-900 text-white shadow-md'
+                                    : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-50'
+                            }`}
+                        >
+                            TẤT CẢ ({counts.all})
+                        </button>
+
+                        <button
+                            onClick={() => setQuickFilter('open')}
+                            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-black uppercase transition-all shadow-sm ${
+                                quickFilter === 'open'
+                                    ? 'bg-slate-900 text-white shadow-md'
+                                    : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 hover:border-emerald-300'
+                            }`}
+                        >
+                            <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 shrink-0 inline-block"/>
+                            ĐANG MỞ ({counts.open})
+                        </button>
+
+                        <button
+                            onClick={() => setQuickFilter('draft')}
+                            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-black uppercase transition-all shadow-sm ${
+                                quickFilter === 'draft'
+                                    ? 'bg-slate-900 text-white shadow-md'
+                                    : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 hover:border-slate-300'
+                            }`}
+                        >
+                            <span className="w-2.5 h-2.5 rounded-full border-2 border-slate-400 bg-white shrink-0 inline-block"/>
+                            BẢN NHÁP ({counts.draft})
+                        </button>
+
+                        <button
+                            onClick={() => setQuickFilter('expired')}
+                            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-black uppercase transition-all shadow-sm ${
+                                quickFilter === 'expired'
+                                    ? 'bg-slate-900 text-white shadow-md'
+                                    : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 hover:border-amber-300'
+                            }`}
+                        >
+                            <span className="w-2.5 h-2.5 rounded-full bg-amber-400 shrink-0 inline-block"/>
+                            HẾT HẠN ({counts.expired})
+                        </button>
+
+                        <button
+                            onClick={() => setQuickFilter('class')}
+                            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-black uppercase transition-all shadow-sm ${
+                                quickFilter === 'class'
+                                    ? 'bg-slate-900 text-white shadow-md'
+                                    : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 hover:border-indigo-300'
+                            }`}
+                        >
+                            <span className="text-sm leading-none">🏫</span>
+                            THEO LỚP ({counts.byClass})
+                        </button>
+
+                        <button
+                            onClick={() => setQuickFilter('grade')}
+                            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-black uppercase transition-all shadow-sm ${
+                                quickFilter === 'grade'
+                                    ? 'bg-slate-900 text-white shadow-md'
+                                    : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 hover:border-sky-300'
+                            }`}
+                        >
+                            <span className="text-sm leading-none">🌐</span>
+                            TOÀN KHỐI ({counts.byGrade})
+                        </button>
+                    </div>
 
             {/* Banner thông báo khi GV đang xem đề được chia sẻ */}
             {!isSuperAdmin && authorFilter === 'shared' && (
@@ -1167,6 +1806,7 @@ export default function QuizList({
                     const creator = teachersMap[q.createdBy || ''];
                     const creatorSubj = creator?.subject;
                     const resCount = resultCountsMap[q.id] || 0;
+                    const isSelected = selectedQuizIds.includes(q.id);
 
                     return (
                         <QuizCardItem
@@ -1177,6 +1817,11 @@ export default function QuizList({
                             canManage={canManage}
                             creatorSubject={creatorSubj}
                             classes={classes}
+                            folders={myFolders}
+                            isSelected={isSelected}
+                            onToggleSelect={handleToggleSelectQuiz}
+                            onMoveToFolder={onMoveQuizToFolder}
+                            onOpenMoveModal={handleOpenBatchMoveModal}
                             resultCount={resCount}
                             quizYearOverride={quizYearOverrides[q.id]}
                             updatingYearQuizId={updatingYearQuizId}
@@ -1207,36 +1852,131 @@ export default function QuizList({
             )}
             
             {filtered.length === 0 && (
-                <div className="py-16 text-center bg-white border border-slate-200 rounded-2xl p-6 shadow-xs">
-                    <p className="text-slate-400 font-black uppercase text-xs tracking-wider">
-                        {authorFilter === 'mine' 
-                            ? `Bạn chưa có đề thi nào cho ${qGradeFilter === 'all' ? 'tất cả khối' : `Khối ${qGradeFilter}`} (Niên học ${qAcademicYearFilter === 'all' ? 'tất cả' : qAcademicYearFilter}).`
-                            : authorFilter === 'shared'
-                            ? `Chưa có giáo viên nào trong bộ môn ${currentUser?.subject || ''} chia sẻ đề thi cho ${qGradeFilter === 'all' ? 'tất cả khối' : `Khối ${qGradeFilter}`}.`
-                            : 'Không tìm thấy đề thi phù hợp với bộ lọc.'
-                        }
-                    </p>
-                    {authorFilter === 'shared' ? (
+                selectedFolderId !== 'all' && selectedFolderId !== 'unassigned' ? (
+                    <div className="py-12 px-6 text-center bg-white border-2 border-dashed border-amber-300 rounded-3xl p-6 shadow-xs space-y-3">
+                        <Folder size={40} className="mx-auto text-amber-400" />
+                        <h4 className="text-sm font-black uppercase text-slate-800">
+                            Thư mục này hiện chưa có đề thi nào
+                        </h4>
+                        <p className="text-xs text-slate-500 max-w-md mx-auto">
+                            Để gán đề vào thư mục: Hãy bấm nút bên dưới để quay lại danh sách đề thi, sau đó nhấn nút <b>"📁 Chuyển thư mục"</b> ở đề thi mong muốn.
+                        </p>
                         <button
                             type="button"
-                            onClick={() => setAuthorFilter('mine')}
-                            className="mt-4 px-4 py-2 bg-blue-600 text-white rounded-xl text-[10px] font-black uppercase shadow-sm hover:bg-slate-900 transition-all"
+                            onClick={() => setSelectedFolderId('all')}
+                            className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-black uppercase shadow-xs transition-all inline-flex items-center gap-1.5 cursor-pointer"
                         >
-                            Quay lại Đề của tôi
+                            <ChevronLeft size={14} /> Quay lại Tất cả thư mục
                         </button>
-                    ) : (
-                        sharedQuizCount > 0 && (
+                    </div>
+                ) : quizzes.length > 0 ? (
+                    <div className="p-6 bg-gradient-to-br from-amber-50/90 via-orange-50/50 to-white border-2 border-amber-300 rounded-3xl shadow-xs space-y-4">
+                        <div className="flex items-start gap-3">
+                            <AlertCircle size={24} className="text-amber-600 shrink-0 mt-0.5" />
+                            <div className="space-y-1.5 flex-1">
+                                <h4 className="text-sm font-black uppercase text-amber-950">
+                                    Không tìm thấy đề thi phù hợp với các bộ lọc hiện tại
+                                </h4>
+                                <p className="text-xs text-amber-800">
+                                    Hệ thống hiện có <b>{quizzes.length} đề thi</b>. Các đề thi có thể đang bị lọc bởi Niên học, Khối, Chương, hoặc Bộ lọc tác giả.
+                                </p>
+                                <div className="flex flex-wrap items-center gap-2 pt-2 text-xs">
+                                    <span className="font-bold text-amber-900">Bộ lọc đang bật:</span>
+                                    {qAcademicYearFilter !== 'all' && (
+                                        <button
+                                            type="button"
+                                            onClick={() => setQAcademicYearFilter('all')}
+                                            className="px-2.5 py-1 bg-white border border-amber-300 text-amber-900 rounded-lg font-bold hover:bg-amber-100 flex items-center gap-1 cursor-pointer"
+                                        >
+                                            📅 Niên học: {qAcademicYearFilter} ✕
+                                        </button>
+                                    )}
+                                    {qGradeFilter !== 'all' && (
+                                        <button
+                                            type="button"
+                                            onClick={() => setQGradeFilter('all')}
+                                            className="px-2.5 py-1 bg-white border border-amber-300 text-amber-900 rounded-lg font-bold hover:bg-amber-100 flex items-center gap-1 cursor-pointer"
+                                        >
+                                            🎓 Khối: {qGradeFilter} ✕
+                                        </button>
+                                    )}
+                                    {qChapterFilter !== 'all' && (
+                                        <button
+                                            type="button"
+                                            onClick={() => setQChapterFilter('all')}
+                                            className="px-2.5 py-1 bg-white border border-amber-300 text-amber-900 rounded-lg font-bold hover:bg-amber-100 flex items-center gap-1 cursor-pointer"
+                                        >
+                                            📖 Chương: {qChapterFilter} ✕
+                                        </button>
+                                    )}
+                                    {authorFilter !== 'all' && (
+                                        <button
+                                            type="button"
+                                            onClick={() => setAuthorFilter('all')}
+                                            className="px-2.5 py-1 bg-white border border-amber-300 text-amber-900 rounded-lg font-bold hover:bg-amber-100 flex items-center gap-1 cursor-pointer"
+                                        >
+                                            👤 {authorFilter === 'mine' ? 'Chỉ đề của tôi' : 'Đề chia sẻ'} ✕
+                                        </button>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="pt-3 border-t border-amber-200/80 flex items-center justify-between flex-wrap gap-2">
+                            <span className="text-xs font-bold text-amber-800">
+                                Bấm nút bên cạnh để xem ngay toàn bộ {quizzes.length} đề thi:
+                            </span>
                             <button
                                 type="button"
-                                onClick={handleOpenSharedQuizzes}
-                                className="mt-4 px-4 py-2 bg-indigo-50 border border-indigo-200 text-indigo-700 rounded-xl text-[10px] font-black uppercase shadow-sm hover:bg-indigo-600 hover:text-white transition-all inline-flex items-center gap-1.5"
+                                onClick={() => {
+                                    setQAcademicYearFilter('all');
+                                    setQGradeFilter('all');
+                                    setQChapterFilter('all');
+                                    setAuthorFilter('all');
+                                    setSelectedFolderId('all');
+                                    setQSearch('');
+                                    setQuickFilter('all');
+                                }}
+                                className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-black uppercase shadow-xs transition-all flex items-center gap-1.5 cursor-pointer"
                             >
-                                <Share2 size={13} />
-                                Xem {sharedQuizCount} đề do GV khác chia sẻ
+                                <RefreshCw size={14} /> Hiển thị toàn bộ {quizzes.length} đề thi
                             </button>
-                        )
-                    )}
-                </div>
+                        </div>
+                    </div>
+                ) : (
+                    <div className="py-16 text-center bg-white border border-slate-200 rounded-2xl p-6 shadow-xs">
+                        <p className="text-slate-400 font-black uppercase text-xs tracking-wider">
+                            {authorFilter === 'mine' 
+                                ? `Bạn chưa có đề thi nào cho ${qGradeFilter === 'all' ? 'tất cả khối' : `Khối ${qGradeFilter}`} (Niên học ${qAcademicYearFilter === 'all' ? 'tất cả' : qAcademicYearFilter}).`
+                                : authorFilter === 'shared'
+                                ? `Chưa có giáo viên nào trong bộ môn ${currentUser?.subject || ''} chia sẻ đề thi cho ${qGradeFilter === 'all' ? 'tất cả khối' : `Khối ${qGradeFilter}`}.`
+                                : 'Không tìm thấy đề thi phù hợp với bộ lọc.'
+                            }
+                        </p>
+                        {authorFilter === 'shared' ? (
+                            <button
+                                type="button"
+                                onClick={() => setAuthorFilter('mine')}
+                                className="mt-4 px-4 py-2 bg-blue-600 text-white rounded-xl text-[10px] font-black uppercase shadow-sm hover:bg-slate-900 transition-all cursor-pointer"
+                            >
+                                Quay lại Đề của tôi
+                            </button>
+                        ) : (
+                            sharedQuizCount > 0 && (
+                                <button
+                                    type="button"
+                                    onClick={handleOpenSharedQuizzes}
+                                    className="mt-4 px-4 py-2 bg-indigo-50 border border-indigo-200 text-indigo-700 rounded-xl text-[10px] font-black uppercase shadow-sm hover:bg-indigo-600 hover:text-white transition-all inline-flex items-center gap-1.5 cursor-pointer"
+                                >
+                                    <Share2 size={13} />
+                                    Xem {sharedQuizCount} đề do GV khác chia sẻ
+                                </button>
+                            )
+                        )}
+                    </div>
+                )
+            )}
+                </>
             )}
 
             {/* Modal Giao đề cho Lớp học */}
@@ -1678,6 +2418,320 @@ export default function QuizList({
                                         <span>Lưu Thời Gian Mở Đề</span>
                                     </>
                                 )}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Thanh tác vụ hàng loạt (Batch Action Floating Bar) */}
+            {selectedQuizIds.length > 0 && (
+                <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-50 bg-slate-900 text-white px-6 py-4 rounded-2xl shadow-2xl border border-slate-700 flex items-center gap-4 animate-in fade-in slide-in-from-bottom-5">
+                    <div className="flex items-center gap-2 pr-4 border-r border-slate-700">
+                        <span className="w-6 h-6 rounded-full bg-blue-600 text-white flex items-center justify-center text-xs font-black">
+                            {selectedQuizIds.length}
+                        </span>
+                        <span className="text-xs font-bold text-slate-200">đề thi được chọn</span>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                        <button
+                            type="button"
+                            onClick={() => handleOpenBatchMoveModal()}
+                            className="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-xs font-black uppercase transition-all shadow-md flex items-center gap-1.5 cursor-pointer"
+                        >
+                            <Folder size={14} /> Chuyển vào thư mục
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => setSelectedQuizIds([])}
+                            className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-xl text-xs font-semibold transition-all cursor-pointer"
+                        >
+                            Bỏ chọn tất cả
+                        </button>
+                    </div>
+                </div>
+            )}
+
+            {/* Modal Tạo / Chỉnh Sửa Thư Mục */}
+            {isFolderModalOpen && (
+                <div className="fixed inset-0 z-[6100] bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+                    <div className="bg-white rounded-3xl shadow-2xl max-w-md w-full overflow-hidden border border-slate-200 animate-in fade-in zoom-in-95">
+                        <div className="p-5 bg-gradient-to-r from-amber-500 to-amber-600 text-white flex items-center justify-between">
+                            <div className="flex items-center gap-2.5">
+                                <Folder size={20} className="text-amber-100" />
+                                <h3 className="text-base font-black uppercase tracking-tight">
+                                    {editingFolder ? 'Chỉnh Sửa Thư Mục' : 'Tạo Thư Mục Mới'}
+                                </h3>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={() => setIsFolderModalOpen(false)}
+                                className="p-1 rounded-full hover:bg-white/20 transition-colors"
+                            >
+                                <X size={18} />
+                            </button>
+                        </div>
+
+                        <div className="p-6 space-y-4">
+                            <div>
+                                <label className="block text-xs font-black uppercase text-slate-700 mb-1.5">
+                                    Tên thư mục <span className="text-red-500">*</span>
+                                </label>
+                                <input
+                                    type="text"
+                                    placeholder="VD: Đề ôn thi HK1, Đề 15 phút 12A1, Đề khảo sát..."
+                                    value={folderNameInput}
+                                    onChange={e => setFolderNameInput(e.target.value)}
+                                    className="w-full px-4 py-3 border border-slate-200 rounded-xl text-sm font-semibold focus:outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20"
+                                    autoFocus
+                                />
+                            </div>
+
+                            <div>
+                                <label className="block text-xs font-black uppercase text-slate-700 mb-1.5">
+                                    Gắn với Chương / Chủ đề (Tùy chọn)
+                                </label>
+                                <select
+                                    value={folderChapterInput}
+                                    onChange={e => setFolderChapterInput(e.target.value)}
+                                    className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20 bg-white"
+                                >
+                                    <option value="">-- Tất cả các chương / Thư mục chung --</option>
+                                    {relevantChapters.map(chap => (
+                                        <option key={chap.id} value={chap.name}>
+                                            Chương: {chap.name} {chap.grade ? `(Khối ${chap.grade})` : ''}
+                                        </option>
+                                    ))}
+                                </select>
+                                <p className="text-[10px] text-slate-400 mt-1">
+                                    Thư mục sẽ được nhóm và hiển thị khi bạn chọn chương tương ứng (VD: Vật lí nhiệt, Vật lý Chất khí...).
+                                </p>
+                            </div>
+
+                            <div>
+                                <label className="block text-xs font-black uppercase text-slate-700 mb-2">
+                                    Màu đại diện
+                                </label>
+                                <div className="flex items-center gap-3">
+                                    {['#3b82f6', '#f59e0b', '#10b981', '#8b5cf6', '#ec4899', '#ef4444', '#64748b'].map(c => (
+                                        <button
+                                            key={c}
+                                            type="button"
+                                            onClick={() => setFolderColorInput(c)}
+                                            style={{ backgroundColor: c }}
+                                            className={`w-7 h-7 rounded-full transition-transform cursor-pointer ${
+                                                folderColorInput === c ? 'scale-125 ring-2 ring-offset-2 ring-slate-800' : 'hover:scale-110'
+                                            }`}
+                                        />
+                                    ))}
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="p-4 bg-slate-50 border-t border-slate-200 flex justify-end gap-2.5">
+                            <button
+                                type="button"
+                                onClick={() => setIsFolderModalOpen(false)}
+                                className="px-4 py-2.5 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-200 transition-colors cursor-pointer"
+                            >
+                                Hủy bỏ
+                            </button>
+                            <button
+                                type="button"
+                                disabled={isSavingFolder}
+                                onClick={handleSaveCurrentFolder}
+                                className="px-6 py-2.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-black uppercase transition-all shadow-md active:scale-95 disabled:opacity-50 cursor-pointer"
+                            >
+                                {isSavingFolder ? 'Đang lưu...' : (editingFolder ? 'Cập nhật' : 'Tạo thư mục')}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Modal Chuyển Đề Vào Thư Mục - Tự động nhận diện và lọc theo Chương đang chọn */}
+            {isBatchMoveModalOpen && (
+                <div className="fixed inset-0 z-[6000] bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+                    <div className="bg-white rounded-3xl shadow-2xl max-w-lg w-full overflow-hidden border border-slate-200 animate-in fade-in zoom-in-95">
+                        {/* Modal Header */}
+                        <div className="p-5 bg-gradient-to-r from-amber-500 to-amber-600 text-white flex items-center justify-between">
+                            <div className="flex items-center gap-2.5">
+                                <Folder size={20} className="text-amber-100" />
+                                <div>
+                                    <h3 className="text-base font-black uppercase tracking-tight">
+                                        Chuyển {selectedQuizIds.length} Đề Vào Thư Mục
+                                    </h3>
+                                    <p className="text-[11px] text-amber-100 font-medium">
+                                        {selectedQuizzesForModal.length === 1 
+                                            ? `Đề: ${selectedQuizzesForModal[0].title}`
+                                            : `Đang thao tác trên ${selectedQuizIds.length} đề thi`}
+                                    </p>
+                                </div>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={() => setIsBatchMoveModalOpen(false)}
+                                className="p-1 rounded-full hover:bg-white/20 transition-colors cursor-pointer"
+                            >
+                                <X size={18} />
+                            </button>
+                        </div>
+
+                        {/* Banner ngữ cảnh Chương & Môn học */}
+                        <div className="bg-amber-50/70 p-3.5 border-b border-amber-200/80 flex flex-col gap-2">
+                            <div className="flex items-center justify-between gap-2 flex-wrap">
+                                <div className="flex items-center gap-1.5 text-xs">
+                                    <span className="font-bold text-slate-700">Chương hiện tại:</span>
+                                    {batchMoveChapterFilter !== 'all' ? (
+                                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-lg bg-amber-200/90 text-amber-950 font-black text-[11px] shadow-2xs">
+                                            📖 {batchMoveChapterFilter}
+                                        </span>
+                                    ) : (
+                                        <span className="inline-flex items-center px-2 py-0.5 rounded-lg bg-slate-200 text-slate-800 font-bold text-[11px]">
+                                            Tất cả chương
+                                        </span>
+                                    )}
+                                </div>
+
+                                {batchMoveChapterFilter !== 'all' && (
+                                    <button
+                                        type="button"
+                                        onClick={() => setBatchMoveChapterFilter('all')}
+                                        className="text-[11px] font-bold text-blue-700 hover:text-blue-900 underline cursor-pointer"
+                                    >
+                                        Xem tất cả ({myFolders.length})
+                                    </button>
+                                )}
+                            </div>
+
+                            {/* Bộ chọn nhanh chương nếu muốn chuyển sang chương khác */}
+                            <div className="flex items-center gap-2">
+                                <span className="text-[11px] text-slate-500 font-medium shrink-0">Lọc theo:</span>
+                                <select
+                                    value={batchMoveChapterFilter}
+                                    onChange={(e) => setBatchMoveChapterFilter(e.target.value)}
+                                    className="w-full text-xs font-semibold py-1.5 px-2.5 bg-white border border-amber-300 rounded-xl text-amber-950 outline-none cursor-pointer focus:ring-2 focus:ring-amber-500/20"
+                                >
+                                    <option value="all">📂 Tất cả thư mục ({myFolders.length})</option>
+                                    {modalRelevantChapters.map(c => (
+                                        <option key={c.id} value={c.name}>
+                                            📖 Chương: {c.name}
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+                        </div>
+
+                        {/* Danh sách Thư mục */}
+                        <div className="p-5 space-y-2.5 max-h-[380px] overflow-y-auto">
+                            {/* Nút: Chưa phân thư mục (Mặc định) */}
+                            <button
+                                type="button"
+                                disabled={isBatchMoving}
+                                onClick={() => handleExecuteBatchMove(undefined)}
+                                className="w-full text-left p-3 border border-slate-200 hover:border-slate-400 hover:bg-slate-50 rounded-2xl flex items-center justify-between transition-all cursor-pointer group shadow-2xs"
+                            >
+                                <div className="flex items-center gap-3">
+                                    <FileText size={18} className="text-slate-400 group-hover:text-slate-700" />
+                                    <div>
+                                        <span className="text-xs font-bold text-slate-700 block">Chưa phân thư mục (Mặc định)</span>
+                                        <span className="text-[10px] text-slate-400">Đưa đề thi ra ngoài khu vực chưa gán thư mục</span>
+                                    </div>
+                                </div>
+                                <ChevronRight size={16} className="text-slate-400 group-hover:translate-x-1 transition-transform" />
+                            </button>
+
+                            {/* Danh sách các thư mục phù hợp với Chương đang lọc */}
+                            {filteredBatchMoveFolders.map(fld => {
+                                const countInFolder = folderCounts[fld.id] || 0;
+                                return (
+                                    <button
+                                        key={fld.id}
+                                        type="button"
+                                        disabled={isBatchMoving}
+                                        onClick={() => handleExecuteBatchMove(fld.id)}
+                                        className="w-full text-left p-3 border border-slate-200 hover:border-amber-400 hover:bg-amber-50/60 rounded-2xl flex items-center justify-between transition-all cursor-pointer group shadow-2xs"
+                                    >
+                                        <div className="flex items-center gap-3 min-w-0">
+                                            <span 
+                                                className="w-3.5 h-3.5 rounded-full shrink-0 shadow-2xs" 
+                                                style={{ backgroundColor: fld.color || '#f59e0b' }} 
+                                            />
+                                            <div className="min-w-0">
+                                                <span className="text-xs font-bold text-slate-800 block truncate group-hover:text-amber-900">
+                                                    {fld.name}
+                                                </span>
+                                                <div className="flex items-center gap-1.5 mt-0.5">
+                                                    {fld.chapterName ? (
+                                                        <span className="text-[9px] font-semibold text-amber-800 bg-amber-100/80 px-1.5 py-0.5 rounded truncate max-w-[200px]">
+                                                            📖 {fld.chapterName}
+                                                        </span>
+                                                    ) : (
+                                                        <span className="text-[9px] font-semibold text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded">
+                                                            Thư mục chung
+                                                        </span>
+                                                    )}
+                                                    <span className="text-[9px] text-slate-400 font-medium">
+                                                        ({countInFolder} đề)
+                                                    </span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <ChevronRight size={16} className="text-slate-400 group-hover:translate-x-1 group-hover:text-amber-600 transition-transform shrink-0 ml-2" />
+                                    </button>
+                                );
+                            })}
+
+                            {/* Trạng thái chưa có thư mục nào trong chương này */}
+                            {filteredBatchMoveFolders.length === 0 && (
+                                <div className="text-center py-7 px-4 bg-slate-50 rounded-2xl border border-dashed border-slate-200 space-y-2.5">
+                                    <FolderPlus size={32} className="mx-auto text-amber-500/80" />
+                                    <div>
+                                        <p className="text-xs font-bold text-slate-800">
+                                            Chưa có thư mục nào trong chương "{batchMoveChapterFilter}"
+                                        </p>
+                                        <p className="text-[11px] text-slate-500 mt-0.5">
+                                            Bạn có thể tạo ngay thư mục mới riêng cho chương này để lưu trữ đề thi.
+                                        </p>
+                                    </div>
+                                    <div className="flex items-center justify-center gap-2 pt-1">
+                                        <button
+                                            type="button"
+                                            onClick={() => handleOpenCreateFolderForChapter(batchMoveChapterFilter)}
+                                            className="px-3.5 py-1.5 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-xs font-black uppercase transition-all shadow-xs cursor-pointer flex items-center gap-1"
+                                        >
+                                            <FolderPlus size={13} /> Tạo thư mục cho chương này
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => setBatchMoveChapterFilter('all')}
+                                            className="px-3 py-1.5 bg-white border border-slate-300 hover:bg-slate-100 text-slate-700 rounded-xl text-xs font-bold transition-all cursor-pointer"
+                                        >
+                                            Xem tất cả thư mục
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Modal Footer */}
+                        <div className="p-4 bg-slate-50 border-t border-slate-200 flex items-center justify-between">
+                            <button
+                                type="button"
+                                onClick={() => handleOpenCreateFolderForChapter(batchMoveChapterFilter !== 'all' ? batchMoveChapterFilter : '')}
+                                className="text-xs font-black uppercase text-amber-700 hover:text-amber-800 flex items-center gap-1.5 px-3 py-2 rounded-xl hover:bg-amber-100/60 transition-colors cursor-pointer"
+                            >
+                                <FolderPlus size={15} />
+                                {batchMoveChapterFilter !== 'all' ? `+ Tạo thư mục (${batchMoveChapterFilter})` : '+ Tạo thư mục mới'}
+                            </button>
+
+                            <button
+                                type="button"
+                                onClick={() => setIsBatchMoveModalOpen(false)}
+                                className="px-4 py-2 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-200 transition-colors cursor-pointer"
+                            >
+                                Hủy bỏ
                             </button>
                         </div>
                     </div>
