@@ -51,6 +51,20 @@ export interface Chapter {
   isSharedWithTeachers?: boolean;
 }
 
+export interface QuizFolder {
+  id: string;
+  name: string; // Tên thư mục riêng của GV (VD: "Đề 15p - 12A1", "Đề thi thử THPT", "Bài tập nâng cao")
+  grade?: Grade;
+  subject?: string;
+  chapterId?: string;
+  chapterName?: string; // Tùy chọn gắn với chương kiến thức (VD: "Vật lí nhiệt" hoặc "Tất cả")
+  createdBy: string; // ID giáo viên sở hữu thư mục
+  createdByName?: string;
+  createdAt: string;
+  color?: string; // Màu sắc badge nhận diện thư mục
+  orderIndex?: number;
+}
+
 export interface SubQuestion {
   id: string;
   text: string;
@@ -107,6 +121,9 @@ export interface Quiz {
   createdBy?: string; // ID của Giáo viên / Admin tạo đề
   createdByName?: string; // Họ tên Giáo viên tạo đề
   isSharedWithTeachers?: boolean; // Cho phép các giáo viên khác xem và khai thác đề thi này
+  // Thư mục cá nhân của Giáo viên
+  folderId?: string; // ID thư mục cá nhân chứa đề thi
+  folderName?: string; // Tên thư mục cá nhân chứa đề thi
   // Phân quyền giao đề theo Lớp học & Niên khóa
   academicYear?: string; // Niên học áp dụng (VD: "2025-2026", "2026-2027")
   targetType?: 'all' | 'classes'; // 'all' (tất cả hs cùng khối) | 'classes' (chỉ giao cho các lớp chỉ định)
