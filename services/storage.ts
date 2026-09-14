@@ -19,7 +19,7 @@ import {
 } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL, getStorage, deleteObject } from 'firebase/storage';
 import app, { db, storage } from './firebase';
-import { User, Quiz, Result, Chapter, Question, ExamSession, PublishedResult, Grade, ClassRoom } from '../types';
+import { User, Quiz, Result, Chapter, QuizFolder, Question, ExamSession, PublishedResult, Grade, ClassRoom } from '../types';
 import { v4 as uuidv4 } from 'uuid';
 import { isSameSubject } from './subjectUtils';
 import { getCurrentAcademicYear, getQuizAcademicYear } from './academicUtils';
@@ -665,6 +665,7 @@ const memoryCache: {
   users?: { data: User[]; expires: number };
   teachers?: { data: User[]; expires: number };
   chapters?: { data: Chapter[]; expires: number };
+  quizFolders?: { data: QuizFolder[]; expires: number };
   classes?: { data: ClassRoom[]; expires: number };
   quizzesMeta?: { data: Quiz[]; expires: number };
   bankQuestions?: { data: Question[]; expires: number };
@@ -687,11 +688,12 @@ export const cacheResultDetails = (results: Result[]): void => {
   }
 };
 
-export const invalidateMemoryCache = (key?: 'users' | 'teachers' | 'chapters' | 'classes' | 'quizzes' | 'bank' | 'results') => {
+export const invalidateMemoryCache = (key?: 'users' | 'teachers' | 'chapters' | 'quizFolders' | 'classes' | 'quizzes' | 'bank' | 'results') => {
   if (!key) {
     delete memoryCache.users;
     delete memoryCache.teachers;
     delete memoryCache.chapters;
+    delete memoryCache.quizFolders;
     delete memoryCache.classes;
     delete memoryCache.quizzesMeta;
     delete memoryCache.bankQuestions;
@@ -700,6 +702,7 @@ export const invalidateMemoryCache = (key?: 'users' | 'teachers' | 'chapters' | 
     try {
       localStorage.removeItem('eduquiz_users_cache');
       localStorage.removeItem('eduquiz_quizzes_meta_cache');
+      localStorage.removeItem('eduquiz_quiz_folders_cache');
     } catch {}
   } else if (key === 'users') {
     delete memoryCache.users;
@@ -710,6 +713,11 @@ export const invalidateMemoryCache = (key?: 'users' | 'teachers' | 'chapters' | 
     delete memoryCache.teachers;
   } else if (key === 'chapters') {
     delete memoryCache.chapters;
+  } else if (key === 'quizFolders') {
+    delete memoryCache.quizFolders;
+    try {
+      localStorage.removeItem('eduquiz_quiz_folders_cache');
+    } catch {}
   } else if (key === 'classes') {
     delete memoryCache.classes;
   } else if (key === 'quizzes') {
@@ -1005,6 +1013,35 @@ export const changePassword = async (userId: string, newPassword: string): Promi
 };
 
 // --- Quizzes ---
+export const applyFolderAssignments = (quizzesList: Quiz[]): Quiz[] => {
+  if (!Array.isArray(quizzesList) || quizzesList.length === 0) return quizzesList || [];
+  const assignments = getStoredFolderAssignments();
+  return quizzesList.map(q => {
+    const qKey = String(q.id);
+    const assigned = assignments[qKey] || assignments[q.id];
+    if (assigned && assigned.folderId) {
+      return {
+        ...q,
+        folderId: assigned.folderId,
+        folderName: assigned.folderName || q.folderName
+      };
+    }
+    // Nếu trong assignments được đánh dấu rõ ràng là bỏ khỏi thư mục (unassigned)
+    if (assigned && assigned.folderId === '') {
+      return {
+        ...q,
+        folderId: undefined,
+        folderName: undefined
+      };
+    }
+    // Nếu trong DB đã có folderId hợp lệ nhưng chưa có trong local assignments, đồng bộ luôn
+    if (q.folderId) {
+      saveStoredFolderAssignment(q.id, q.folderId, q.folderName);
+    }
+    return q;
+  });
+};
+
 export const getQuizzesMetadata = async (
   grade?: Grade, 
   academicYear?: string, 
@@ -1012,6 +1049,7 @@ export const getQuizzesMetadata = async (
 ): Promise<Quiz[]> => {
   if (isSupabasePrimary()) {
     let list = await supabaseDb.getQuizzesMetadata(grade);
+    list = applyFolderAssignments(list);
     if (academicYear && academicYear !== 'all') {
       list = list.filter(q => getQuizAcademicYear(q) === academicYear);
     }
@@ -1019,7 +1057,7 @@ export const getQuizzesMetadata = async (
   }
   const now = Date.now();
   if (!forceRefresh && memoryCache.quizzesMeta && memoryCache.quizzesMeta.expires > now) {
-    let cached = memoryCache.quizzesMeta.data;
+    let cached = applyFolderAssignments(memoryCache.quizzesMeta.data);
     if (grade && grade !== 'all') {
       cached = cached.filter(q => q.grade === grade || q.grade === 'all');
     }
@@ -1033,7 +1071,7 @@ export const getQuizzesMetadata = async (
     try {
       const local = localStorage.getItem('eduquiz_quizzes_meta_cache');
       if (local) {
-        let parsed: Quiz[] = JSON.parse(local);
+        let parsed: Quiz[] = applyFolderAssignments(JSON.parse(local));
         if (grade && grade !== 'all') {
           parsed = parsed.filter(q => q.grade === grade || q.grade === 'all');
         }
@@ -1087,6 +1125,8 @@ export const getQuizzesMetadata = async (
         showResultAnswers: row.showResultAnswers !== undefined ? Boolean(row.showResultAnswers) : (quiz.showResultAnswers !== undefined ? Boolean(quiz.showResultAnswers) : true),
         disablePractice: row.disablePractice !== undefined ? Boolean(row.disablePractice) : Boolean(quiz.disablePractice),
         category: row.category || quiz.category || '',
+        folderId: row.folderId || (row.data && (row.data as any).folderId) || quiz.folderId || '',
+        folderName: row.folderName || (row.data && (row.data as any).folderName) || quiz.folderName || '',
         orderIndex: row.orderIndex !== undefined ? row.orderIndex : (quiz.orderIndex || 0),
         createdBy: row.createdBy || quiz.createdBy || '',
         createdByName: row.createdByName || quiz.createdByName || '',
@@ -1108,12 +1148,13 @@ export const getQuizzesMetadata = async (
       return tB - tA;
     });
 
-    memoryCache.quizzesMeta = { data: quizzes, expires: now + 5 * 60 * 1000 };
+    const finalQuizzes = applyFolderAssignments(quizzes);
+    memoryCache.quizzesMeta = { data: finalQuizzes, expires: now + 5 * 60 * 1000 };
     try {
-      localStorage.setItem('eduquiz_quizzes_meta_cache', JSON.stringify(quizzes));
+      localStorage.setItem('eduquiz_quizzes_meta_cache', JSON.stringify(finalQuizzes));
     } catch {}
 
-    let filtered = quizzes;
+    let filtered = finalQuizzes;
     if (grade && grade !== 'all') {
       filtered = filtered.filter(q => q.grade === grade || q.grade === 'all');
     }
@@ -1126,7 +1167,7 @@ export const getQuizzesMetadata = async (
     try {
       const local = localStorage.getItem('eduquiz_quizzes_meta_cache');
       if (local) {
-        let parsed: Quiz[] = JSON.parse(local);
+        let parsed: Quiz[] = applyFolderAssignments(JSON.parse(local));
         if (grade && grade !== 'all') {
           parsed = parsed.filter(q => q.grade === grade || q.grade === 'all');
         }
@@ -1156,7 +1197,8 @@ export const getQuizzesMetadataPage = async (
 
 export const getQuizzes = async (grade?: Grade): Promise<Quiz[]> => {
   if (isSupabasePrimary()) {
-    return await supabaseDb.getQuizzes(grade);
+    const supaList = await supabaseDb.getQuizzes(grade);
+    return applyFolderAssignments(supaList);
   }
   if (!db) return [];
   try {
@@ -1167,7 +1209,7 @@ export const getQuizzes = async (grade?: Grade): Promise<Quiz[]> => {
     }
     const snapshot = await getDocs(q);
     trackFirestoreRead('quizzes', snapshot.docs.length);
-    return snapshot.docs.map(d => {
+    const mapped = snapshot.docs.map(d => {
       const row = d.data();
       const quiz = (row.data as Quiz) || (row as Quiz);
       let qs: Question[] = [];
@@ -1187,6 +1229,7 @@ export const getQuizzes = async (grade?: Grade): Promise<Quiz[]> => {
         academicYear: row.academicYear || quiz.academicYear || getQuizAcademicYear(quiz)
       };
     });
+    return applyFolderAssignments(mapped);
   } catch (e) {
     return [];
   }
@@ -1288,6 +1331,8 @@ export const getQuizById = async (id: string, forceRefresh: boolean = false): Pr
       showResultAnswers: data.showResultAnswers !== undefined ? Boolean(data.showResultAnswers) : (quiz.showResultAnswers !== undefined ? Boolean(quiz.showResultAnswers) : true),
       disablePractice: data.disablePractice !== undefined ? Boolean(data.disablePractice) : Boolean(quiz.disablePractice),
       category: data.category || quiz.category || '',
+      folderId: data.folderId || quiz.folderId || undefined,
+      folderName: data.folderName || quiz.folderName || undefined,
       orderIndex: data.orderIndex !== undefined ? data.orderIndex : (quiz.orderIndex || 0),
       createdBy: data.createdBy || quiz.createdBy || '',
       createdByName: data.createdByName || quiz.createdByName || '',
@@ -1459,6 +1504,8 @@ export const saveQuizToFirestore = async (enrichedQuiz: Quiz): Promise<void> => 
     grade: enrichedQuiz.grade || '12',
     type: enrichedQuiz.type || 'test',
     category: enrichedQuiz.category || '',
+    folderId: enrichedQuiz.folderId || '',
+    folderName: enrichedQuiz.folderName || '',
     subject: enrichedQuiz.subject || '',
     academicYear: effectiveYear,
     isPublished: enrichedQuiz.isPublished ?? false,
@@ -1529,6 +1576,10 @@ export const saveQuiz = async (quiz: Quiz): Promise<void> => {
     questionCount: qList.length 
   };
 
+  if (enrichedQuiz.folderId) {
+    saveStoredFolderAssignment(enrichedQuiz.id, enrichedQuiz.folderId, enrichedQuiz.folderName);
+  }
+
   if (isSupabasePrimary()) {
     const res = await supabaseDb.saveQuiz(enrichedQuiz);
     if (memoryCache.quizDetails) memoryCache.quizDetails.delete(enrichedQuiz.id);
@@ -1547,6 +1598,9 @@ export const saveQuiz = async (quiz: Quiz): Promise<void> => {
 };
 
 export const updateQuiz = async (enrichedQuiz: Quiz): Promise<void> => {
+  if (enrichedQuiz.folderId !== undefined) {
+    saveStoredFolderAssignment(enrichedQuiz.id, enrichedQuiz.folderId, enrichedQuiz.folderName);
+  }
   if (isSupabasePrimary()) {
     return await saveQuiz(enrichedQuiz);
   }
@@ -1572,6 +1626,8 @@ export const updateQuiz = async (enrichedQuiz: Quiz): Promise<void> => {
     grade: quiz.grade || '12',
     type: quiz.type || 'test',
     category: quiz.category || '',
+    folderId: quiz.folderId || '',
+    folderName: quiz.folderName || '',
     subject: quiz.subject || '',
     academicYear: effectiveYear,
     isPublished: quiz.isPublished ?? false,
@@ -1997,6 +2053,265 @@ export const deleteChaptersBatch = async (ids: string[]): Promise<void> => {
     return;
   }
   return await deleteChaptersBatchFromFirestore(ids);
+};
+
+// --- Quiz Folders (Thư mục lưu trữ đề thi cá nhân của từng Giáo viên) ---
+export const getQuizFolders = async (teacherId?: string, forceRefresh: boolean = false): Promise<QuizFolder[]> => {
+  const now = Date.now();
+  if (!forceRefresh && memoryCache.quizFolders && memoryCache.quizFolders.expires > now) {
+    let list = memoryCache.quizFolders.data;
+    if (teacherId && teacherId !== 'all') {
+      list = list.filter(f => f.createdBy === teacherId);
+    }
+    return list;
+  }
+
+  let folders: QuizFolder[] = [];
+
+  if (isSupabasePrimary()) {
+    try {
+      const supaFolders = await supabaseDb.getQuizFolders(teacherId);
+      if (supaFolders && supaFolders.length > 0) {
+        folders = supaFolders;
+      }
+    } catch (e) {
+      console.warn("Đọc quiz_folders từ Supabase lỗi (dùng fallback):", e);
+    }
+  }
+
+  if (folders.length === 0 && db) {
+    try {
+      const qRef = collection(db, 'quiz_folders');
+      const snap = await getDocs(qRef);
+      trackFirestoreRead('quiz_folders', snap.docs.length);
+      folders = snap.docs.map(d => {
+        const row = d.data();
+        const parsed = (row.data as QuizFolder) || ({ ...row, id: d.id } as QuizFolder);
+        return {
+          ...parsed,
+          id: d.id,
+          name: row.name || parsed.name || 'Thư mục',
+          createdBy: row.createdBy || parsed.createdBy || '',
+          createdByName: row.createdByName || parsed.createdByName || '',
+          chapterId: row.chapterId || parsed.chapterId || '',
+          chapterName: row.chapterName || parsed.chapterName || '',
+          grade: (row.grade || parsed.grade || '12') as Grade,
+          subject: row.subject || parsed.subject || '',
+          color: row.color || parsed.color || '#3b82f6',
+          orderIndex: row.orderIndex ?? parsed.orderIndex ?? 0,
+          createdAt: row.createdAt || parsed.createdAt || new Date().toISOString()
+        };
+      });
+    } catch (e) {
+      console.warn("Lỗi đọc quiz_folders từ Firestore:", e);
+    }
+  }
+
+  if (folders.length === 0) {
+    try {
+      const local = localStorage.getItem('eduquiz_quiz_folders_cache');
+      if (local) {
+        folders = JSON.parse(local);
+      }
+    } catch {}
+  }
+
+  folders.sort((a, b) => (a.orderIndex || 0) - (b.orderIndex || 0) || new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+  memoryCache.quizFolders = { data: folders, expires: now + 5 * 60 * 1000 };
+  try {
+    localStorage.setItem('eduquiz_quiz_folders_cache', JSON.stringify(folders));
+  } catch {}
+
+  if (teacherId && teacherId !== 'all') {
+    return folders.filter(f => f.createdBy === teacherId);
+  }
+  return folders;
+};
+
+export const saveQuizFolder = async (folder: QuizFolder): Promise<void> => {
+  invalidateMemoryCache('quizFolders');
+  const now = new Date().toISOString();
+  const payload: QuizFolder = {
+    ...folder,
+    id: folder.id || uuidv4(),
+    name: folder.name.trim(),
+    createdAt: folder.createdAt || now,
+    color: folder.color || '#3b82f6'
+  };
+
+  // Cập nhật local storage cache ngay lập tức
+  try {
+    let list: QuizFolder[] = [];
+    const local = localStorage.getItem('eduquiz_quiz_folders_cache');
+    if (local) list = JSON.parse(local);
+    const idx = list.findIndex(f => f.id === payload.id);
+    if (idx >= 0) list[idx] = payload;
+    else list.push(payload);
+    localStorage.setItem('eduquiz_quiz_folders_cache', JSON.stringify(list));
+  } catch {}
+
+  if (isSupabasePrimary()) {
+    try {
+      await supabaseDb.saveQuizFolder(payload);
+    } catch (e) {
+      console.warn("Lưu quiz_folder Supabase (fallback):", e);
+    }
+  }
+
+  if (db) {
+    try {
+      await setDoc(doc(db, 'quiz_folders', payload.id), cleanUndefined({
+        ...payload,
+        data: cleanUndefined(payload)
+      }), { merge: true });
+      trackFirestoreWrite('quiz_folders', 1);
+    } catch (e) {
+      console.warn("Lưu quiz_folder Firestore:", e);
+    }
+  }
+};
+
+const QUIZ_FOLDER_ASSIGNMENTS_KEY = 'eduquiz_quiz_folder_assignments';
+
+export const getStoredFolderAssignments = (): Record<string, { folderId: string; folderName: string }> => {
+  try {
+    const raw = localStorage.getItem(QUIZ_FOLDER_ASSIGNMENTS_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+};
+
+export const saveStoredFolderAssignment = (quizId: string, folderId?: string, folderName?: string) => {
+  try {
+    const map = getStoredFolderAssignments();
+    const strId = String(quizId);
+    if (folderId) {
+      map[strId] = { folderId, folderName: folderName || '' };
+      map[quizId] = { folderId, folderName: folderName || '' };
+    } else {
+      delete map[strId];
+      delete map[quizId];
+    }
+    localStorage.setItem(QUIZ_FOLDER_ASSIGNMENTS_KEY, JSON.stringify(map));
+  } catch {}
+};
+
+export const unlinkStoredFolderAssignmentForFolder = (folderId: string) => {
+  try {
+    const map = getStoredFolderAssignments();
+    let changed = false;
+    for (const qId of Object.keys(map)) {
+      if (map[qId]?.folderId === folderId) {
+        delete map[qId];
+        changed = true;
+      }
+    }
+    if (changed) {
+      localStorage.setItem(QUIZ_FOLDER_ASSIGNMENTS_KEY, JSON.stringify(map));
+    }
+  } catch {}
+};
+
+export const deleteQuizFolder = async (folderId: string): Promise<void> => {
+  invalidateMemoryCache('quizFolders');
+  invalidateMemoryCache('quizzes');
+  unlinkStoredFolderAssignmentForFolder(folderId);
+
+  try {
+    let list: QuizFolder[] = [];
+    const local = localStorage.getItem('eduquiz_quiz_folders_cache');
+    if (local) list = JSON.parse(local);
+    const updated = list.filter(f => f.id !== folderId);
+    localStorage.setItem('eduquiz_quiz_folders_cache', JSON.stringify(updated));
+  } catch {}
+
+  if (isSupabasePrimary()) {
+    try {
+      await supabaseDb.deleteQuizFolder(folderId);
+    } catch (e) {
+      console.warn("Xóa quiz_folder Supabase (fallback):", e);
+    }
+  }
+
+  if (db) {
+    try {
+      await deleteDoc(doc(db, 'quiz_folders', folderId));
+      trackFirestoreDelete('quiz_folders', 1);
+    } catch (e) {
+      console.warn("Xóa quiz_folder Firestore:", e);
+    }
+  }
+
+  // Cập nhật cache của quizzes gỡ bỏ folderId
+  if (memoryCache.quizzesMeta?.data) {
+    memoryCache.quizzesMeta.data = memoryCache.quizzesMeta.data.map(q => 
+      q.folderId === folderId ? { ...q, folderId: undefined, folderName: undefined } : q
+    );
+    try {
+      localStorage.setItem('eduquiz_quizzes_meta_cache', JSON.stringify(memoryCache.quizzesMeta.data));
+    } catch {}
+  }
+};
+
+export const moveQuizToFolder = async (quizId: string, folderId?: string, folderName?: string): Promise<void> => {
+  // 1. Lưu ngay vào LocalStorage assignments
+  saveStoredFolderAssignment(quizId, folderId, folderName);
+
+  // 2. Cập nhật Memory Cache và LocalStorage quizzes meta cache trực tiếp
+  if (memoryCache.quizzesMeta?.data) {
+    memoryCache.quizzesMeta.data = memoryCache.quizzesMeta.data.map(q => 
+      q.id === quizId ? { ...q, folderId: folderId || undefined, folderName: folderName || undefined } : q
+    );
+    try {
+      localStorage.setItem('eduquiz_quizzes_meta_cache', JSON.stringify(memoryCache.quizzesMeta.data));
+    } catch {}
+  } else {
+    try {
+      const raw = localStorage.getItem('eduquiz_quizzes_meta_cache');
+      if (raw) {
+        const list: Quiz[] = JSON.parse(raw);
+        const updated = list.map(q => 
+          q.id === quizId ? { ...q, folderId: folderId || undefined, folderName: folderName || undefined } : q
+        );
+        localStorage.setItem('eduquiz_quizzes_meta_cache', JSON.stringify(updated));
+      }
+    } catch {}
+  }
+
+  // 3. Cập nhật Supabase
+  if (isSupabasePrimary()) {
+    try {
+      await supabaseDb.moveQuizToFolder(quizId, folderId, folderName);
+    } catch (e) {
+      console.warn("Chuyển thư mục trên Supabase lỗi (fallback):", e);
+    }
+  }
+
+  // 4. Cập nhật Firestore
+  if (db) {
+    try {
+      const quizRef = doc(db, 'quizzes', quizId);
+      await updateDoc(quizRef, {
+        folderId: folderId || '',
+        folderName: folderName || '',
+        'data.folderId': folderId || '',
+        'data.folderName': folderName || '',
+        updatedAt: new Date().toISOString()
+      });
+      trackFirestoreWrite('quizzes', 1);
+    } catch (e) {
+      console.warn("Chuyển thư mục trên Firestore:", e);
+    }
+  }
+
+  if (memoryCache.quizDetails?.has(quizId)) {
+    const cached = memoryCache.quizDetails.get(quizId)!;
+    memoryCache.quizDetails.set(quizId, {
+      ...cached,
+      data: { ...cached.data, folderId: folderId || '', folderName: folderName || '' }
+    });
+  }
 };
 
 // --- Classroom & Academic Year Management ---
