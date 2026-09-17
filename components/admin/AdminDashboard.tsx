@@ -30,7 +30,7 @@ import {
   LayoutDashboard, Users, BarChart3, ShieldAlert, Sparkles, FolderTree, 
   Plus, Database, Loader2, X, RefreshCw, AlertTriangle, FileUp, DatabaseZap, GraduationCap,
   ShieldCheck, UserCheck, Key, Eye, EyeOff, Check, BookOpen, Server, HardDrive,
-  ChevronUp, ChevronDown, Cloud
+  ChevronUp, ChevronDown, Cloud, Zap
 } from 'lucide-react';
 
 import QuizList from './QuizList';
@@ -634,6 +634,8 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
   const [previewQuiz, setPreviewQuiz] = useState<Quiz | null>(null);
   const [isBankOpen, setIsBankOpen] = useState(false);
   const [isBankLoading, setIsBankLoading] = useState(false);
+  const [isSyncModalOpen, setIsSyncModalOpen] = useState(false);
+  const [syncForceAll, setSyncForceAll] = useState(false);
 
   const loadBankDataIfNeeded = useCallback(async (targetSub?: string, targetG?: string) => {
     if (!isDatabaseConnected()) return;
@@ -1006,35 +1008,40 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
     }
   };
 
-  const handleSyncBank = async () => {
+  const handleSyncBank = () => {
     if (!isSuperAdmin) {
       showAlert("Không có quyền", "Chức năng đồng bộ Ngân hàng câu hỏi chỉ dành riêng cho Quản trị viên cấp cao (Super Admin).", "warning");
       return;
     }
+    setSyncForceAll(false);
+    setIsSyncModalOpen(true);
+  };
+
+  const handleExecuteSyncBank = async () => {
+    setIsSyncModalOpen(false);
+    setIsSyncing(true);
     const targetSubject = bSubjectFilter;
     const isSubjectSpecific = targetSubject && targetSubject !== 'all';
     const subjectLabel = isSubjectSpecific ? `Môn ${targetSubject}` : 'Tất cả các môn';
 
-    showConfirm(
-      `Cập nhật từ Đề thi vào Ngân hàng (${subjectLabel})`,
-      `Hệ thống sẽ quét các câu hỏi thuộc ${subjectLabel} trong tất cả đề thi và đồng bộ vào Ngân hàng. Thuật toán thông minh sẽ tự động cập nhật thông tin và ngăn chặn 100% việc tạo câu trùng lặp. Bạn có muốn thực hiện?`,
-      async () => {
-        setIsSyncing(true);
-        try {
-          const stats = await syncQuizzesToBank(targetSubject);
-          let detailMsg = `Đã quét ${stats.totalScanned} lượt câu hỏi (${subjectLabel}):\n• Thêm mới vào Ngân hàng: ${stats.added} câu\n• Cập nhật thông tin: ${stats.updated} câu\n• Đã trùng khớp & giữ nguyên: ${stats.skippedDuplicates} lượt`;
-          if (stats.added === 0 && stats.updated === 0) {
-            detailMsg += `\n\n✅ Toàn bộ câu hỏi đã có sẵn và đồng bộ đầy đủ trong Ngân hàng, không phát sinh bản sao trùng lặp!`;
-          }
-          showAlert("Đồng bộ thành công", detailMsg, "success");
-          await loadTabData('bank');
-        } catch (e: any) {
-          showAlert("Lỗi đồng bộ", "Lỗi khi đồng bộ Ngân hàng: " + (e.message || "Lỗi không xác định"), "error");
-        } finally {
-          setIsSyncing(false);
-        }
+    try {
+      const stats = await syncQuizzesToBank(targetSubject, { forceAll: syncForceAll });
+      let detailMsg = `Đã quét ${stats.scannedQuizzes}/${stats.totalQuizzes} đề thi (${stats.totalScanned} lượt câu hỏi) - ${subjectLabel}:\n• Thêm mới vào Ngân hàng: ${stats.added} câu\n• Cập nhật thông tin: ${stats.updated} câu\n• Đã trùng khớp & giữ nguyên: ${stats.skippedDuplicates} lượt`;
+      
+      if (stats.skippedQuizzes > 0) {
+        detailMsg += `\n• Bỏ qua ${stats.skippedQuizzes} đề thi đã đồng bộ hoàn tất trước đó (Quét thông minh).`;
       }
-    );
+
+      if (stats.added === 0 && stats.updated === 0) {
+        detailMsg += `\n\n✅ Toàn bộ câu hỏi đã có sẵn và đồng bộ đầy đủ trong Ngân hàng, không phát sinh bản sao trùng lặp!`;
+      }
+      showAlert("Đồng bộ thành công", detailMsg, "success");
+      await loadTabData('bank');
+    } catch (e: any) {
+      showAlert("Lỗi đồng bộ", "Lỗi khi đồng bộ Ngân hàng: " + (e.message || "Lỗi không xác định"), "error");
+    } finally {
+      setIsSyncing(false);
+    }
   };
 
   const handleDeduplicateBank = async () => {
@@ -2545,6 +2552,115 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
       />
 
       {/* Alert and Confirmation Modal Overlay */}
+      {/* Modal Cấu hình Quét & Đồng bộ Đề thi vào Ngân hàng */}
+      {isSyncModalOpen && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[5000] flex items-center justify-center p-4">
+          <div className="bg-white max-w-lg w-full rounded-3xl border border-slate-200 shadow-2xl p-6 overflow-hidden animate-scale-up">
+            <div className="flex items-start justify-between gap-3 mb-4">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-blue-50 text-blue-600 rounded-2xl">
+                  <RefreshCw size={22} className="animate-spin-slow text-blue-600" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-black text-slate-900 uppercase tracking-tight">Cập nhật câu hỏi từ Đề thi</h3>
+                  <div className="flex items-center gap-2 mt-0.5">
+                    <span className="text-[11px] font-bold text-slate-500">Phạm vi:</span>
+                    <span className="px-2 py-0.5 bg-blue-50 text-blue-700 rounded-lg text-[10px] font-black uppercase">
+                      {bSubjectFilter !== 'all' ? `Môn ${bSubjectFilter}` : 'Tất cả các môn'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+              <button 
+                onClick={() => setIsSyncModalOpen(false)}
+                className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-xl transition-all"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-600 font-medium mb-4 leading-relaxed">
+              Chọn cơ chế quét đề thi để đưa các câu hỏi vào Ngân hàng câu hỏi dùng chung:
+            </p>
+
+            <div className="space-y-3 mb-6">
+              {/* Option 1: Quét tăng dần thông minh */}
+              <label 
+                onClick={() => setSyncForceAll(false)}
+                className={`flex items-start gap-3.5 p-3.5 rounded-2xl border cursor-pointer transition-all ${
+                  !syncForceAll 
+                    ? 'bg-blue-50/70 border-blue-300 ring-2 ring-blue-500/20 shadow-sm' 
+                    : 'bg-white border-slate-200 hover:border-slate-300'
+                }`}
+              >
+                <input 
+                  type="radio" 
+                  name="syncMode" 
+                  checked={!syncForceAll} 
+                  onChange={() => setSyncForceAll(false)}
+                  className="mt-1 text-blue-600 focus:ring-blue-500"
+                />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-black text-slate-900 uppercase tracking-tight">Quét tăng dần thông minh</span>
+                    <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 rounded-md text-[9px] font-black uppercase">Siêu nhanh</span>
+                  </div>
+                  <p className="text-[11px] text-slate-500 font-medium mt-1 leading-relaxed">
+                    Tự động bỏ qua các đề đã đồng bộ hoàn tất trước đó. Chỉ rà soát các đề mới tạo hoặc đề có câu hỏi vừa thêm/sửa đổi. Thời gian xử lý: gần như tức thì.
+                  </p>
+                </div>
+              </label>
+
+              {/* Option 2: Quét toàn bộ */}
+              <label 
+                onClick={() => setSyncForceAll(true)}
+                className={`flex items-start gap-3.5 p-3.5 rounded-2xl border cursor-pointer transition-all ${
+                  syncForceAll 
+                    ? 'bg-blue-50/70 border-blue-300 ring-2 ring-blue-500/20 shadow-sm' 
+                    : 'bg-white border-slate-200 hover:border-slate-300'
+                }`}
+              >
+                <input 
+                  type="radio" 
+                  name="syncMode" 
+                  checked={syncForceAll} 
+                  onChange={() => setSyncForceAll(true)}
+                  className="mt-1 text-blue-600 focus:ring-blue-500"
+                />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-black text-slate-900 uppercase tracking-tight">Quét lại toàn bộ tất cả đề thi</span>
+                    <span className="px-2 py-0.5 bg-amber-100 text-amber-800 rounded-md text-[9px] font-black uppercase">Rà soát sâu</span>
+                  </div>
+                  <p className="text-[11px] text-slate-500 font-medium mt-1 leading-relaxed">
+                    Đọc và tính toán lại toàn bộ câu hỏi trong tất cả đề thi để đối chiếu đối soát và cập nhật lời giải, ảnh bổ sung nếu có.
+                  </p>
+                </div>
+              </label>
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setIsSyncModalOpen(false)}
+                className="px-4 py-2.5 bg-slate-100 text-slate-600 hover:bg-slate-200 rounded-xl text-xs font-black uppercase transition-all"
+              >
+                Hủy bỏ
+              </button>
+              <button
+                type="button"
+                onClick={handleExecuteSyncBank}
+                disabled={isSyncing}
+                className="flex items-center gap-2 px-5 py-2.5 bg-blue-600 text-white rounded-xl text-xs font-black uppercase transition-all shadow-md shadow-blue-200 hover:bg-blue-700 disabled:opacity-50"
+              >
+                {isSyncing ? <Loader2 className="animate-spin" size={14} /> : <Zap size={14} className="fill-current" />}
+                Bắt đầu cập nhật
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {alertModal && alertModal.isOpen && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[5000] flex items-center justify-center p-4">
           <div className="bg-white max-w-md w-full rounded-3xl border shadow-2xl p-6 overflow-hidden animate-scale-up">
