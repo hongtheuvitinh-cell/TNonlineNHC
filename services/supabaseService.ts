@@ -162,19 +162,33 @@ export function mapBankQuestionFromDb(row: any): Question {
 }
 
 export function mapBankQuestionToDb(q: Question): any {
+  let normType = (q.type || 'mcq').toLowerCase().replace('_', '-');
+  if (normType !== 'mcq' && normType !== 'group-tf' && normType !== 'short') {
+    normType = 'mcq';
+  }
+
+  let normLevel: string | null = null;
+  if (q.level) {
+    const str = String(q.level).trim().toUpperCase();
+    if (str === 'B' || str === 'NB' || str.includes('NHẬN BIẾT') || str.includes('BIẾT')) normLevel = 'B';
+    else if (str === 'H' || str === 'TH' || str.includes('THÔNG HIỂU') || str.includes('HIỂU')) normLevel = 'H';
+    else if (str === 'VDC' || str.includes('CAO')) normLevel = 'VDC';
+    else if (str === 'VD' || str.includes('VẬN DỤNG')) normLevel = 'VD';
+  }
+
   return {
     id: q.id || uuidv4(),
-    type: q.type || 'mcq',
+    type: normType,
     text: q.text || '',
     points: Number(q.points) || 0.25,
-    level: q.level || null,
+    level: normLevel,
     image_url: q.imageUrl || null,
     solution: q.solution || null,
-    options: q.options || [],
+    options: Array.isArray(q.options) ? q.options : [],
     correct_answer: q.correctAnswer || null,
-    sub_questions: q.subQuestions || [],
+    sub_questions: Array.isArray(q.subQuestions) ? q.subQuestions : [],
     quiz_title: q.quizTitle || null,
-    quiz_grade: q.quizGrade || null,
+    quiz_grade: q.quizGrade ? String(q.quizGrade) : null,
     quiz_category: q.quizCategory || null,
     chapter_id: q.chapterId || null,
     chapter_name: q.chapterName || null,
@@ -183,7 +197,7 @@ export function mapBankQuestionToDb(q: Question): any {
     created_by_name: q.createdByName || null,
     is_shared: q.isShared ?? true,
     bank_question_id: q.bankQuestionId || null,
-    created_at: new Date().toISOString()
+    created_at: (q as any).createdAt || new Date().toISOString()
   };
 }
 
@@ -657,18 +671,69 @@ export const supabaseDb = {
     const uniqueQuestions = Array.from(uniqueMap.values());
     if (uniqueQuestions.length === 0) return 0;
 
-    const chunkSize = 200;
+    // Giảm kích thước gói từ 200 xuống 25 câu để tránh vượt quá tải trọng HTTP payload gây "TypeError: Failed to fetch"
+    const CHUNK_SIZE = 25;
     let saved = 0;
-    for (let i = 0; i < uniqueQuestions.length; i += chunkSize) {
-      const chunk = uniqueQuestions.slice(i, i + chunkSize);
-      const rows = chunk.map(mapBankQuestionToDb);
-      const { error } = await client.from('bank_questions').upsert(rows, { onConflict: 'id' });
-      if (error) {
-        console.error("Lỗi batch upsert bank_questions sang Supabase:", error);
-        throw new Error(`Lỗi lưu danh sách câu hỏi: ${error.message}`);
+
+    const upsertRowsWithRetry = async (rows: any[], retries = 2): Promise<boolean> => {
+      for (let attempt = 1; attempt <= retries; attempt++) {
+        try {
+          const { error } = await client.from('bank_questions').upsert(rows, { onConflict: 'id' });
+          if (!error) return true;
+          console.warn(`Lần thử ${attempt} upsert ${rows.length} câu thất bại:`, error.message);
+          if (attempt < retries) {
+            await new Promise(r => setTimeout(r, 600 * attempt));
+          }
+        } catch (err: any) {
+          console.warn(`Ngoại lệ lần thử ${attempt} upsert ${rows.length} câu:`, err?.message || err);
+          if (attempt < retries) {
+            await new Promise(r => setTimeout(r, 600 * attempt));
+          }
+        }
       }
-      saved += chunk.length;
+      return false;
+    };
+
+    for (let i = 0; i < uniqueQuestions.length; i += CHUNK_SIZE) {
+      const chunk = uniqueQuestions.slice(i, i + CHUNK_SIZE);
+      const rows = chunk.map(mapBankQuestionToDb);
+
+      const ok = await upsertRowsWithRetry(rows);
+      if (ok) {
+        saved += chunk.length;
+      } else {
+        // Nếu gói 25 câu bị lỗi (ví dụ câu hỏi có ảnh hoặc công thức quá dài làm quá tải kết nối),
+        // chia nhỏ tiếp thành từng gói 5 câu
+        console.info(`Đang chia nhỏ gói ${rows.length} câu thành các gói 5 câu để vượt qua giới hạn mạng...`);
+        const SUB_CHUNK_SIZE = 5;
+        for (let j = 0; j < rows.length; j += SUB_CHUNK_SIZE) {
+          const subRows = rows.slice(j, j + SUB_CHUNK_SIZE);
+          const subOk = await upsertRowsWithRetry(subRows, 2);
+          if (subOk) {
+            saved += subRows.length;
+          } else {
+            // Nếu gói 5 vẫn lỗi, cố gắng lưu từng câu đơn lẻ để vớt tối đa dữ liệu
+            for (const singleRow of subRows) {
+              try {
+                const { error } = await client.from('bank_questions').upsert(singleRow, { onConflict: 'id' });
+                if (!error) {
+                  saved++;
+                } else {
+                  console.error("Không thể lưu câu hỏi đơn lẻ:", singleRow.id, error.message);
+                }
+              } catch (singleErr: any) {
+                console.error("Lỗi khi lưu câu hỏi đơn lẻ:", singleRow.id, singleErr?.message);
+              }
+            }
+          }
+        }
+      }
     }
+
+    if (saved === 0 && uniqueQuestions.length > 0) {
+      throw new Error("Không thể kết nối đến máy chủ CSDL Supabase. Vui lòng kiểm tra đường truyền mạng hoặc cấu hình Supabase.");
+    }
+
     return saved;
   },
 
