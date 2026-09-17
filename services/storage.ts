@@ -2869,20 +2869,38 @@ export const syncQuizzesToBank = async (targetSubject?: string): Promise<SyncBan
           }
 
           if (targetDocId) {
-            // Câu hỏi đã có trong ngân hàng -> Cập nhật thông tin nếu có thêm ảnh / lời giải / mức độ
+            // Câu hỏi đã có trong ngân hàng
             const currentBq = existingBankMapById.get(targetDocId);
-            const mergedQ: Question = {
-              ...(currentBq || enrichedQ),
-              ...enrichedQ,
-              id: targetDocId,
-              imageUrl: enrichedQ.imageUrl || currentBq?.imageUrl,
-              solution: enrichedQ.solution || currentBq?.solution,
-              level: enrichedQ.level || currentBq?.level,
-            };
-            existingBankMapById.set(targetDocId, mergedQ);
-            questionsToUpsertMap.set(targetDocId, { docId: targetDocId, question: mergedQ, isNew: false });
-            updatedCount++;
-            skippedCount++; // Tránh tạo trùng lặp
+            
+            // BẢO VỆ TÁC GIẢ GỐC:
+            // Nếu người tạo đề khác với tác giả câu hỏi gốc và câu hỏi này không có thay đổi nội dung:
+            // Tuyệt đối không ghi đè câu hỏi của đồng nghiệp khi bạn chỉ dùng lại câu hỏi đó.
+            // Bỏ qua việc gửi request cập nhật vào CSDL, chỉ tính là đã tái sử dụng (chống trùng lặp).
+            const isDifferentAuthor = Boolean(
+              quiz.createdBy && 
+              currentBq?.createdBy && 
+              quiz.createdBy !== currentBq.createdBy
+            );
+
+            if (isDifferentAuthor) {
+              skippedCount++;
+            } else {
+              // Là tác giả gốc hoặc cùng người tạo: Cập nhật thông tin bổ sung nếu có thêm ảnh / lời giải / mức độ
+              const mergedQ: Question = {
+                ...(currentBq || enrichedQ),
+                ...enrichedQ,
+                id: targetDocId,
+                quizTitle: currentBq?.quizTitle || enrichedQ.quizTitle,
+                quizCategory: currentBq?.quizCategory || enrichedQ.quizCategory,
+                imageUrl: enrichedQ.imageUrl || currentBq?.imageUrl,
+                solution: enrichedQ.solution || currentBq?.solution,
+                level: enrichedQ.level || currentBq?.level,
+              };
+              existingBankMapById.set(targetDocId, mergedQ);
+              questionsToUpsertMap.set(targetDocId, { docId: targetDocId, question: mergedQ, isNew: false });
+              updatedCount++;
+              skippedCount++; // Tránh tạo trùng lặp
+            }
           } else {
             // Câu hỏi mới hoàn toàn hoặc được Fork từ câu của người khác
             const newDocId = (!isForking && q.bankQuestionId) ? q.bankQuestionId : (isForking ? uuidv4() : (q.id || uuidv4()));
