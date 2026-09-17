@@ -2636,7 +2636,8 @@ export const getUnassignedStudents = async (): Promise<User[]> => {
 // --- Question Bank & Smart Deduplication ---
 
 /**
- * Tạo chữ ký định danh duy nhất (Fingerprint) của câu hỏi dựa trên nội dung, dạng câu, đáp án, môn học & khối lớp.
+ * Tạo chữ ký định danh duy nhất (Fingerprint) của câu hỏi dựa trên nội dung, dạng câu, đáp án.
+ * Loại bỏ toàn bộ nhiễu (nhãn câu [B], Câu 1., nhãn A. B. C. D., khoảng trắng thừa, thẻ HTML, delimiter LaTeX).
  * Giúp phát hiện và ngăn chặn câu hỏi trùng lặp 100%.
  */
 export const getQuestionFingerprint = (q: Partial<Question>): string => {
@@ -2650,33 +2651,39 @@ export const getQuestionFingerprint = (q: Partial<Question>): string => {
       .replace(/\\\(|\\\)|\\\[|\\\]|\$|\$\$/g, ''); // Bỏ qua tất cả delimiter LaTeX khi tính fingerprint
   };
 
-  // Chuẩn hóa văn bản: xóa khoảng trắng thừa, chuyển chữ thường, bỏ dấu nhãn đầu câu, loại bỏ HTML
-  let normText = stripHtml(q.text || '')
-    .trim()
-    .toLowerCase()
-    .replace(/^(\*?[a-z0-9][\.\)\/\-:\s]\s*)/gi, '')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/\s+/g, ' ');
+  const stripNoise = (str: string): string => {
+    if (!str) return '';
+    let s = stripHtml(str).trim().toLowerCase();
+    // 1. Loại bỏ các nhãn mức độ: [B], [NB], [TH], [VD], [VDC], (B), <B>, [Nhận biết], etc.
+    s = s.replace(/(?:\[|\(|\<)\s*(?:b|nb|h|th|vd|vdc|nhận biết|thông hiểu|vận dụng cao|vận dụng|biết|hiểu)\s*(?:\]|\)|\>)/gi, '');
+    // 2. Loại bỏ tiền tố thứ tự câu: "Câu 1:", "Câu 1.", "Câu 12 -", "Bài 1:", "Question 1.", "1.", "1:"
+    s = s.replace(/^(?:\*?\s*(?:câu|bài|question)\s*\d+[\.\:\s\-\)]*|\*?\s*\d+[\.\:\s\-\)]+)/gi, '');
+    // 3. Loại bỏ nhãn lựa chọn nếu có ở đầu chuỗi (A., B., C., D., a), b), etc.)
+    s = s.replace(/^(\*?[a-z0-9][\.\)\/\-:\s]\s*)/gi, '');
+    // 4. Chuẩn hóa khoảng trắng & ký tự không nhìn thấy
+    s = s.replace(/&nbsp;/g, ' ').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim();
+    return s;
+  };
 
+  let normText = stripNoise(q.text || '');
   const type = (q.type || 'mcq').toLowerCase().replace('_', '-');
-  const normSubject = (q.subject || '').trim().toLowerCase();
-  const normGrade = (q.quizGrade || '').toString().trim().toLowerCase();
 
   let optionsSig = '';
   if (type === 'mcq' && q.options && q.options.length > 0) {
     optionsSig = q.options
-      .map(opt => stripHtml(opt || '').trim().toLowerCase().replace(/^(\*?[a-z0-9][\.\)\/\-:\s]\s*)/gi, '').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' '))
+      .map(opt => stripNoise(opt || ''))
       .sort()
       .join('###');
   } else if (type === 'group-tf' && q.subQuestions && q.subQuestions.length > 0) {
     optionsSig = q.subQuestions
-      .map(sq => stripHtml(sq.text || '').trim().toLowerCase().replace(/^(\*?[a-z0-9][\.\)\/\-:\s]\s*)/gi, '').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ') + `:${stripHtml(sq.correctAnswer || '').trim().toLowerCase()}`)
+      .map(sq => `${stripNoise(sq.text || '')}:${stripHtml(sq.correctAnswer || '').trim().toLowerCase()}`)
+      .sort()
       .join('###');
   } else if (type === 'short') {
-    optionsSig = stripHtml(q.correctAnswer || '').trim().toLowerCase();
+    optionsSig = stripNoise(q.correctAnswer || '');
   }
 
-  return `${normSubject}__${normGrade}__${type}__${normText}__${optionsSig}`;
+  return `${type}__${normText}__${optionsSig}`;
 };
 
 export const getBankQuestions = async (
@@ -2843,12 +2850,14 @@ export const syncQuizzesToBank = async (targetSubject?: string): Promise<SyncBan
 
           const fp = getQuestionFingerprint(enrichedQ);
 
-          // Kiểm tra theo ID gốc từ ngân hàng hoặc theo Fingerprint
+          // Kiểm tra theo ID gốc từ ngân hàng (bankQuestionId hoặc q.id nếu đã có sẵn trong ngân hàng) hoặc theo Fingerprint
           let targetDocId: string | null = null;
           let isForking = false;
 
-          if (q.bankQuestionId && existingBankMapById.has(q.bankQuestionId)) {
-            const currentBq = existingBankMapById.get(q.bankQuestionId)!;
+          const candidateId = q.bankQuestionId || (q.id && existingBankMapById.has(q.id) ? q.id : undefined);
+
+          if (candidateId && existingBankMapById.has(candidateId)) {
+            const currentBq = existingBankMapById.get(candidateId)!;
             const currentBqFp = getQuestionFingerprint(currentBq);
             
             // BẢO VỆ TÁC GIẢ GỐC: Nếu người tạo đề khác với người tạo câu hỏi gốc, 
@@ -2860,7 +2869,7 @@ export const syncQuizzesToBank = async (targetSubject?: string): Promise<SyncBan
                enrichedQ.createdBy = quiz.createdBy;
                enrichedQ.createdByName = quiz.createdByName || '';
             } else {
-               targetDocId = q.bankQuestionId;
+               targetDocId = candidateId;
             }
           }
 
@@ -2885,21 +2894,31 @@ export const syncQuizzesToBank = async (targetSubject?: string): Promise<SyncBan
             if (isDifferentAuthor) {
               skippedCount++;
             } else {
-              // Là tác giả gốc hoặc cùng người tạo: Cập nhật thông tin bổ sung nếu có thêm ảnh / lời giải / mức độ
-              const mergedQ: Question = {
-                ...(currentBq || enrichedQ),
-                ...enrichedQ,
-                id: targetDocId,
-                quizTitle: currentBq?.quizTitle || enrichedQ.quizTitle,
-                quizCategory: currentBq?.quizCategory || enrichedQ.quizCategory,
-                imageUrl: enrichedQ.imageUrl || currentBq?.imageUrl,
-                solution: enrichedQ.solution || currentBq?.solution,
-                level: enrichedQ.level || currentBq?.level,
-              };
-              existingBankMapById.set(targetDocId, mergedQ);
-              questionsToUpsertMap.set(targetDocId, { docId: targetDocId, question: mergedQ, isNew: false });
-              updatedCount++;
-              skippedCount++; // Tránh tạo trùng lặp
+              // Kiểm tra xem CÓ THỰC SỰ có dữ liệu mới/bổ sung để cập nhật không
+              const hasNewImage = !currentBq?.imageUrl && !!enrichedQ.imageUrl;
+              const hasNewSolution = (!currentBq?.solution || currentBq.solution.trim().length < 5) && (!!enrichedQ.solution && enrichedQ.solution.trim().length >= 5);
+              const hasNewLevel = !currentBq?.level && !!enrichedQ.level;
+              const hasNewCategory = !currentBq?.quizCategory && !!enrichedQ.quizCategory;
+              const hasNewSubject = !currentBq?.subject && !!enrichedQ.subject;
+
+              if (hasNewImage || hasNewSolution || hasNewLevel || hasNewCategory || hasNewSubject) {
+                const mergedQ: Question = {
+                  ...(currentBq || enrichedQ),
+                  ...enrichedQ,
+                  id: targetDocId,
+                  quizTitle: currentBq?.quizTitle || enrichedQ.quizTitle,
+                  quizCategory: enrichedQ.quizCategory || currentBq?.quizCategory,
+                  imageUrl: enrichedQ.imageUrl || currentBq?.imageUrl,
+                  solution: enrichedQ.solution || currentBq?.solution,
+                  level: enrichedQ.level || currentBq?.level,
+                  subject: enrichedQ.subject || currentBq?.subject,
+                };
+                existingBankMapById.set(targetDocId, mergedQ);
+                questionsToUpsertMap.set(targetDocId, { docId: targetDocId, question: mergedQ, isNew: false });
+                updatedCount++;
+              } else {
+                skippedCount++; // Không có dữ liệu mới -> Không gửi update thừa
+              }
             }
           } else {
             // Câu hỏi mới hoàn toàn hoặc được Fork từ câu của người khác
