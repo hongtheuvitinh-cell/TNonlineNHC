@@ -196,6 +196,7 @@
                 ...item,
                 type,
                 id: uuidv4(),
+                bankQuestionId: item.bankQuestionId || (item.id && typeof item.id === 'string' ? item.id : undefined),
                 text: cleanedText,
                 solution: cleanedSolution,
                 level: finalLevel,
