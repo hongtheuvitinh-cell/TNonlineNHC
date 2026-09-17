@@ -265,7 +265,9 @@ export function mapQuizFromDb(row: any): Quiz {
     academicYear: row.academic_year || row.academicYear || undefined,
     targetType: row.target_type || row.targetType || 'all',
     assignedClassIds: row.assigned_class_ids || row.assignedClassIds || [],
-    assignedClasses: row.assigned_classes || row.assignedClasses || []
+    assignedClasses: row.assigned_classes || row.assignedClasses || [],
+    syncedToBank: row.synced_to_bank ?? row.syncedToBank ?? (row.data && (row.data.syncedToBank || row.data.synced_to_bank)) ?? undefined,
+    lastBankSyncedAt: row.last_bank_synced_at ?? row.lastBankSyncedAt ?? (row.data && (row.data.lastBankSyncedAt || row.data.last_bank_synced_at)) ?? undefined
   };
 }
 
@@ -751,7 +753,7 @@ export const supabaseDb = {
   },
 
   // QUIZZES
-  async getQuizzes(grade?: Grade): Promise<Quiz[]> {
+  async getQuizzes(grade?: Grade, subject?: string): Promise<Quiz[]> {
     const client = getSupabase();
     if (!client) return [];
     const allQuizzes: any[] = [];
@@ -761,6 +763,18 @@ export const supabaseDb = {
       let q = client.from('quizzes').select('*');
       if (grade && grade !== 'all') {
         q = q.eq('grade', grade);
+      }
+      if (subject && subject !== 'all') {
+        const norm = normalizeSubject(subject);
+        if (norm === 'vật lý') {
+          q = q.or('subject.ilike.%vật lí%,subject.ilike.%vật lý%');
+        } else if (norm === 'địa lý') {
+          q = q.or('subject.ilike.%địa lí%,subject.ilike.%địa lý%');
+        } else if (norm === 'hóa học') {
+          q = q.or('subject.ilike.%hóa%,subject.ilike.%hoá%');
+        } else {
+          q = q.ilike('subject', `%${subject.trim()}%`);
+        }
       }
       const { data, error } = await q
         .order('order_index', { ascending: true })
