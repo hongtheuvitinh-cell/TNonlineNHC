@@ -129,6 +129,9 @@ export interface Quiz {
   targetType?: 'all' | 'classes'; // 'all' (tất cả hs cùng khối) | 'classes' (chỉ giao cho các lớp chỉ định)
   assignedClassIds?: string[]; // IDs của các lớp được giao đề
   assignedClasses?: { id: string; name: string; academicYear?: string }[]; // Thông tin chi tiết lớp để hiển thị nhanh
+  // Cờ đồng bộ thông minh vào Ngân hàng câu hỏi
+  syncedToBank?: boolean; // true nếu tất cả câu hỏi của đề đã được đồng bộ vào Ngân hàng
+  lastBankSyncedAt?: string; // Thời điểm đồng bộ gần nhất
 }
 
 export interface Result {
