@@ -2641,11 +2641,21 @@ export const getUnassignedStudents = async (): Promise<User[]> => {
  */
 export const getQuestionFingerprint = (q: Partial<Question>): string => {
   if (!q) return '';
-  // Chuẩn hóa văn bản: xóa khoảng trắng thừa, chuyển chữ thường, bỏ dấu nhãn đầu câu
-  let normText = (q.text || '')
+  
+  // Hàm loại bỏ HTML tags để lấy plain text, đồng thời chuẩn hóa/loại bỏ delimiter LaTeX để tránh khác biệt
+  const stripHtml = (html: string) => {
+    if (!html) return '';
+    return html
+      .replace(/<[^>]*>?/gm, '')
+      .replace(/\\\(|\\\)|\\\[|\\\]|\$|\$\$/g, ''); // Bỏ qua tất cả delimiter LaTeX khi tính fingerprint
+  };
+
+  // Chuẩn hóa văn bản: xóa khoảng trắng thừa, chuyển chữ thường, bỏ dấu nhãn đầu câu, loại bỏ HTML
+  let normText = stripHtml(q.text || '')
     .trim()
     .toLowerCase()
     .replace(/^(\*?[a-z0-9][\.\)\/\-:\s]\s*)/gi, '')
+    .replace(/&nbsp;/g, ' ')
     .replace(/\s+/g, ' ');
 
   const type = (q.type || 'mcq').toLowerCase().replace('_', '-');
@@ -2655,15 +2665,15 @@ export const getQuestionFingerprint = (q: Partial<Question>): string => {
   let optionsSig = '';
   if (type === 'mcq' && q.options && q.options.length > 0) {
     optionsSig = q.options
-      .map(opt => (opt || '').trim().toLowerCase().replace(/^(\*?[a-z0-9][\.\)\/\-:\s]\s*)/gi, '').replace(/\s+/g, ' '))
+      .map(opt => stripHtml(opt || '').trim().toLowerCase().replace(/^(\*?[a-z0-9][\.\)\/\-:\s]\s*)/gi, '').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' '))
       .sort()
       .join('###');
   } else if (type === 'group-tf' && q.subQuestions && q.subQuestions.length > 0) {
     optionsSig = q.subQuestions
-      .map(sq => (sq.text || '').trim().toLowerCase().replace(/^(\*?[a-z0-9][\.\)\/\-:\s]\s*)/gi, '').replace(/\s+/g, ' ') + `:${sq.correctAnswer}`)
+      .map(sq => stripHtml(sq.text || '').trim().toLowerCase().replace(/^(\*?[a-z0-9][\.\)\/\-:\s]\s*)/gi, '').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ') + `:${stripHtml(sq.correctAnswer || '').trim().toLowerCase()}`)
       .join('###');
   } else if (type === 'short') {
-    optionsSig = (q.correctAnswer || '').trim().toLowerCase();
+    optionsSig = stripHtml(q.correctAnswer || '').trim().toLowerCase();
   }
 
   return `${normSubject}__${normGrade}__${type}__${normText}__${optionsSig}`;
