@@ -1022,11 +1022,11 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
         setIsSyncing(true);
         try {
           const stats = await syncQuizzesToBank(targetSubject);
-          showAlert(
-            "Đồng bộ thành công",
-            `Đã quét ${stats.totalScanned} lượt câu hỏi (${subjectLabel}):\n• Thêm mới vào Ngân hàng: ${stats.added} câu\n• Cập nhật thông tin: ${stats.updated} câu\n• Đã loại bỏ trùng lặp: ${stats.skippedDuplicates} lượt`,
-            "success"
-          );
+          let detailMsg = `Đã quét ${stats.totalScanned} lượt câu hỏi (${subjectLabel}):\n• Thêm mới vào Ngân hàng: ${stats.added} câu\n• Cập nhật thông tin: ${stats.updated} câu\n• Đã trùng khớp & giữ nguyên: ${stats.skippedDuplicates} lượt`;
+          if (stats.added === 0 && stats.updated === 0) {
+            detailMsg += `\n\n✅ Toàn bộ câu hỏi đã có sẵn và đồng bộ đầy đủ trong Ngân hàng, không phát sinh bản sao trùng lặp!`;
+          }
+          showAlert("Đồng bộ thành công", detailMsg, "success");
           await loadTabData('bank');
         } catch (e: any) {
           showAlert("Lỗi đồng bộ", "Lỗi khi đồng bộ Ngân hàng: " + (e.message || "Lỗi không xác định"), "error");
