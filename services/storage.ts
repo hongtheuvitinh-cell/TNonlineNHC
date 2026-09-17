@@ -2835,9 +2835,26 @@ export const syncQuizzesToBank = async (targetSubject?: string): Promise<SyncBan
 
           // Kiểm tra theo ID gốc từ ngân hàng hoặc theo Fingerprint
           let targetDocId: string | null = null;
+          let isForking = false;
+
           if (q.bankQuestionId && existingBankMapById.has(q.bankQuestionId)) {
-            targetDocId = q.bankQuestionId;
-          } else if (fp && existingBankMapByFingerprint.has(fp)) {
+            const currentBq = existingBankMapById.get(q.bankQuestionId)!;
+            const currentBqFp = getQuestionFingerprint(currentBq);
+            
+            // BẢO VỆ TÁC GIẢ GỐC: Nếu người tạo đề khác với người tạo câu hỏi gốc, 
+            // VÀ nội dung câu hỏi đã bị thay đổi (fingerprint khác nhau),
+            // Hệ thống sẽ tách (fork) thành một câu hỏi mới thay vì ghi đè lên câu của người khác.
+            if (quiz.createdBy && currentBq.createdBy && quiz.createdBy !== currentBq.createdBy && fp !== currentBqFp) {
+               isForking = true;
+               enrichedQ.bankQuestionId = undefined;
+               enrichedQ.createdBy = quiz.createdBy;
+               enrichedQ.createdByName = quiz.createdByName || '';
+            } else {
+               targetDocId = q.bankQuestionId;
+            }
+          }
+
+          if (!isForking && !targetDocId && fp && existingBankMapByFingerprint.has(fp)) {
             targetDocId = existingBankMapByFingerprint.get(fp)!;
           }
 
@@ -2857,8 +2874,8 @@ export const syncQuizzesToBank = async (targetSubject?: string): Promise<SyncBan
             updatedCount++;
             skippedCount++; // Tránh tạo trùng lặp
           } else {
-            // Câu hỏi mới hoàn toàn
-            const newDocId = q.bankQuestionId || q.id || uuidv4();
+            // Câu hỏi mới hoàn toàn hoặc được Fork từ câu của người khác
+            const newDocId = (!isForking && q.bankQuestionId) ? q.bankQuestionId : (isForking ? uuidv4() : (q.id || uuidv4()));
             enrichedQ.id = newDocId;
             questionsToUpsertMap.set(newDocId, { docId: newDocId, question: enrichedQ, isNew: true });
             existingBankMapById.set(newDocId, enrichedQ);
@@ -3903,12 +3920,13 @@ export const exportFullDatabaseBackup = async (): Promise<string> => {
   }
   if (!db) throw new Error("Mất kết nối Database Cloud Firestore");
 
-  const [quizzesSnap, usersSnap, resultsSnap, classesSnap, chaptersSnap, bankSnap, sessionsSnap, publishedSnap] = await Promise.all([
+  const [quizzesSnap, usersSnap, resultsSnap, classesSnap, chaptersSnap, quizFoldersSnap, bankSnap, sessionsSnap, publishedSnap] = await Promise.all([
     getDocs(collection(db, 'quizzes')),
     getDocs(collection(db, 'users')),
     getDocs(collection(db, 'results')),
     getDocs(collection(db, 'classes')),
     getDocs(collection(db, 'chapters')),
+    getDocs(collection(db, 'quizFolders')),
     getDocs(collection(db, 'bank_questions')),
     getDocs(collection(db, 'exam_sessions')),
     getDocs(collection(db, 'published_results'))
@@ -3986,6 +4004,7 @@ export const exportFullDatabaseBackup = async (): Promise<string> => {
       results: resultsSnap.size,
       classes: classesSnap.size,
       chapters: chaptersSnap.size,
+      quizFolders: quizFoldersSnap.size,
       bankQuestions: bankSnap.size,
       examSessions: sessionsSnap.size,
       publishedResults: publishedSnap.size
@@ -3996,6 +4015,7 @@ export const exportFullDatabaseBackup = async (): Promise<string> => {
       results: resultsSnap.docs.map(d => ({ id: d.id, ...d.data() })),
       classes: classesSnap.docs.map(d => ({ id: d.id, ...d.data() })),
       chapters: chaptersSnap.docs.map(d => ({ id: d.id, ...d.data() })),
+      quizFolders: quizFoldersSnap.docs.map(d => ({ id: d.id, ...d.data() })),
       bankQuestions: bankSnap.docs.map(d => ({ id: d.id, ...d.data() })),
       examSessions: sessionsSnap.docs.map(d => ({ id: d.id, ...d.data() })),
       publishedResults: publishedSnap.docs.map(d => ({ id: d.id, ...d.data() }))
@@ -4026,6 +4046,7 @@ export const restoreFullDatabaseBackup = async (
   const data = parsed.data || parsed;
   const classes: ClassRoom[] = data.classes || [];
   const chapters: Chapter[] = data.chapters || [];
+  const quizFolders: QuizFolder[] = data.quizFolders || data.quiz_folders || [];
   const users: User[] = data.users || [];
   const bankQuestions: Question[] = data.bankQuestions || data.bank_questions || [];
   const quizzes: Quiz[] = data.quizzes || [];
@@ -4036,6 +4057,7 @@ export const restoreFullDatabaseBackup = async (
   const stats = {
     classes: 0,
     chapters: 0,
+    quizFolders: 0,
     users: 0,
     bankQuestions: 0,
     quizzes: 0,
@@ -4075,6 +4097,12 @@ export const restoreFullDatabaseBackup = async (
     if (chapters.length > 0) {
       onProgress?.(`Đang khôi phục ${chapters.length} chương...`, 30);
       stats.chapters = await writeBatchItems('chapters', chapters);
+    }
+
+    // 2.5. Khôi phục Thư mục đề thi
+    if (quizFolders.length > 0) {
+      onProgress?.(`Đang khôi phục ${quizFolders.length} thư mục...`, 35);
+      stats.quizFolders = await writeBatchItems('quiz_folders', quizFolders);
     }
 
     // 3. Khôi phục Người dùng (Giáo viên, Học sinh)
