@@ -6,7 +6,7 @@ import {
   Target as TargetIcon, Plus, ImageIcon, Loader2, Lightbulb, Eye, ImageMinus, 
   ShieldAlert, ShieldCheck, Sparkles, Zap, Type as TypeIcon, X, Link as LinkIcon, 
   EyeOff, FileCode, GraduationCap, CheckSquare, Square, Users, Copy, Images, Check, Layers, ArrowRight,
-  Key, BookOpen, ClipboardPaste, PauseCircle, Cloud, CloudUpload, HardDrive, Settings2, Folder
+  Key, BookOpen, ClipboardPaste, PauseCircle, Cloud, CloudUpload, HardDrive, Settings2, Folder, Crop
 } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 import LatexText from '../LatexText';
@@ -95,13 +95,15 @@ interface QuizEditorProps {
     orderIndex: number;
     setOrderIndex: (val: number) => void;
     onPdfExtract: (e: React.ChangeEvent<HTMLInputElement>) => void;
-    onTextExtract: (text: string) => void;
+    onTextExtract: (text: string, withSolution?: boolean) => void;
     onUploadImage: (qId: string, file: File) => void;
     uploadingId: string | null;
     isAiLoading?: boolean;
     isSuperAdmin?: boolean;
     customApiKey?: string;
     onApiKeyChange?: (key: string) => void;
+    onOpenPdfImageManager?: () => void;
+    hasPdfFileForImageManager?: boolean;
 }
 
 const safeParseScore = (val: any): number => {
@@ -1233,6 +1235,7 @@ const QuestionSection: React.FC<QuestionSectionProps> = ({
 export default function QuizEditor(props: QuizEditorProps) {
     const [isTextInputOpen, setIsTextInputOpen] = useState(false);
     const [pastedText, setPastedText] = useState('');
+    const [textOptionWithSolution, setTextOptionWithSolution] = useState(true);
 
     const totalPoints = props.questions.reduce((acc, q) => acc + safeParseScore(q.points), 0);
     const relevantChapters = useMemo(() => {
@@ -1659,7 +1662,7 @@ export default function QuizEditor(props: QuizEditorProps) {
                 console.warn("Thử parse JSON thất bại, tiếp tục bóc tách qua AI:", jsonErr);
             }
         }
-        props.onTextExtract(pastedText);
+        props.onTextExtract(pastedText, textOptionWithSolution);
         setPastedText('');
         setIsTextInputOpen(false);
     };
@@ -1766,6 +1769,51 @@ export default function QuizEditor(props: QuizEditorProps) {
                                 value={pastedText}
                                 onChange={e => setPastedText(e.target.value)}
                             />
+
+                            {/* Tùy chọn giải chi tiết cho AI bóc tách văn bản */}
+                            <div className="bg-slate-50 border border-slate-200/80 rounded-2xl p-4 space-y-2">
+                                <span className="text-[11px] font-black text-slate-700 uppercase tracking-wider block">Tùy chọn lời giải AI:</span>
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                    <label 
+                                        onClick={() => setTextOptionWithSolution(false)}
+                                        className={`flex items-start gap-2.5 p-3 rounded-xl border-2 cursor-pointer transition-all ${
+                                            !textOptionWithSolution 
+                                                ? 'border-blue-600 bg-white shadow-sm ring-1 ring-blue-600/20' 
+                                                : 'border-slate-200 bg-white/60 hover:border-slate-300'
+                                        }`}
+                                    >
+                                        <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center mt-0.5 transition-all ${
+                                            !textOptionWithSolution ? 'border-blue-600 bg-blue-600' : 'border-slate-300'
+                                        }`}>
+                                            {!textOptionWithSolution && <Check size={10} className="text-white stroke-[3]" />}
+                                        </div>
+                                        <div className="flex-1">
+                                            <div className="text-[11px] font-black uppercase text-slate-800">Không giải chi tiết</div>
+                                            <div className="text-[10px] text-slate-500 font-medium">Chỉ điền đáp án đúng, để trống lời giải</div>
+                                        </div>
+                                    </label>
+
+                                    <label 
+                                        onClick={() => setTextOptionWithSolution(true)}
+                                        className={`flex items-start gap-2.5 p-3 rounded-xl border-2 cursor-pointer transition-all ${
+                                            textOptionWithSolution 
+                                                ? 'border-blue-600 bg-white shadow-sm ring-1 ring-blue-600/20' 
+                                                : 'border-slate-200 bg-white/60 hover:border-slate-300'
+                                        }`}
+                                    >
+                                        <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center mt-0.5 transition-all ${
+                                            textOptionWithSolution ? 'border-blue-600 bg-blue-600' : 'border-slate-300'
+                                        }`}>
+                                            {textOptionWithSolution && <Check size={10} className="text-white stroke-[3]" />}
+                                        </div>
+                                        <div className="flex-1">
+                                            <div className="text-[11px] font-black uppercase text-slate-800">Có giải chi tiết</div>
+                                            <div className="text-[10px] text-slate-500 font-medium">Điền đáp án & tạo lời giải súc tích chuẩn sư phạm</div>
+                                        </div>
+                                    </label>
+                                </div>
+                            </div>
+
                             <div className="flex gap-4">
                                 <button onClick={() => setIsTextInputOpen(false)} className="flex-1 py-4 bg-slate-100 text-slate-400 rounded-2xl font-black uppercase text-xs hover:bg-slate-200 transition-all">Hủy bỏ</button>
                                 <button onClick={handleConfirmTextExtract} className="flex-[2] py-4 bg-blue-600 text-white rounded-2xl font-black uppercase text-xs shadow-xl shadow-blue-200 hover:bg-black transition-all">Bắt đầu bóc tách</button>
@@ -2058,6 +2106,16 @@ export default function QuizEditor(props: QuizEditorProps) {
                             <FileUp size={13}/> NHẬP PDF (AI)
                             <input type="file" accept="application/pdf" className="hidden" disabled={props.isAiLoading} onChange={props.onPdfExtract}/>
                         </label>
+                        {props.onOpenPdfImageManager && (
+                            <button
+                                type="button"
+                                onClick={props.onOpenPdfImageManager}
+                                className="flex items-center gap-1.5 px-3 py-2 bg-gradient-to-r from-purple-600 via-pink-600 to-rose-600 text-white rounded-xl text-[10px] font-black uppercase hover:opacity-95 transition-all shadow-md active:scale-95"
+                                title="Bóc tách tự động các hình ảnh nhúng hoặc dùng chuột khoanh vùng cắt trực tiếp đồ thị/hình vẽ từ tài liệu PDF và tải lên ImgBB"
+                            >
+                                <Crop size={13} className="text-white"/> BÓC TÁCH / CẮT ẢNH PDF
+                            </button>
+                        )}
                         <button 
                             onClick={props.onCleanLabels}
                             className="flex items-center gap-1.5 px-3 py-2 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-xl text-[10px] font-black uppercase hover:bg-emerald-600 hover:text-white transition-all shadow-sm active:scale-95"
