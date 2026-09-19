@@ -16,22 +16,58 @@ export interface ExtractedPdfImage {
 
 let pdfjsLibInstance: any = null;
 
-// Khởi tạo pdfjs-dist động với worker cấu hình chuẩn CDN hoặc ES module
-async function getPdfjsLib() {
+// Khởi tạo pdfjs-dist động với worker cấu hình chuẩn CDN hoặc ES module, kèm fallback CDN an toàn
+async function getPdfjsLib(): Promise<any> {
   if (pdfjsLibInstance) return pdfjsLibInstance;
   
-  try {
-    const pdfjs = await import('pdfjs-dist');
-    // Cấu hình worker
-    if (pdfjs.GlobalWorkerOptions) {
-      pdfjs.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version || '4.0.379'}/pdf.worker.min.mjs`;
+  if (typeof window !== 'undefined' && (window as any).pdfjsLib) {
+    pdfjsLibInstance = (window as any).pdfjsLib;
+    if (pdfjsLibInstance.GlobalWorkerOptions) {
+      pdfjsLibInstance.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
     }
-    pdfjsLibInstance = pdfjs;
-    return pdfjs;
-  } catch (err) {
-    console.error("Lỗi nạp pdfjs-dist:", err);
-    throw new Error("Không thể khởi động trình đọc PDF. Vui lòng thử lại!");
+    return pdfjsLibInstance;
   }
+
+  // 1. Thử dynamic import từ gói npm
+  try {
+    // @ts-ignore
+    const pdfjs = await import('pdfjs-dist');
+    const actualLib = pdfjs.default || pdfjs;
+    if (actualLib.GlobalWorkerOptions) {
+      actualLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js`;
+    }
+    pdfjsLibInstance = actualLib;
+    return actualLib;
+  } catch (importErr) {
+    console.warn("Không thể nạp trực tiếp pdfjs-dist từ bundle, chuyển sang tải CDN dự phòng...", importErr);
+  }
+
+  // 2. Fallback tải script PDF.js từ CDN
+  if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+    return new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+      script.async = true;
+      script.onload = () => {
+        const lib = (window as any).pdfjsLib;
+        if (lib) {
+          if (lib.GlobalWorkerOptions) {
+            lib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+          }
+          pdfjsLibInstance = lib;
+          resolve(lib);
+        } else {
+          reject(new Error("Không thể khởi động thư viện PDF.js từ CDN"));
+        }
+      };
+      script.onerror = () => {
+        reject(new Error("Không thể nạp thư viện đọc PDF. Vui lòng kiểm tra kết nối mạng."));
+      };
+      document.head.appendChild(script);
+    });
+  }
+
+  throw new Error("Môi trường không hỗ trợ trình đọc PDF");
 }
 
 /**
