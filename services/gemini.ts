@@ -91,38 +91,38 @@
         return cleanLatexTextTags(cleaned);
     };
 
-    const EXTRACTION_INSTRUCTION = `Bạn là chuyên gia khảo thí và giáo viên sư phạm hàng đầu THPT quốc gia Việt Nam (Toán, Vật lí, Hóa học, Sinh học, Tin học, Ngữ văn, Lịch sử, Địa lí, GDCD, Tiếng Anh).
+    const buildExtractionInstruction = (withSolution: boolean = true) => `Bạn là chuyên gia khảo thí và giáo viên sư phạm hàng đầu THPT quốc gia Việt Nam (Toán, Vật lí, Hóa học, Sinh học, Tin học, Ngữ văn, Lịch sử, Địa lí, GDCD, Tiếng Anh).
 
     NHIỆM VỤ:
-    1. Trích xuất đầy đủ, trung thực và chính xác toàn bộ câu hỏi, phương án, mức độ nhận biết từ tài liệu được cung cấp (file PDF hoặc đoạn văn bản).
-    2. TẠO LỜI GIẢI GỌN GÀNG, SÚC TÍCH 100% CHO TẤT CẢ CÁC CÂU HỎI (BẮT BUỘC): Điền đầy đủ vào trường 'solution'. TUYỆT ĐỐI KHÔNG ĐƯỢC ĐỂ TRỐNG TRƯỜNG 'solution' Ở BẤT KỲ CÂU HỎI NÀO.
+    1. Trích xuất đầy đủ, trung thực và chính xác toàn bộ câu hỏi, phương án, mức độ nhận biết và ĐIỀN ĐÁP ÁN ĐÚNG ('correctAnswer') từ tài liệu được cung cấp (file PDF hoặc đoạn văn bản).
+    ${withSolution ? `2. TẠO LỜI GIẢI GỌN GÀNG, SÚC TÍCH 100% CHO TẤT CẢ CÁC CÂU HỎI (BẮT BUỘC): Điền đầy đủ vào trường 'solution'. TUYỆT ĐỐI KHÔNG ĐƯỢC ĐỂ TRỐNG TRƯỜNG 'solution' Ở BẤT KỲ CÂU HỎI NÀO.
 
     QUY TẮC VIẾT LỜI GIẢI ('solution') - NGẮN GỌN, VIẾT CÔNG THỨC RỒI BẰNG KẾT QUẢ, THEO GẠCH ĐẦU DÒNG (CỰC KỲ QUAN TRỌNG):
     - PHONG CÁCH: Trình bày đơn giản, súc tích bằng các gạch đầu dòng (- ...).
     - CÔNG THỨC & KẾT QUẢ: Viết công thức/định luật rồi ghi dấu bằng ra kết quả luôn (Dạng: [Công thức] = [Kết quả]). 
     TUYỆT ĐỐI BỎ QUA quá trình điền/thay thế số chi tiết, vụn vặt vào giữa các phép tính để tránh làm rối lời giải.
-    - KHÔNG viết văn rườm rà, giải thích lòng vòng lan man.
+    - KHÔNG viết văn rườm rà, giải thích lòng vòng lan man.` : `2. KHÔNG TẠO LỜI GIẢI CHI TIẾT (QUAN TRỌNG): Để trường 'solution' là chuỗi rỗng "" hoặc null cho tất cả các câu hỏi. Vẫn BẮT BUỘC phải điền đáp án đúng 'correctAnswer' chính xác 100% (cho câu MCQ, GROUP-TF và SHORT) nhưng TUYỆT ĐỐI KHÔNG viết lời giải giải thích.`}
 
     1. MCQ (Trắc nghiệm 4 lựa chọn):
     - 'correctAnswer': BẮT BUỘC là nội dung chính xác của phương án đúng (không kèm nhãn A, B, C, D).
-    - 'solution': Trình bày bằng gạch đầu dòng:
+    ${withSolution ? `- 'solution': Trình bày bằng gạch đầu dòng:
         - Áp dụng công thức: [Công thức] = [Kết quả].
-        - Chọn đáp án: [Nội dung phương án đúng].
+        - Chọn đáp án: [Nội dung phương án đúng].` : `- 'solution': Để chuỗi rỗng "".`}
 
     2. GROUP-TF (Trắc nghiệm Đúng/Sai):
     - 'subQuestions': BẮT BUỘC có đủ 4 ý (a, b, c, d). Mỗi ý gồm 'text', 'correctAnswer' ("True" hoặc "False") và 'level' ("B"|"H"|"VD"|"VDC").
-    - 'solution': BẮT BUỘC trình bày theo 4 ý a, b, c, d dạng gạch đầu dòng ngắn gọn:
+    ${withSolution ? `- 'solution': BẮT BUỘC trình bày theo 4 ý a, b, c, d dạng gạch đầu dòng ngắn gọn:
         - a) Đúng. Vì [Công thức] = [Kết quả].
         - b) Sai. Vì [Công thức] = [Kết quả đúng].
         - c) Đúng. Vì [Lý do / Công thức ngắn gọn].
-        - d) Sai. Vì [Lý do / Công thức ngắn gọn].
+        - d) Sai. Vì [Lý do / Công thức ngắn gọn].` : `- 'solution': Để chuỗi rỗng "".`}
 
     3. SHORT (Trả lời ngắn):
     - 'type': BẮT BUỘC là "short".
     - 'correctAnswer': BẮT BUỘC là giá trị con số chính xác (VD: "12", "-3.5", "0.25").
-    - 'solution': Dùng các gạch đầu dòng ngắn gọn:
+    ${withSolution ? `- 'solution': Dùng các gạch đầu dòng ngắn gọn:
         - [Công thức/Định luật] = [Kết quả].
-        - Đáp số: [Số].
+        - Đáp số: [Số].` : `- 'solution': Để chuỗi rỗng "".`}
 
     4. PHÂN TÍCH ĐÁP ÁN:
     - Quét toàn bộ nội dung để tìm bảng đáp án (thường ở cuối trang hoặc đính kèm).
@@ -141,10 +141,12 @@
     - Xóa nhãn "A.", "B.", "a)", "b)", "[B]", "(H)"... ở đầu nội dung câu hỏi và các phương án nhưng giữ nguyên dấu $ của LaTeX.
 
     VÍ DỤ CẤU TRÚC JSON:
-    - MCQ: {"type": "mcq", "level": "B", "text": "Một vật dao động điều hòa...", "options": ["$10$ cm/s", "$20$ cm/s", "$30$ cm/s", "$40$ cm/s"], "correctAnswer": "$20$ cm/s", "solution": "- Áp dụng công thức: $v_{max} = \\omega A = 20$ cm/s.\\n- Chọn đáp án: $20$ cm/s."}
-    - GROUP-TF: {"type": "group-tf", "level": "H", "text": "Cho một vật dao động điều hòa có phương trình $x = 5\\cos(2\\pi t)$ cm...", "subQuestions": [{"text": "Biên độ dao động của vật là $5$ cm.", "correctAnswer": "True", "level": "B"}, {"text": "Tần số góc của dao động là $4\\pi$ rad/s.", "correctAnswer": "False", "level": "B"}, {"text": "Vận tốc cực đại của vật là $10\\pi$ cm/s.", "correctAnswer": "True", "level": "H"}, {"text": "Gia tốc cực đại của vật là $100\\pi^2$ cm/s$^2$.", "correctAnswer": "False", "level": "VD"}], "solution": "- a) Đúng. Biên độ $A = 5$ cm.\\n- b) Sai. Tần số góc $\\omega = 2\\pi$ rad/s.\\n- c) Đúng. Vận tốc cực đại $v_{max} = \\omega A = 10\\pi$ cm/s.\\n- d) Sai. Gia tốc cực đại $a_{max} = \\omega^2 A = 20\\pi^2$ cm/s$^2$."}
-    - SHORT: {"type": "short", "level": "VD", "text": "Một mạch dao động LC lí tưởng gồm cuộn cảm thuần $L = 2$ mH và tụ điện $C = 8$ pF. Chu kỳ dao động riêng của mạch là bao nhiêu microgiây (làm tròn đến 2 chữ số thập phân)?", "correctAnswer": "0.79", "solution": "- Chu kỳ dao động: $T = 2\\pi\\sqrt{LC} = 2,51 \\cdot 10^{-6}$ s = $2,51$ $\\mu$s.\\n- Đáp số: $0.79$."}
+    - MCQ: {"type": "mcq", "level": "B", "text": "Một vật dao động điều hòa...", "options": ["$10$ cm/s", "$20$ cm/s", "$30$ cm/s", "$40$ cm/s"], "correctAnswer": "$20$ cm/s", "solution": ${withSolution ? `"- Áp dụng công thức: $v_{max} = \\\\omega A = 20$ cm/s.\\\\n- Chọn đáp án: $20$ cm/s."` : `""`}}
+    - GROUP-TF: {"type": "group-tf", "level": "H", "text": "Cho một vật dao động điều hòa có phương trình $x = 5\\\\cos(2\\\\pi t)$ cm...", "subQuestions": [{"text": "Biên độ dao động của vật là $5$ cm.", "correctAnswer": "True", "level": "B"}, {"text": "Tần số góc của dao động là $4\\\\pi$ rad/s.", "correctAnswer": "False", "level": "B"}, {"text": "Vận tốc cực đại của vật là $10\\\\pi$ cm/s.", "correctAnswer": "True", "level": "H"}, {"text": "Gia tốc cực đại của vật là $100\\\\pi^2$ cm/s$^2$.", "correctAnswer": "False", "level": "VD"}], "solution": ${withSolution ? `"- a) Đúng. Biên độ $A = 5$ cm.\\\\n- b) Sai. Tần số góc $\\\\omega = 2\\\\pi$ rad/s.\\\\n- c) Đúng. Vận tốc cực đại $v_{max} = \\\\omega A = 10\\\\pi$ cm/s.\\\\n- d) Sai. Gia tốc cực đại $a_{max} = \\\\omega^2 A = 20\\\\pi^2$ cm/s$^2$."` : `""`}}
+    - SHORT: {"type": "short", "level": "VD", "text": "Một mạch dao động LC lí tưởng gồm cuộn cảm thuần $L = 2$ mH và tụ điện $C = 8$ pF. Chu kỳ dao động riêng của mạch là bao nhiêu microgiây (làm tròn đến 2 chữ số thập phân)?", "correctAnswer": "0.79", "solution": ${withSolution ? `"- Chu kỳ dao động: $T = 2\\\\pi\\\\sqrt{LC} = 2,51 \\\\cdot 10^{-6}$ s = $2,51$ $\\\\mu$s.\\\\n- Đáp số: $0.79$."` : `""`}}
     `;
+
+    const EXTRACTION_INSTRUCTION = buildExtractionInstruction(true);
 
     const processAIQuestions = (rawData: any[]): Question[] => {
         return rawData.map((item: any) => {
@@ -651,15 +653,16 @@
         return allGeneratedQuestions;
     };
 
-    export const parseQuestionsFromPDF = async (base64Data: string, customApiKey?: string): Promise<Question[]> => {
+    export const parseQuestionsFromPDF = async (base64Data: string, customApiKey?: string, withSolution: boolean = true): Promise<Question[]> => {
     const ai = getAiClient(customApiKey);
     
     try {
+        const instruction = buildExtractionInstruction(withSolution);
         const response = await callGeminiWithRetryAndFallback(ai, {
             contents: {
                 parts: [
                     { inlineData: { mimeType: "application/pdf", data: base64Data } },
-                    { text: EXTRACTION_INSTRUCTION }
+                    { text: instruction }
                 ]
             },
             config: { 
@@ -675,7 +678,7 @@
                             points: { type: Type.NUMBER },
                             options: { type: Type.ARRAY, items: { type: Type.STRING }, nullable: true },
                             correctAnswer: { type: Type.STRING, nullable: true },
-                            solution: { type: Type.STRING },
+                            solution: { type: Type.STRING, nullable: true },
                             subQuestions: {
                                 type: Type.ARRAY,
                                 nullable: true,
@@ -690,7 +693,7 @@
                                 }
                             }
                         },
-                        required: ["type", "text", "solution"]
+                        required: ["type", "text"]
                     }
                 }
             }
@@ -699,7 +702,14 @@
         const textOutput = response.text || "[]";
         const rawData = safeParseJsonWithLatex(textOutput);
         
-        return processAIQuestions(rawData);
+        const questions = processAIQuestions(rawData);
+        if (!withSolution) {
+            return questions.map(q => ({
+                ...q,
+                solution: ''
+            }));
+        }
+        return questions;
     } catch (error: any) {
         throw new Error("Lỗi đọc PDF: " + formatGeminiError(error));
     }
@@ -927,12 +937,13 @@
         };
     };
 
-    export const parseQuestionsFromText = async (rawText: string, customApiKey?: string): Promise<Question[]> => {
+    export const parseQuestionsFromText = async (rawText: string, customApiKey?: string, withSolution: boolean = true): Promise<Question[]> => {
         const ai = getAiClient(customApiKey);
         
         try {
+            const instruction = buildExtractionInstruction(withSolution);
             const response = await callGeminiWithRetryAndFallback(ai, {
-                contents: `${EXTRACTION_INSTRUCTION}\n\nNỘI DUNG VĂN BẢN CẦN TRÍCH XUẤT:\n${rawText}`,
+                contents: `${instruction}\n\nNỘI DUNG VĂN BẢN CẦN TRÍCH XUẤT:\n${rawText}`,
                 config: {
                     responseMimeType: "application/json",
                     responseSchema: {
@@ -945,7 +956,7 @@
                                 points: { type: Type.NUMBER },
                                 options: { type: Type.ARRAY, items: { type: Type.STRING }, nullable: true },
                                 correctAnswer: { type: Type.STRING, nullable: true },
-                                solution: { type: Type.STRING },
+                                solution: { type: Type.STRING, nullable: true },
                                 subQuestions: {
                                     type: Type.ARRAY,
                                     nullable: true,
@@ -959,7 +970,7 @@
                                     }
                                 }
                             },
-                            required: ["type", "text", "solution"]
+                            required: ["type", "text"]
                         }
                     }
                 }
@@ -968,7 +979,14 @@
             const textOutput = response.text || "[]";
             const rawData = safeParseJsonWithLatex(textOutput) || [];
             
-            return processAIQuestions(rawData);
+            const questions = processAIQuestions(rawData);
+            if (!withSolution) {
+                return questions.map(q => ({
+                    ...q,
+                    solution: ''
+                }));
+            }
+            return questions;
         } catch (error: any) {
             throw new Error("Lỗi bóc tách văn bản: " + formatGeminiError(error));
         }
