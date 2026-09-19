@@ -45,6 +45,7 @@ import ClassManager from './ClassManager';
 import StorageConfigModal from './StorageConfigModal';
 import TeacherManager from './TeacherManager';
 import DatabaseMonitor from './DatabaseMonitor';
+import PdfImageManagerModal from './PdfImageManagerModal';
 
 import StudentModal from './StudentModal';
 import StudentDetailModal from './StudentDetailModal';
@@ -636,6 +637,10 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
   const [isBankLoading, setIsBankLoading] = useState(false);
   const [isSyncModalOpen, setIsSyncModalOpen] = useState(false);
   const [syncForceAll, setSyncForceAll] = useState(false);
+  const [pendingPdfFile, setPendingPdfFile] = useState<File | null>(null);
+  const [lastUploadedPdfFile, setLastUploadedPdfFile] = useState<File | null>(null);
+  const [isPdfImageManagerOpen, setIsPdfImageManagerOpen] = useState(false);
+  const [pdfOptionWithSolution, setPdfOptionWithSolution] = useState<boolean>(true);
 
   const loadBankDataIfNeeded = useCallback(async (targetSub?: string, targetG?: string) => {
     if (!isDatabaseConnected()) return;
@@ -1324,18 +1329,33 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
     );
   };
 
-  const handlePdfExtract = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handlePdfExtract = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    // Lưu file vào state để hiển thị modal 2 lựa chọn
+    setPendingPdfFile(file);
+    setLastUploadedPdfFile(file);
+    setPdfOptionWithSolution(true); // Mặc định có giải chi tiết
+    e.target.value = ''; // Reset input để có thể chọn lại file cùng tên nếu cần
+  };
+
+  const startPdfExtraction = async (withSolution: boolean) => {
+    if (!pendingPdfFile) return;
+    const file = pendingPdfFile;
+    setPendingPdfFile(null);
     setIsAiLoading(true);
     try {
       const reader = new FileReader();
       reader.onload = async () => {
         try {
           const base64 = (reader.result as string).split(',')[1];
-          const newQs = await parseQuestionsFromPDF(base64, customApiKey);
+          const newQs = await parseQuestionsFromPDF(base64, customApiKey, withSolution);
           setQuestions([...questions, ...newQs]);
-          showAlert("Thành công", `Đã trích xuất thành công ${newQs.length} câu hỏi từ file PDF!`, "success");
+          showAlert(
+            "Thành công",
+            `Đã trích xuất ${newQs.length} câu hỏi từ file PDF (${withSolution ? 'Kèm đáp án & lời giải chi tiết' : 'Điền đáp án, không kèm lời giải chi tiết'})!`,
+            "success"
+          );
         } catch (err: any) {
           showAlert("Lỗi trích xuất PDF", err.message || "Không thể đọc nội dung PDF", "error");
         } finally {
@@ -1349,13 +1369,17 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
     }
   };
 
-  const handleTextExtract = async (text: string) => {
+  const handleTextExtract = async (text: string, withSolution: boolean = true) => {
       if (!text.trim()) return;
       setIsAiLoading(true);
       try {
-          const newQs = await parseQuestionsFromText(text, customApiKey);
+          const newQs = await parseQuestionsFromText(text, customApiKey, withSolution);
           setQuestions([...questions, ...newQs]);
-          showAlert("Thành công", `Đã trích xuất ${newQs.length} câu hỏi từ văn bản!`, "success");
+          showAlert(
+            "Thành công",
+            `Đã trích xuất ${newQs.length} câu hỏi từ văn bản (${withSolution ? 'Kèm đáp án & lời giải chi tiết' : 'Điền đáp án, không kèm lời giải chi tiết'})!`,
+            "success"
+          );
       } catch (error: any) {
           showAlert("Lỗi trích xuất văn bản", error.message, "error");
       } finally {
@@ -1950,6 +1974,8 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
                     isSuperAdmin={isSuperAdmin}
                     customApiKey={customApiKey}
                     onApiKeyChange={handleApiKeyChange}
+                    onOpenPdfImageManager={() => setIsPdfImageManagerOpen(true)}
+                    hasPdfFileForImageManager={Boolean(lastUploadedPdfFile || pendingPdfFile)}
                 />
               </>
             ) : (
@@ -2551,6 +2577,20 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
         onClose={() => setIsStorageModalOpen(false)}
       />
 
+      {/* PDF Image Extractor & Crop Diagram Modal */}
+      {isPdfImageManagerOpen && (
+        <PdfImageManagerModal
+          isOpen={isPdfImageManagerOpen}
+          onClose={() => setIsPdfImageManagerOpen(false)}
+          pdfFile={lastUploadedPdfFile || pendingPdfFile}
+          questions={questions}
+          onApplyImageToQuestion={(qId, imgUrl) => {
+            setQuestions(prev => prev.map(q => q.id === qId ? { ...q, imageUrl: imgUrl } : q));
+          }}
+          onOpenStorageConfig={() => setIsStorageModalOpen(true)}
+        />
+      )}
+
       {/* Alert and Confirmation Modal Overlay */}
       {/* Modal Cấu hình Quét & Đồng bộ Đề thi vào Ngân hàng */}
       {isSyncModalOpen && (
@@ -2655,6 +2695,101 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
               >
                 {isSyncing ? <Loader2 className="animate-spin" size={14} /> : <Zap size={14} className="fill-current" />}
                 Bắt đầu cập nhật
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Lựa chọn chế độ bóc tách PDF */}
+      {pendingPdfFile && (
+        <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-[4500] flex items-center justify-center p-4 animate-fade-in">
+          <div className="bg-white max-w-lg w-full rounded-3xl border shadow-2xl p-6 overflow-hidden animate-scale-up space-y-5">
+            <div className="flex items-start gap-3.5 pb-4 border-b border-slate-100">
+              <div className="p-3 bg-blue-50 text-blue-600 rounded-2xl shrink-0">
+                <FileUp size={24} />
+              </div>
+              <div>
+                <h3 className="text-base font-black text-slate-900 uppercase tracking-tight">Tùy chọn bóc tách đề từ PDF</h3>
+                <p className="text-xs text-slate-500 font-bold mt-0.5">
+                  File: <span className="text-blue-600 font-semibold">{pendingPdfFile.name}</span> ({(pendingPdfFile.size / 1024).toFixed(1)} KB)
+                </p>
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              <p className="text-xs font-black text-slate-700 uppercase tracking-wider">Chọn phương thức bóc tách:</p>
+
+              {/* Lựa chọn 1: Bóc tách, điền đáp án, KHÔNG giải chi tiết */}
+              <div
+                onClick={() => setPdfOptionWithSolution(false)}
+                className={`p-4 rounded-2xl border-2 cursor-pointer transition-all ${
+                  !pdfOptionWithSolution
+                    ? 'border-blue-600 bg-blue-50/60 shadow-sm ring-2 ring-blue-600/20'
+                    : 'border-slate-200 hover:border-slate-300 bg-white'
+                }`}
+              >
+                <div className="flex items-start gap-3">
+                  <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center mt-0.5 transition-all ${
+                    !pdfOptionWithSolution ? 'border-blue-600 bg-blue-600' : 'border-slate-300'
+                  }`}>
+                    {!pdfOptionWithSolution && <Check size={12} className="text-white stroke-[3]" />}
+                  </div>
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-black uppercase text-slate-900">1. Bóc tách & Điền đáp án (KHÔNG giải chi tiết)</span>
+                      <span className="px-2 py-0.5 bg-amber-100 text-amber-800 text-[10px] font-black rounded-md">Bảo mật</span>
+                    </div>
+                    <p className="text-xs text-slate-600 font-medium mt-1 leading-relaxed">
+                      AI sẽ quét đề, nhận diện đầy đủ câu hỏi, tự động tìm và điền đáp án đúng nhưng <b>để trống lời giải</b>. Phù hợp khi bạn chưa muốn học sinh xem đáp án chi tiết hoặc chỉ muốn tự soạn/dùng AI giải từng câu riêng lẻ sau đó.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Lựa chọn 2: Bóc tách, điền đáp án, CÓ giải chi tiết */}
+              <div
+                onClick={() => setPdfOptionWithSolution(true)}
+                className={`p-4 rounded-2xl border-2 cursor-pointer transition-all ${
+                  pdfOptionWithSolution
+                    ? 'border-blue-600 bg-blue-50/60 shadow-sm ring-2 ring-blue-600/20'
+                    : 'border-slate-200 hover:border-slate-300 bg-white'
+                }`}
+              >
+                <div className="flex items-start gap-3">
+                  <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center mt-0.5 transition-all ${
+                    pdfOptionWithSolution ? 'border-blue-600 bg-blue-600' : 'border-slate-300'
+                  }`}>
+                    {pdfOptionWithSolution && <Check size={12} className="text-white stroke-[3]" />}
+                  </div>
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-black uppercase text-slate-900">2. Bóc tách, Điền đáp án & CÓ giải chi tiết</span>
+                      <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 text-[10px] font-black rounded-md">Toàn diện</span>
+                    </div>
+                    <p className="text-xs text-slate-600 font-medium mt-1 leading-relaxed">
+                      AI trích xuất đề, tự động điền đáp án đúng và <b>soạn sẵn lời giải súc tích</b> cho tất cả câu hỏi theo chuẩn sư phạm. Phù hợp khi cần đề thi hoàn chỉnh kèm hướng dẫn giải chi tiết cho học sinh tự học.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setPendingPdfFile(null)}
+                className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-600 font-black text-xs uppercase rounded-xl transition-all"
+              >
+                Hủy bỏ
+              </button>
+              <button
+                type="button"
+                onClick={() => startPdfExtraction(pdfOptionWithSolution)}
+                className="flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-black text-white font-black text-xs uppercase rounded-xl transition-all shadow-md shadow-blue-200 active:scale-95"
+              >
+                <Zap size={14} className="fill-current" />
+                Tiến hành bóc tách PDF
               </button>
             </div>
           </div>
