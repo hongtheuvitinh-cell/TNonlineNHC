@@ -1649,14 +1649,20 @@ export default function QuizEditor(props: QuizEditorProps) {
         if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
             try {
                 const result = parseQuestionsFromJSON(trimmed);
-                props.setQuestions([...props.questions, ...result.questions]);
-                if (result.quizTitle && !props.title) props.setTitle(result.quizTitle);
+                if (props.questions.length === 0) {
+                    props.setQuestions(result.questions);
+                } else {
+                    props.setQuestions([...props.questions, ...result.questions]);
+                }
+                if (result.quizTitle) {
+                    props.setTitle(result.quizTitle);
+                }
                 if (result.grade) props.setGrade(result.grade);
                 if (result.category) props.setCategory(result.category);
                 if (result.durationMinutes) props.setDuration(result.durationMinutes);
                 setPastedText('');
                 setIsTextInputOpen(false);
-                alert(`🎉 Phát hiện chuỗi JSON! Đã nhập thành công ${result.questions.length} câu hỏi (0% AI, đầy đủ đáp án & lời giải).`);
+                alert(`🎉 Phát hiện chuỗi JSON! Đã nhập thành công ${result.questions.length} câu hỏi (0% AI, đầy đủ đáp án & lời giải). Tiêu đề đề thi: "${result.quizTitle || props.title || 'Mặc định'}".`);
                 return;
             } catch (jsonErr: any) {
                 console.warn("Thử parse JSON thất bại, tiếp tục bóc tách qua AI:", jsonErr);
@@ -1676,12 +1682,18 @@ export default function QuizEditor(props: QuizEditorProps) {
                 try {
                     const content = reader.result as string;
                     const result = parseQuestionsFromJSON(content);
-                    props.setQuestions([...props.questions, ...result.questions]);
-                    if (result.quizTitle && !props.title) props.setTitle(result.quizTitle);
+                    if (props.questions.length === 0) {
+                        props.setQuestions(result.questions);
+                    } else {
+                        props.setQuestions([...props.questions, ...result.questions]);
+                    }
+                    if (result.quizTitle) {
+                        props.setTitle(result.quizTitle);
+                    }
                     if (result.grade) props.setGrade(result.grade);
                     if (result.category) props.setCategory(result.category);
                     if (result.durationMinutes) props.setDuration(result.durationMinutes);
-                    alert(`🎉 Đã bóc tách thành công ${result.questions.length} câu hỏi từ file JSON mà KHÔNG tốn lượt AI nào! (Bao gồm đầy đủ đáp án & lời giải chi tiết)`);
+                    alert(`🎉 Đã bóc tách thành công ${result.questions.length} câu hỏi từ file JSON mà KHÔNG tốn lượt AI nào! Tiêu đề đề thi: "${result.quizTitle || props.title || 'Mặc định'}".`);
                 } catch (err: any) {
                     alert("❌ Lỗi cấu trúc JSON: " + err.message);
                 }

@@ -2,7 +2,7 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { User, Quiz, Result, Chapter, Question, ExamSession, PublishedResult, Grade, ClassRoom, QuizFolder } from '../types';
 import { getSavedSupabaseConfig } from './supabaseMigration';
 import { normalizeDateTimeForStorage } from './dateUtils';
-import { normalizeSubject } from './subjectUtils';
+import { normalizeSubject, normalizeGrade } from './subjectUtils';
 import { v4 as uuidv4 } from 'uuid';
 
 let _supabaseClient: SupabaseClient | null = null;
@@ -569,7 +569,16 @@ export const supabaseDb = {
       let query = client.from('bank_questions').select('*');
 
       if (filters?.grade && filters.grade !== 'all') {
-        query = query.eq('quiz_grade', filters.grade);
+        const normG = normalizeGrade(filters.grade);
+        if (normG === '12') {
+          query = query.or('quiz_grade.eq.12,quiz_grade.eq.K12,quiz_grade.ilike.%12%');
+        } else if (normG === '11') {
+          query = query.or('quiz_grade.eq.11,quiz_grade.eq.K11,quiz_grade.ilike.%11%');
+        } else if (normG === '10') {
+          query = query.or('quiz_grade.eq.10,quiz_grade.eq.K10,quiz_grade.ilike.%10%');
+        } else {
+          query = query.eq('quiz_grade', filters.grade);
+        }
       }
 
       if (filters?.subject && filters.subject !== 'all') {
@@ -610,7 +619,16 @@ export const supabaseDb = {
       let query = client.from('bank_questions').select('*');
 
       if (filters?.grade && filters.grade !== 'all') {
-        query = query.eq('quiz_grade', filters.grade);
+        const normG = normalizeGrade(filters.grade);
+        if (normG === '12') {
+          query = query.or('quiz_grade.eq.12,quiz_grade.eq.K12,quiz_grade.ilike.%12%');
+        } else if (normG === '11') {
+          query = query.or('quiz_grade.eq.11,quiz_grade.eq.K11,quiz_grade.ilike.%11%');
+        } else if (normG === '10') {
+          query = query.or('quiz_grade.eq.10,quiz_grade.eq.K10,quiz_grade.ilike.%10%');
+        } else {
+          query = query.eq('quiz_grade', filters.grade);
+        }
       }
 
       if (filters?.subject && filters.subject !== 'all') {

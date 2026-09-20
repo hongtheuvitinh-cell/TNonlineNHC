@@ -91,3 +91,20 @@ export const getDisplaySubject = (subj?: string | null): string => {
   if (norm === 'công nghệ') return 'Công nghệ';
   return subj.trim();
 };
+
+export const normalizeGrade = (g?: string | number | null): string => {
+  if (!g) return 'all';
+  const s = g.toString().trim().toLowerCase();
+  if (s === 'all' || s === 'tất cả' || s === '') return 'all';
+  if (s.includes('12')) return '12';
+  if (s.includes('11')) return '11';
+  if (s.includes('10')) return '10';
+  return s;
+};
+
+export const isSameGrade = (g1?: string | number | null, g2?: string | number | null): boolean => {
+  const n1 = normalizeGrade(g1);
+  const n2 = normalizeGrade(g2);
+  if (n1 === 'all' || n2 === 'all') return true;
+  return n1 === n2;
+};

@@ -21,7 +21,7 @@ import { ref, uploadBytes, getDownloadURL, getStorage, deleteObject } from 'fire
 import app, { db, storage } from './firebase';
 import { User, Quiz, Result, Chapter, QuizFolder, Question, ExamSession, PublishedResult, Grade, ClassRoom } from '../types';
 import { v4 as uuidv4 } from 'uuid';
-import { isSameSubject, normalizeSubject } from './subjectUtils';
+import { isSameSubject, normalizeSubject, isSameGrade } from './subjectUtils';
 import { getCurrentAcademicYear, getQuizAcademicYear } from './academicUtils';
 import { uploadImageToSupabaseStorage } from './supabaseMigration';
 import { supabaseDb, isSupabaseConnected } from './supabaseService';
@@ -2757,7 +2757,7 @@ export const getBankQuestions = async (
     });
 
     if (filters?.grade && filters.grade !== 'all') {
-      questions = questions.filter(q => String(q.quizGrade || '') === String(filters.grade));
+      questions = questions.filter(q => isSameGrade(q.quizGrade, filters.grade));
     }
     if (filters?.subject && filters.subject !== 'all') {
       questions = questions.filter(q => q.subject && isSameSubject(q.subject, filters.subject!));
@@ -2983,13 +2983,14 @@ export const syncQuizzesToBank = async (
             const hasNewLevel = !currentBq?.level && !!enrichedQ.level;
             const hasNewCategory = !currentBq?.quizCategory && !!enrichedQ.quizCategory;
             const hasNewSubject = !currentBq?.subject && !!enrichedQ.subject;
+            const hasTitleChanged = Boolean(enrichedQ.quizTitle && currentBq?.quizTitle !== enrichedQ.quizTitle);
 
-            if (hasNewImage || hasNewSolution || hasNewLevel || hasNewCategory || hasNewSubject) {
+            if (hasNewImage || hasNewSolution || hasNewLevel || hasNewCategory || hasNewSubject || hasTitleChanged) {
               const mergedQ: Question = {
                 ...(currentBq || enrichedQ),
                 ...enrichedQ,
                 id: targetDocId,
-                quizTitle: currentBq?.quizTitle || enrichedQ.quizTitle,
+                quizTitle: enrichedQ.quizTitle || currentBq?.quizTitle,
                 quizCategory: enrichedQ.quizCategory || currentBq?.quizCategory,
                 imageUrl: enrichedQ.imageUrl || currentBq?.imageUrl,
                 solution: enrichedQ.solution || currentBq?.solution,

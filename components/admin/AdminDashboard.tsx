@@ -389,17 +389,13 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
   const [bSearch, setBSearch] = useState('');
   const [bSubjectFilter, setBSubjectFilter] = useState<string>(() => {
     if (!isSuperAdmin && currentUser?.subject) return currentUser.subject;
-    return currentUser?.subject || 'Toán';
+    return currentUser?.subject || 'all';
   });
 
   // Thông minh nhận diện môn & khối từ thông tin giáo viên đang đăng nhập
   useEffect(() => {
-    if (currentUser?.subject) {
-      if (!isSuperAdmin) {
-        setBSubjectFilter(currentUser.subject);
-      } else if (!bSubjectFilter || bSubjectFilter === 'all' || bSubjectFilter === 'Toán') {
-        setBSubjectFilter(currentUser.subject);
-      }
+    if (currentUser?.subject && !isSuperAdmin) {
+      setBSubjectFilter(currentUser.subject);
     }
     if (currentUser?.grade && (!bGradeFilter || bGradeFilter === 'all')) {
       setBGradeFilter(currentUser.grade as Grade);
@@ -648,8 +644,8 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
     if (!isDatabaseConnected()) return;
     setIsBankLoading(true);
     try {
-      const sub = targetSub || (bSubjectFilter !== 'all' ? bSubjectFilter : (currentUser?.subject || 'Toán'));
-      const gr = targetG || (bGradeFilter !== 'all' ? bGradeFilter : ((currentUser?.grade as Grade) || '12'));
+      const sub = targetSub || bSubjectFilter;
+      const gr = targetG || bGradeFilter;
       const [b, c] = await Promise.all([
         getBankQuestions(false, { subject: sub, grade: gr }),
         getChapters()
@@ -661,20 +657,20 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
     } finally {
       setIsBankLoading(false);
     }
-  }, [bSubjectFilter, bGradeFilter, currentUser?.subject, currentUser?.grade]);
+  }, [bSubjectFilter, bGradeFilter]);
 
   // Tự động nạp câu hỏi ngân hàng khi GV đổi Môn hoặc Khối (tận dụng RAM cache 0 bytes mạng)
   useEffect(() => {
     if ((activeTab === 'bank' || isBankOpen) && isDatabaseConnected()) {
-      const sub = bSubjectFilter !== 'all' ? bSubjectFilter : (currentUser?.subject || 'Toán');
-      const gr = bGradeFilter !== 'all' ? bGradeFilter : undefined;
+      const sub = bSubjectFilter;
+      const gr = bGradeFilter;
       getBankQuestions(false, { subject: sub, grade: gr }).then(res => {
         setBankQuestions(res);
       }).catch(err => {
         console.error("Lỗi cập nhật câu hỏi ngân hàng theo bộ lọc:", err);
       });
     }
-  }, [bSubjectFilter, bGradeFilter, activeTab, isBankOpen, currentUser?.subject]);
+  }, [bSubjectFilter, bGradeFilter, activeTab, isBankOpen]);
 
   const allAvailableQuestions = useMemo(() => {
     return accessibleBankQuestions;

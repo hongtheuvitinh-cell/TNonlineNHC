@@ -4,11 +4,11 @@ import { Question, QuestionType, Grade, Chapter, QuestionLevel, User } from '../
 import { 
     Database, Search, CheckCircle2, CheckSquare, Square, X, BookOpen, Trash2, 
     AlertTriangle, Loader2, Sparkles, MousePointer, Eye, Layers, ChevronDown, 
-    ChevronUp, ChevronsUpDown, Check, Lock
+    ChevronUp, ChevronsUpDown, Check, Lock, RotateCcw
 } from 'lucide-react';
 import LatexText from '../LatexText';
 import { v4 as uuidv4 } from 'uuid';
-import { isSameSubject, STANDARD_SUBJECTS, normalizeSubject, getDisplaySubject } from '../../services/subjectUtils';
+import { isSameSubject, STANDARD_SUBJECTS, normalizeSubject, getDisplaySubject, isSameGrade } from '../../services/subjectUtils';
 import { getQuestionFingerprint } from '../../services/storage';
 
 interface QuestionBankProps {
@@ -202,23 +202,44 @@ export default function QuestionBank({
                 if (!isSameSubject(q.subject, bSubjectFilter)) return false;
             }
 
-            // Lọc khối - Bình thường hóa chuỗi
-            const qGradeRaw = (q.quizGrade || 'all').toString().trim();
-            const matchGrade = bGradeFilter === 'all' || qGradeRaw === bGradeFilter;
+            // Lọc khối - Bình thường hóa chuỗi (hỗ trợ K12, 12, Khối 12...)
+            const matchGrade = isSameGrade(q.quizGrade, bGradeFilter);
+
+            // Kiểm tra tìm kiếm theo từ khóa
+            const cleanSearch = bSearch ? bSearch.trim().toLowerCase() : '';
+            const matchSearchText = !cleanSearch || 
+                              q.text.toLowerCase().includes(cleanSearch) ||
+                              (q.quizTitle && q.quizTitle.toLowerCase().includes(cleanSearch)) ||
+                              (q.chapterName && q.chapterName.toLowerCase().includes(cleanSearch)) ||
+                              (q.quizCategory && q.quizCategory.toLowerCase().includes(cleanSearch)) ||
+                              (q.subject && q.subject.toLowerCase().includes(cleanSearch)) ||
+                              (q.id && q.id.toLowerCase().includes(cleanSearch));
+
+            // Nếu từ khóa tìm kiếm khớp trực tiếp với tên Đề thi (ví dụ "Đề VIP 7"),
+            // Hệ thống sẽ ưu tiên hiển thị toàn bộ câu hỏi của đề đó, không bị chặn bởi dropdown Chương/Dạng câu
+            const matchesQuizTitleDirectly = Boolean(
+                cleanSearch.length >= 2 && 
+                q.quizTitle && 
+                q.quizTitle.toLowerCase().includes(cleanSearch)
+            );
 
             // Lọc chương
-            const qChapter = (q.quizCategory || '').toString().trim().toLowerCase();
+            const qChapter = (q.quizCategory || q.chapterName || '').toString().trim().toLowerCase();
             const filterVal = bChapterFilter.trim().toLowerCase();
-            const matchChapter = bChapterFilter === 'all' || qChapter === filterVal;
+            const matchChapter = bChapterFilter === 'all' || 
+                                 matchesQuizTitleDirectly ||
+                                 qChapter === filterVal || 
+                                 (filterVal !== '' && qChapter.includes(filterVal)) || 
+                                 (qChapter !== '' && filterVal.includes(qChapter));
             
-            // Lọc dạng
+            // Lọc dạng câu hỏi
             let qTypeRaw = (q.type || 'mcq').toString().trim().toLowerCase().replace('_', '-');
             const targetType = bTypeFilter.toString().trim().toLowerCase().replace('_', '-');
-            const matchType = bTypeFilter === 'all' || qTypeRaw === targetType;
+            const matchType = bTypeFilter === 'all' || matchesQuizTitleDirectly || qTypeRaw === targetType;
             
             // Lọc mức độ nhận thức (B, H, VD, VDC)
             let matchLevel = true;
-            if (bLevelFilter !== 'all') {
+            if (bLevelFilter !== 'all' && !matchesQuizTitleDirectly) {
                 if (q.level) {
                     matchLevel = q.level === bLevelFilter;
                 } else if (q.subQuestions && q.subQuestions.length > 0) {
@@ -228,13 +249,7 @@ export default function QuestionBank({
                 }
             }
 
-            // Tìm kiếm
-            const matchSearch = !bSearch || 
-                              q.text.toLowerCase().includes(bSearch.toLowerCase()) ||
-                              (q.quizTitle && q.quizTitle.toLowerCase().includes(bSearch.toLowerCase())) ||
-                              (q.subject && q.subject.toLowerCase().includes(bSearch.toLowerCase()));
-            
-            return matchGrade && matchChapter && matchType && matchLevel && matchSearch;
+            return matchGrade && matchChapter && matchType && matchLevel && matchSearchText;
         });
     }, [questions, selectedQuestionsMap, showOnlySelected, bGradeFilter, bChapterFilter, bTypeFilter, bLevelFilter, bSearch, bSubjectFilter]);
 
@@ -982,8 +997,26 @@ export default function QuestionBank({
                             <p className="text-xs text-slate-400 font-medium max-w-md mx-auto">
                                 {questions.length === 0 
                                     ? "Bạn hãy nhấn nút \"CẬP NHẬT TỪ ĐỀ THI\" ở góc trên để hệ thống tự động quét và nạp toàn bộ câu hỏi từ các đề thi vào Ngân hàng."
-                                    : "Hãy thử thay đổi bộ lọc Khối, Chương, Dạng câu hoặc Môn học để hiển thị câu hỏi."}
+                                    : "Bộ lọc Chương hoặc Dạng câu đang thu hẹp kết quả. Hãy nhấn nút dưới đây để mở rộng danh sách."}
                             </p>
+                            {questions.length > 0 && (
+                                <div className="pt-2">
+                                    <button 
+                                        onClick={() => {
+                                            setBGradeFilter('all');
+                                            setBChapterFilter('all');
+                                            setBTypeFilter('all');
+                                            setBLevelFilter('all');
+                                            setBSearch('');
+                                            setShowOnlySelected(false);
+                                            if (setBSubjectFilter) setBSubjectFilter('all');
+                                        }}
+                                        className="px-5 py-2.5 bg-blue-600 text-white rounded-xl text-xs font-black uppercase shadow-md hover:bg-blue-700 transition-all inline-flex items-center gap-2"
+                                    >
+                                        <RotateCcw size={14}/> Xóa bộ lọc & Hiển thị lại câu hỏi
+                                    </button>
+                                </div>
+                            )}
                         </div>
                     </div>
                 )}
