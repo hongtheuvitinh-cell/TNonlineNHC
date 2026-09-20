@@ -311,24 +311,38 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
   // Filters
   const [qSearch, setQSearch] = useState('');
   const [qAcademicYearFilter, setQAcademicYearFilter] = useState<string>(getCurrentAcademicYear());
-  const [qSubjectFilter, setQSubjectFilter] = useState<string>(() => (currentUser?.subject && !isSuperAdmin) ? currentUser.subject : 'all');
-  const [qGradeFilter, setQGradeFilter] = useState<Grade | 'all'>(() => isSuperAdmin ? 'all' : '12');
+  const [qSubjectFilter, setQSubjectFilter] = useState<string>(() => {
+    if (!isSuperAdmin && currentUser?.subject) return currentUser.subject;
+    return 'Toán';
+  });
+  const [qGradeFilter, setQGradeFilter] = useState<Grade | 'all'>('12');
   const [qAuthorFilter, setQAuthorFilter] = useState<string>(() => isSuperAdmin ? 'all' : 'mine');
   const [qChapterFilter, setQChapterFilter] = useState('all');
 
-  // Mặc định cho màn hình GV thường: Năm hiện hành, Khối 12, Đề của tôi, Môn của GV
+  // Mặc định chuẩn hóa theo phân quyền SuperAdmin vs Giáo viên
   useEffect(() => {
-    if (currentUser && !isSuperAdmin) {
-      setQGradeFilter('12');
+    setQAcademicYearFilter(getCurrentAcademicYear());
+    setQGradeFilter('12');
+    setSGradeFilter('12');
+    setRGradeFilter('12');
+
+    if (isSuperAdmin) {
+      setQSubjectFilter('Toán');
+      setQAuthorFilter('all');
+      setBSubjectFilter('Toán');
+      setBGradeFilter('12');
+    } else if (currentUser) {
       setQAuthorFilter('mine');
-      setQAcademicYearFilter(getCurrentAcademicYear());
-      setSGradeFilter('12');
-      setRGradeFilter('12');
       if (currentUser.subject) {
         setQSubjectFilter(currentUser.subject);
+        setBSubjectFilter(currentUser.subject);
+      } else {
+        setQSubjectFilter('Toán');
+        setBSubjectFilter('Toán');
       }
+      setBGradeFilter((currentUser.grade as Grade) || '12');
     }
-  }, [currentUser?.id, currentUser?.subject, isSuperAdmin]);
+  }, [currentUser?.id, currentUser?.subject, currentUser?.grade, isSuperAdmin]);
   const [sSearch, setSSearch] = useState('');
   const [rSearch, setRSearch] = useState('');
   const [sGradeFilter, setSGradeFilter] = useState<Grade | 'all'>('12');
@@ -389,7 +403,7 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
   const [bSearch, setBSearch] = useState('');
   const [bSubjectFilter, setBSubjectFilter] = useState<string>(() => {
     if (!isSuperAdmin && currentUser?.subject) return currentUser.subject;
-    return currentUser?.subject || 'all';
+    return 'Toán';
   });
 
   // Thông minh nhận diện môn & khối từ thông tin giáo viên đang đăng nhập
@@ -1962,12 +1976,13 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
                     startTime={startTime} setStartTime={setStartTime} endTime={endTime} setEndTime={setEndTime}
                     questions={questions} setQuestions={setQuestions} chapters={accessibleChapters} onSave={handleSaveQuiz}
                     onCleanLabels={handleCleanLabels}
-                    onOpenBank={(type) => { 
+                    onOpenBank={(type, chapter) => { 
                         setBTypeFilter(type); 
                         const targetG = quizGrade || (currentUser?.grade as Grade) || '12';
                         const targetS = quizSubject || currentUser?.subject || 'Toán';
                         setBGradeFilter(targetG); 
                         setBSubjectFilter(targetS);
+                        setBChapterFilter(chapter || category || 'all');
                         loadBankDataIfNeeded(targetS, targetG);
                         setIsBankOpen(true); 
                     }}
