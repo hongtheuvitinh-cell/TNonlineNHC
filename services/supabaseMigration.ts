@@ -1,5 +1,5 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
-import { Quiz, Question, User, ClassRoom, Chapter, Result, ExamSession, PublishedResult } from '../types';
+import { Quiz, Question, User, ClassRoom, Chapter, QuizFolder, Result, ExamSession, PublishedResult } from '../types';
 import { v4 as uuidv4 } from 'uuid';
 
 export interface SupabaseConfig {
@@ -16,6 +16,7 @@ export interface MigrationProgress {
 export interface MigrationSummary {
   classes: number;
   chapters: number;
+  quizFolders: number;
   users: number;
   bankQuestions: number;
   quizzes: number;
@@ -90,6 +91,7 @@ export async function testSupabaseConnection(url: string, anonKey: string): Prom
     const targetTables = [
       { name: 'classes', label: 'Lớp học (classes)' },
       { name: 'chapters', label: 'Chương mục (chapters)' },
+      { name: 'quiz_folders', label: 'Thư mục cá nhân (quiz_folders)' },
       { name: 'users', label: 'Người dùng & Giáo viên (users)' },
       { name: 'bank_questions', label: 'Ngân hàng câu hỏi (bank_questions)' },
       { name: 'quizzes', label: 'Đề thi & câu hỏi (quizzes)' },
@@ -188,6 +190,7 @@ export async function migrateJsonToSupabase(
 
   const rawClasses: ClassRoom[] = data.classes || [];
   const rawChapters: Chapter[] = data.chapters || [];
+  const rawQuizFolders: QuizFolder[] = data.quizFolders || data.quiz_folders || [];
   const rawUsers: User[] = data.users || [];
   const rawBank: Question[] = data.bankQuestions || data.bank_questions || [];
   const rawQuizzes: Quiz[] = data.quizzes || [];
@@ -198,6 +201,7 @@ export async function migrateJsonToSupabase(
   const summary: MigrationSummary = {
     classes: 0,
     chapters: 0,
+    quizFolders: 0,
     users: 0,
     bankQuestions: 0,
     quizzes: 0,
@@ -251,6 +255,31 @@ export async function migrateJsonToSupabase(
         const { error } = await client.from('chapters').upsert(ch, { onConflict: 'id' });
         if (error) throw new Error(`Lỗi nạp bảng chapters: ${error.message}`);
         summary.chapters += ch.length;
+      }
+    }
+
+    // 2.5. Chuyển bảng THƯ MỤC CÁ NHÂN (quiz_folders)
+    if (rawQuizFolders.length > 0) {
+      onProgress?.({ step: "quiz_folders", detail: `Đang nạp ${rawQuizFolders.length} thư mục cá nhân...`, percent: 25 });
+      const mapped = rawQuizFolders.map(f => ({
+        id: f.id,
+        name: f.name,
+        grade: f.grade || null,
+        subject: f.subject || null,
+        chapter_id: f.chapterId || null,
+        chapter_name: f.chapterName || null,
+        created_by: f.createdBy,
+        created_by_name: f.createdByName || null,
+        color: f.color || '#3b82f6',
+        order_index: f.orderIndex ?? 0,
+        created_at: f.createdAt || new Date().toISOString()
+      }));
+
+      const chunks = chunkArray(mapped, 100);
+      for (const ch of chunks) {
+        const { error } = await client.from('quiz_folders').upsert(ch, { onConflict: 'id' });
+        if (error) throw new Error(`Lỗi nạp bảng quiz_folders: ${error.message}`);
+        summary.quizFolders += ch.length;
       }
     }
 
@@ -508,6 +537,22 @@ CREATE TABLE IF NOT EXISTS public.chapters (
 CREATE INDEX IF NOT EXISTS idx_chapters_grade_subject ON public.chapters(grade, subject);
 CREATE INDEX IF NOT EXISTS idx_chapters_order ON public.chapters("order");
 
+CREATE TABLE IF NOT EXISTS public.quiz_folders (
+    id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+    name TEXT NOT NULL,
+    grade TEXT,
+    subject TEXT,
+    chapter_id TEXT,
+    chapter_name TEXT,
+    created_by TEXT NOT NULL,
+    created_by_name TEXT,
+    color TEXT DEFAULT '#3b82f6',
+    order_index INTEGER DEFAULT 0,
+    created_at TIMESTAMPTZ DEFAULT TIMEZONE('Asia/Ho_Chi_Minh', NOW())
+);
+
+CREATE INDEX IF NOT EXISTS idx_quiz_folders_created_by ON public.quiz_folders(created_by);
+
 CREATE TABLE IF NOT EXISTS public.bank_questions (
     id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
     type TEXT NOT NULL CHECK (type IN ('mcq', 'group-tf', 'short')),
@@ -627,6 +672,7 @@ CREATE INDEX IF NOT EXISTS idx_published_results_quiz ON public.published_result
 ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.classes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.chapters ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.quiz_folders ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.bank_questions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.quizzes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.results ENABLE ROW LEVEL SECURITY;
@@ -636,6 +682,7 @@ ALTER TABLE public.published_results ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "Allow all operations for anon on users" ON public.users FOR ALL TO anon USING (true) WITH CHECK (true);
 CREATE POLICY "Allow all operations for anon on classes" ON public.classes FOR ALL TO anon USING (true) WITH CHECK (true);
 CREATE POLICY "Allow all operations for anon on chapters" ON public.chapters FOR ALL TO anon USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all operations for anon on quiz_folders" ON public.quiz_folders FOR ALL TO anon USING (true) WITH CHECK (true);
 CREATE POLICY "Allow all operations for anon on bank_questions" ON public.bank_questions FOR ALL TO anon USING (true) WITH CHECK (true);
 CREATE POLICY "Allow all operations for anon on quizzes" ON public.quizzes FOR ALL TO anon USING (true) WITH CHECK (true);
 CREATE POLICY "Allow all operations for anon on results" ON public.results FOR ALL TO anon USING (true) WITH CHECK (true);

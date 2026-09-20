@@ -21,7 +21,7 @@ import { ref, uploadBytes, getDownloadURL, getStorage, deleteObject } from 'fire
 import app, { db, storage } from './firebase';
 import { User, Quiz, Result, Chapter, QuizFolder, Question, ExamSession, PublishedResult, Grade, ClassRoom } from '../types';
 import { v4 as uuidv4 } from 'uuid';
-import { isSameSubject } from './subjectUtils';
+import { isSameSubject, normalizeSubject } from './subjectUtils';
 import { getCurrentAcademicYear, getQuizAcademicYear } from './academicUtils';
 import { uploadImageToSupabaseStorage } from './supabaseMigration';
 import { supabaseDb, isSupabaseConnected } from './supabaseService';
@@ -735,6 +735,9 @@ export const invalidateMemoryCache = (key?: 'users' | 'teachers' | 'chapters' | 
   } else if (key === 'bank') {
     delete memoryCache.bankQuestions;
     delete memoryCache.bankByFilter;
+    try {
+      localStorage.removeItem('eduquiz_bank_questions_cache');
+    } catch {}
   } else if (key === 'results') {
     delete memoryCache.resultDetails;
   }
@@ -2666,7 +2669,13 @@ export const getQuestionFingerprint = (q: Partial<Question>): string => {
   };
 
   let normText = stripNoise(q.text || '');
+  const normSub = normalizeSubject(q.subject || '');
   const type = (q.type || 'mcq').toLowerCase().replace('_', '-');
+
+  // Nếu cả nội dung câu hỏi quá ngắn (< 3 ký tự) và không có options/lời giải thì không tạo fingerprint để tránh nhận nhầm câu rỗng
+  if (normText.length < 3 && (!q.options || q.options.length === 0) && (!q.subQuestions || q.subQuestions.length === 0)) {
+    return '';
+  }
 
   let optionsSig = '';
   if (type === 'mcq' && q.options && q.options.length > 0) {
@@ -2674,7 +2683,7 @@ export const getQuestionFingerprint = (q: Partial<Question>): string => {
       .map(opt => stripNoise(opt || ''))
       .sort()
       .join('###');
-  } else if (type === 'group-tf' && q.subQuestions && q.subQuestions.length > 0) {
+  } else if ((type === 'group-tf' || type === 'tf') && q.subQuestions && q.subQuestions.length > 0) {
     optionsSig = q.subQuestions
       .map(sq => `${stripNoise(sq.text || '')}:${stripHtml(sq.correctAnswer || '').trim().toLowerCase()}`)
       .sort()
@@ -2683,7 +2692,7 @@ export const getQuestionFingerprint = (q: Partial<Question>): string => {
     optionsSig = stripNoise(q.correctAnswer || '');
   }
 
-  return `${type}__${normText}__${optionsSig}`;
+  return `${normSub}__${type}__${normText}__${optionsSig}`;
 };
 
 export const getBankQuestions = async (
@@ -2706,7 +2715,16 @@ export const getBankQuestions = async (
   }
 
   if (isSupabasePrimary()) {
-    const questions = await supabaseDb.getBankQuestions(filters);
+    const rawQuestions = await supabaseDb.getBankQuestions(filters);
+    // Đảm bảo không bao giờ có phần tử trùng ID trong mảng trả về
+    const uniqueMap = new Map<string, Question>();
+    for (const q of rawQuestions) {
+      if (q && q.id && !uniqueMap.has(q.id)) {
+        uniqueMap.set(q.id, q);
+      }
+    }
+    const questions = Array.from(uniqueMap.values());
+
     if (isFiltered) {
       if (!memoryCache.bankByFilter) memoryCache.bankByFilter = new Map();
       memoryCache.bankByFilter.set(filterKey, { data: questions, expires: now + 5 * 60 * 1000 });
@@ -2731,7 +2749,11 @@ export const getBankQuestions = async (
     trackFirestoreRead('bank_questions', snapshot.docs.length);
     let questions = snapshot.docs.map(d => {
       const row = d.data();
-      return (row.data as Question) || (row as Question);
+      const rawQ = (row.data as Question) || (row as Question);
+      return {
+        ...rawQ,
+        id: d.id, // Đồng bộ ID câu hỏi với Firestore Document ID thực tế để thao tác xóa/gộp chính xác
+      };
     });
 
     if (filters?.grade && filters.grade !== 'all') {
@@ -2741,17 +2763,26 @@ export const getBankQuestions = async (
       questions = questions.filter(q => q.subject && isSameSubject(q.subject, filters.subject!));
     }
 
+    // Đảm bảo loại bỏ triệt để phần tử trùng ID
+    const uniqueMap = new Map<string, Question>();
+    for (const q of questions) {
+      if (q && q.id && !uniqueMap.has(q.id)) {
+        uniqueMap.set(q.id, q);
+      }
+    }
+    const cleanQuestions = Array.from(uniqueMap.values());
+
     if (isFiltered) {
       if (!memoryCache.bankByFilter) memoryCache.bankByFilter = new Map();
-      memoryCache.bankByFilter.set(filterKey, { data: questions, expires: now + 5 * 60 * 1000 });
+      memoryCache.bankByFilter.set(filterKey, { data: cleanQuestions, expires: now + 5 * 60 * 1000 });
     } else {
-      memoryCache.bankQuestions = { data: questions, expires: now + 5 * 60 * 1000 };
+      memoryCache.bankQuestions = { data: cleanQuestions, expires: now + 5 * 60 * 1000 };
       try {
-        localStorage.setItem('eduquiz_bank_questions_cache', JSON.stringify(questions));
+        localStorage.setItem('eduquiz_bank_questions_cache', JSON.stringify(cleanQuestions));
       } catch {}
     }
 
-    return questions;
+    return cleanQuestions;
   } catch (e) {
     console.error("Lỗi lấy ngân hàng câu hỏi:", e);
     try {
@@ -3099,6 +3130,15 @@ export const deduplicateBankQuestions = async (targetSubject?: string): Promise<
       allBankQuestions = allBankQuestions.filter(q => isSameSubject(q.subject || '', targetSubject));
     }
 
+    // Lọc sạch trùng ID trong mảng trước khi xét nội dung
+    const uniqueByIdMap = new Map<string, Question>();
+    for (const q of allBankQuestions) {
+      if (q && q.id && !uniqueByIdMap.has(q.id)) {
+        uniqueByIdMap.set(q.id, q);
+      }
+    }
+    allBankQuestions = Array.from(uniqueByIdMap.values());
+
     const totalScanned = allBankQuestions.length;
     if (totalScanned <= 1) {
       return { totalScanned, duplicatesRemoved: 0, uniqueRemaining: totalScanned };
@@ -3108,6 +3148,7 @@ export const deduplicateBankQuestions = async (targetSubject?: string): Promise<
     const groups = new Map<string, Question[]>();
     for (const q of allBankQuestions) {
       const fp = getQuestionFingerprint(q);
+      if (!fp) continue;
       if (!groups.has(fp)) {
         groups.set(fp, []);
       }
@@ -3118,12 +3159,13 @@ export const deduplicateBankQuestions = async (targetSubject?: string): Promise<
     const questionsToKeepAndMerge: Question[] = [];
 
     groups.forEach((items) => {
-      if (items.length === 1) {
-        questionsToKeepAndMerge.push(items[0]);
-      } else {
-        // Có từ 2 câu trở lên trùng lặp nội dung
+      const uniqueInGroup = Array.from(new Map(items.map(q => [q.id, q])).values());
+      if (uniqueInGroup.length === 1) {
+        questionsToKeepAndMerge.push(uniqueInGroup[0]);
+      } else if (uniqueInGroup.length > 1) {
+        // Có từ 2 câu trở lên khác ID nhưng trùng lặp nội dung
         // Chọn câu tốt nhất làm câu chính (có ảnh, có lời giải, có phân loại mức độ)
-        const primary = items.reduce((best, cur) => {
+        const primary = uniqueInGroup.reduce((best, cur) => {
           let scoreBest = 0;
           let scoreCur = 0;
           if (best.imageUrl) scoreBest += 3;
@@ -3137,11 +3179,11 @@ export const deduplicateBankQuestions = async (targetSubject?: string): Promise<
           if (cur.createdByName) scoreCur += 1;
 
           return scoreCur > scoreBest ? cur : best;
-        }, items[0]);
+        }, uniqueInGroup[0]);
 
         // Gộp những thông tin còn thiếu từ các bản sao vào bản chính
         const merged: Question = { ...primary };
-        for (const item of items) {
+        for (const item of uniqueInGroup) {
           if (!merged.imageUrl && item.imageUrl) merged.imageUrl = item.imageUrl;
           if (!merged.solution && item.solution) merged.solution = item.solution;
           if (!merged.level && item.level) merged.level = item.level;
@@ -3150,9 +3192,9 @@ export const deduplicateBankQuestions = async (targetSubject?: string): Promise<
 
         questionsToKeepAndMerge.push(merged);
 
-        // Các bản sao còn lại đánh dấu để xóa
-        items.forEach(item => {
-          if (item.id !== primary.id) {
+        // Các bản sao còn lại đánh dấu để xóa (tuyệt đối không bao gồm primary.id)
+        uniqueInGroup.forEach((item) => {
+          if (item.id && item.id !== primary.id && !idsToDelete.includes(item.id)) {
             idsToDelete.push(item.id);
           }
         });
@@ -3183,6 +3225,8 @@ export const deduplicateBankQuestions = async (targetSubject?: string): Promise<
     // Cập nhật lại các câu hỏi đã gộp (nếu cần cập nhật nội dung tốt hơn)
     if (isSupabasePrimary()) {
       await supabaseDb.saveBatchBankQuestions(questionsToKeepAndMerge);
+    } else if (db && questionsToKeepAndMerge.length > 0) {
+      await saveBatchBankQuestionsToFirestore(questionsToKeepAndMerge);
     }
 
     invalidateMemoryCache('bank');
@@ -3223,6 +3267,42 @@ export const saveBankQuestion = async (q: Question): Promise<void> => {
     return res;
   }
   return await saveBankQuestionToFirestore(q);
+};
+
+export const saveBatchBankQuestionsToFirestore = async (questions: Question[]): Promise<void> => {
+  if (!db || questions.length === 0) return;
+  const chunkSize = 350;
+  for (let i = 0; i < questions.length; i += chunkSize) {
+    const chunk = questions.slice(i, i + chunkSize);
+    const batch = writeBatch(db);
+    for (const q of chunk) {
+      batch.set(doc(db, 'bank_questions', q.id), cleanUndefined({
+        id: q.id,
+        subject: q.subject || '',
+        grade: q.quizGrade || '',
+        createdBy: q.createdBy || '',
+        data: cleanUndefined(q)
+      }), { merge: true });
+    }
+    await batch.commit();
+    trackFirestoreWrite('bank_questions', chunk.length);
+  }
+  invalidateMemoryCache('bank');
+};
+
+export const saveBatchBankQuestions = async (questions: Question[]): Promise<void> => {
+  if (!questions || questions.length === 0) return;
+  if (isSupabasePrimary()) {
+    await supabaseDb.saveBatchBankQuestions(questions);
+    if (isDualSyncActive()) {
+      saveBatchBankQuestionsToFirestore(questions).catch((err) => {
+        console.warn("Dual sync saveBatchBankQuestions to Firestore skipped/failed (non-fatal):", err);
+      });
+    }
+    invalidateMemoryCache('bank');
+    return;
+  }
+  return await saveBatchBankQuestionsToFirestore(questions);
 };
 
 export const deleteBankQuestionFromFirestore = async (id: string): Promise<void> => {

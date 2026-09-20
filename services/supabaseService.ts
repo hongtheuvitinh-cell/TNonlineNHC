@@ -628,6 +628,7 @@ export const supabaseDb = {
 
       const { data, error } = await query
         .order('created_at', { ascending: false })
+        .order('id', { ascending: true })
         .range(currentOffset, currentOffset + CHUNK_SIZE - 1);
 
       if (error) {
@@ -648,7 +649,15 @@ export const supabaseDb = {
       }
     }
 
-    return allData.map(mapBankQuestionFromDb);
+    // Đảm bảo không bao giờ trả về phần tử trùng ID do phân trang hay overlap
+    const uniqueMap = new Map<string, any>();
+    for (const item of allData) {
+      if (item && item.id && !uniqueMap.has(item.id)) {
+        uniqueMap.set(item.id, item);
+      }
+    }
+
+    return Array.from(uniqueMap.values()).map(mapBankQuestionFromDb);
   },
 
   async saveBankQuestion(q: Question): Promise<void> {
@@ -748,8 +757,18 @@ export const supabaseDb = {
   async deleteBatchBankQuestions(ids: string[]): Promise<number> {
     const client = getSupabase();
     if (!client || ids.length === 0) return 0;
-    const { error } = await client.from('bank_questions').delete().in('id', ids);
-    return error ? 0 : ids.length;
+    const CHUNK_SIZE = 200;
+    let deletedCount = 0;
+    for (let i = 0; i < ids.length; i += CHUNK_SIZE) {
+      const chunk = ids.slice(i, i + CHUNK_SIZE);
+      const { error } = await client.from('bank_questions').delete().in('id', chunk);
+      if (!error) {
+        deletedCount += chunk.length;
+      } else {
+        console.error("Lỗi xóa batch bank_questions Supabase:", error);
+      }
+    }
+    return deletedCount;
   },
 
   // QUIZZES

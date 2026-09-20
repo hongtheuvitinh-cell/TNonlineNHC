@@ -4,7 +4,7 @@ import {
   getUsers, saveUser, deleteUser, changePassword, getUsersPage, saveUsersBatch,
   getResultsMetadata, getResultById, deleteResult, getResultsMetadataPage,
   getChapters, saveChapter, deleteChapter, deleteChaptersBatch,
-  getBankQuestions, saveBankQuestion, deleteBankQuestion, deleteBatchBankQuestions,
+  getBankQuestions, saveBankQuestion, deleteBankQuestion, deleteBatchBankQuestions, saveBatchBankQuestions,
   getClasses, saveClass, deleteClass, saveClassesBatch, assignStudentsToClass,
   getTeachers, saveTeacher, deleteTeacher,
   getQuizFolders, saveQuizFolder, deleteQuizFolder, moveQuizToFolder,
@@ -46,6 +46,7 @@ import StorageConfigModal from './StorageConfigModal';
 import TeacherManager from './TeacherManager';
 import DatabaseMonitor from './DatabaseMonitor';
 import PdfImageManagerModal from './PdfImageManagerModal';
+import DuplicateComparisonModal from './DuplicateComparisonModal';
 
 import StudentModal from './StudentModal';
 import StudentDetailModal from './StudentDetailModal';
@@ -195,8 +196,8 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
         setChapters(c);
         loadedTabsRef.current.add('results');
       } else if (tab === 'bank') {
-        const sub = currentUser?.subject || (bSubjectFilter !== 'all' ? bSubjectFilter : undefined);
-        const gr = (currentUser?.grade as Grade) || (bGradeFilter !== 'all' ? bGradeFilter : '12');
+        const sub = bSubjectFilter !== 'all' ? bSubjectFilter : (isSuperAdmin ? undefined : currentUser?.subject);
+        const gr = bGradeFilter !== 'all' ? bGradeFilter : undefined;
         const [b, c] = await Promise.all([
           getBankQuestions(forceRefresh, { subject: sub, grade: gr }),
           getChapters(forceRefresh)
@@ -641,6 +642,7 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
   const [lastUploadedPdfFile, setLastUploadedPdfFile] = useState<File | null>(null);
   const [isPdfImageManagerOpen, setIsPdfImageManagerOpen] = useState(false);
   const [pdfOptionWithSolution, setPdfOptionWithSolution] = useState<boolean>(true);
+  const [isDuplicateModalOpen, setIsDuplicateModalOpen] = useState(false);
 
   const loadBankDataIfNeeded = useCallback(async (targetSub?: string, targetG?: string) => {
     if (!isDatabaseConnected()) return;
@@ -1098,13 +1100,16 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
     }
   };
 
-  const handleDeleteBatchBankQuestions = async (ids: string[]) => {
+  const handleDeleteBatchBankQuestions = async (ids: string[], skipAlert: boolean = false) => {
     try {
       await deleteBatchBankQuestions(ids);
       setBankQuestions(prev => prev.filter(q => !ids.includes(q.id)));
-      showAlert("Thành công", `Đã xóa thành công ${ids.length} câu hỏi khỏi Ngân hàng!`, "success");
+      if (!skipAlert) {
+        showAlert("Thành công", `Đã xóa thành công ${ids.length} câu hỏi khỏi Ngân hàng!`, "success");
+      }
     } catch (err: any) {
       showAlert("Lỗi", "Không thể xóa các câu hỏi đã chọn: " + (err.message || "Lỗi không xác định"), "error");
+      throw err;
     }
   };
 
@@ -2284,13 +2289,12 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
                    {isSuperAdmin && (
                      <div className="flex flex-wrap items-center gap-2">
                        <button 
-                          onClick={handleDeduplicateBank} 
-                          disabled={isSyncing}
-                          className="flex items-center gap-2 px-4 py-2.5 bg-amber-50 border border-amber-200 text-amber-800 rounded-xl font-black uppercase text-[10px] shadow-sm hover:bg-amber-100 transition-all disabled:opacity-50"
-                          title="Quét và gộp các câu hỏi bị trùng lặp trong Ngân hàng"
+                          onClick={() => setIsDuplicateModalOpen(true)} 
+                          className="flex items-center gap-2 px-4 py-2.5 bg-amber-50 border border-amber-200 text-amber-800 rounded-xl font-black uppercase text-[10px] shadow-sm hover:bg-amber-100 transition-all active:scale-95"
+                          title="Mở cửa sổ so sánh trực quan từng câu hỏi trùng lặp để chọn bản chuẩn"
                        >
-                          {isSyncing ? <Loader2 className="animate-spin" size={14}/> : <Sparkles size={14} className="text-amber-600"/>}
-                          QUÉT & GỘP TRÙNG LẶP {bSubjectFilter !== 'all' ? `(${bSubjectFilter})` : ''}
+                          <Eye size={14} className="text-amber-600"/>
+                          SO SÁNH & GỘP TRÙNG LẶP {bSubjectFilter !== 'all' ? `(${bSubjectFilter})` : ''}
                        </button>
                        <button 
                           onClick={handleSyncBank} 
@@ -2322,6 +2326,7 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
                         onDeleteQuestion={handleDeleteBankQuestion}
                         onDeleteBatchQuestions={handleDeleteBatchBankQuestions}
                         onDeduplicate={handleDeduplicateBank}
+                        onOpenDuplicateModal={() => setIsDuplicateModalOpen(true)}
                         isDeduplicating={isSyncing}
                     />
                 )}
@@ -2795,6 +2800,23 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
           </div>
         </div>
       )}
+
+      {/* MODAL SO SÁNH & XỬ LÝ CÂU HỎI TRÙNG LẶP */}
+      <DuplicateComparisonModal
+        isOpen={isDuplicateModalOpen}
+        onClose={() => setIsDuplicateModalOpen(false)}
+        bankQuestions={bankQuestions}
+        subjectFilter={bSubjectFilter}
+        onDeleteBatchQuestions={(ids) => handleDeleteBatchBankQuestions(ids, true)}
+        onSaveBatchQuestions={async (qs) => {
+          await saveBatchBankQuestions(qs);
+          await loadTabData('bank', true);
+        }}
+        onRefreshBank={async () => {
+          await loadTabData('bank', true);
+        }}
+        showAlert={showAlert}
+      />
 
       {alertModal && alertModal.isOpen && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[5000] flex items-center justify-center p-4">

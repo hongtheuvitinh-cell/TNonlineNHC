@@ -30,6 +30,7 @@ interface QuestionBankProps {
     onDeleteQuestion?: (id: string) => Promise<void> | void;
     onDeleteBatchQuestions?: (ids: string[]) => Promise<void> | void;
     onDeduplicate?: () => Promise<void> | void;
+    onOpenDuplicateModal?: () => void;
     isDeduplicating?: boolean;
 }
 
@@ -75,7 +76,7 @@ const isCorrectMCQOption = (q: Question, opt: string, index: number): boolean =>
 export default function QuestionBank({ 
     questions, chapters, bGradeFilter, setBGradeFilter, bChapterFilter, setBChapterFilter, bTypeFilter, setBTypeFilter, bSearch, setBSearch, onAddMultiple,
     currentUser, isSuperAdmin, bSubjectFilter = 'all', setBSubjectFilter,
-    onDeleteQuestion, onDeleteBatchQuestions, onDeduplicate, isDeduplicating
+    onDeleteQuestion, onDeleteBatchQuestions, onDeduplicate, onOpenDuplicateModal, isDeduplicating
 }: QuestionBankProps) {
     // Lưu trữ toàn bộ câu hỏi đã chọn vào Map (ID -> Question) để bảo toàn khi chuyển qua các Level/Chương/Trang khác
     const [selectedQuestionsMap, setSelectedQuestionsMap] = useState<Map<string, Question>>(new Map());
@@ -306,17 +307,31 @@ export default function QuestionBank({
     };
 
     const duplicateCount = useMemo(() => {
-        const counts = new Map<string, number>();
+        // Lọc sạch trùng ID trong mảng bộ nhớ để không bị đếm sai khi cùng 1 câu hỏi xuất hiện nhiều lần
+        const uniqueById = new Map<string, Question>();
         questions.forEach(q => {
-            const fp = getQuestionFingerprint(q);
-            if (fp) counts.set(fp, (counts.get(fp) || 0) + 1);
+            if (q && q.id && !uniqueById.has(q.id)) {
+                uniqueById.set(q.id, q);
+            }
         });
+
+        const groups = new Map<string, Question[]>();
+        uniqueById.forEach(q => {
+            if (bSubjectFilter && bSubjectFilter !== 'all') {
+                if (!isSameSubject(q.subject, bSubjectFilter)) return;
+            }
+            const fp = getQuestionFingerprint(q);
+            if (!fp) return;
+            if (!groups.has(fp)) groups.set(fp, []);
+            groups.get(fp)!.push(q);
+        });
+
         let dupes = 0;
-        counts.forEach(c => {
-            if (c > 1) dupes += (c - 1);
+        groups.forEach(items => {
+            if (items.length > 1) dupes += (items.length - 1);
         });
         return dupes;
-    }, [questions]);
+    }, [questions, bSubjectFilter]);
 
     // Thêm toàn bộ các câu đã chọn (từ TẤT CẢ các level, các phần, các chương) vào đề thi
     const handleAddSelected = () => {
@@ -416,23 +431,39 @@ export default function QuestionBank({
             )}
 
             {/* Duplicate detection alert & quick action (chỉ dành cho SuperAdmin) */}
-            {isSuperAdmin && duplicateCount > 0 && onDeduplicate && (
-                <div className="bg-amber-50 border border-amber-200 px-4 py-2.5 rounded-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 text-xs text-amber-900 shadow-sm">
+            {isSuperAdmin && duplicateCount > 0 && (
+                <div className="bg-amber-50 border border-amber-200 px-4 py-2.5 rounded-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2.5 text-xs text-amber-900 shadow-sm">
                     <div className="flex items-center gap-2">
                         <AlertTriangle size={16} className="text-amber-600 shrink-0" />
                         <span className="font-bold">
                             Phát hiện <b className="text-amber-700 underline">{duplicateCount}</b> câu hỏi có nội dung trùng lặp trong Ngân hàng {bSubjectFilter !== 'all' ? `(Môn ${bSubjectFilter})` : ''}.
                         </span>
                     </div>
-                    <button
-                        type="button"
-                        onClick={onDeduplicate}
-                        disabled={isDeduplicating}
-                        className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-[9px] font-black uppercase shadow transition-all disabled:opacity-50"
-                    >
-                        {isDeduplicating ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
-                        Quét & Gộp {bSubjectFilter !== 'all' ? `Môn ${bSubjectFilter}` : 'Trùng lặp'}
-                    </button>
+                    <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+                        {onOpenDuplicateModal && (
+                            <button
+                                type="button"
+                                onClick={onOpenDuplicateModal}
+                                className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-3 py-1.5 bg-white hover:bg-amber-100 border border-amber-300 text-amber-900 rounded-lg text-[10px] font-black uppercase shadow-xs transition-all active:scale-95"
+                                title="Mở cửa sổ so sánh trực quan từng câu trùng lặp để chọn bản chuẩn"
+                            >
+                                <Eye size={13} className="text-amber-600" />
+                                Xem & So sánh chi tiết
+                            </button>
+                        )}
+                        {onDeduplicate && (
+                            <button
+                                type="button"
+                                onClick={onDeduplicate}
+                                disabled={isDeduplicating}
+                                className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-[10px] font-black uppercase shadow transition-all active:scale-95 disabled:opacity-50"
+                                title="Tự động quét và gộp tất cả câu hỏi trùng lặp"
+                            >
+                                {isDeduplicating ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
+                                Quét & Gộp {bSubjectFilter !== 'all' ? `Môn ${bSubjectFilter}` : 'Trùng lặp'}
+                            </button>
+                        )}
+                    </div>
                 </div>
             )}
 

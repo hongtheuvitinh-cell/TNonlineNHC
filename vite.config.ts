@@ -8,8 +8,8 @@ export default defineConfig(({ mode }) => {
   // Load env từ file .env (nếu có)
   const env = loadEnv(mode, (process as any).cwd(), '')
   
-  // Lấy API_KEY: Ưu tiên từ môi trường hệ thống (Vercel) rồi mới đến file .env
-  const apiKey = process.env.API_KEY || env.API_KEY || '';
+  // Lấy API_KEY: Ưu tiên từ môi trường hệ thống (Vercel/AI Studio) rồi mới đến file .env
+  const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY || env.GEMINI_API_KEY || env.API_KEY || '';
 
   return {
     plugins: [react()],
@@ -30,7 +30,8 @@ export default defineConfig(({ mode }) => {
     },
     define: {
       // Đẩy biến này vào code chạy ở trình duyệt
-      'process.env.API_KEY': JSON.stringify(apiKey)
+      'process.env.API_KEY': JSON.stringify(apiKey),
+      'process.env.GEMINI_API_KEY': JSON.stringify(apiKey)
     }
   }
 })
