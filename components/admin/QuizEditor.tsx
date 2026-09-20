@@ -91,7 +91,7 @@ interface QuizEditorProps {
     setAssignedClassIds?: (val: string[]) => void;
     onSave: () => void;
     onCleanLabels: () => void;
-    onOpenBank: (type: QuestionType) => void;
+    onOpenBank: (type: QuestionType, chapter?: string) => void;
     orderIndex: number;
     setOrderIndex: (val: number) => void;
     onPdfExtract: (e: React.ChangeEvent<HTMLInputElement>) => void;
@@ -122,11 +122,12 @@ interface QuestionSectionProps {
     setQuestions: (qs: Question[]) => void;
     onUploadImage: (qId: string, file: File) => void;
     uploadingId: string | null;
-    onOpenBank: (type: QuestionType) => void;
+    onOpenBank: (type: QuestionType, chapter?: string) => void;
     chapters: Chapter[];
     relevantChapters: Chapter[];
     subject?: string;
     grade?: string;
+    category?: string;
     customApiKey?: string;
     onOpenStorageModal?: () => void;
 }
@@ -143,6 +144,7 @@ const QuestionSection: React.FC<QuestionSectionProps> = ({
     relevantChapters,
     subject,
     grade,
+    category,
     customApiKey,
     onOpenStorageModal
 }) => {
@@ -760,7 +762,7 @@ const QuestionSection: React.FC<QuestionSectionProps> = ({
                         </div>
                     )}
 
-                    <button onClick={() => onOpenBank(type)} className="flex items-center gap-2 px-4 py-2.5 bg-white border-2 border-slate-200 text-slate-600 rounded-2xl text-[10px] font-black uppercase hover:bg-slate-50 transition-colors"><Database size={14}/> Ngân hàng</button>
+                    <button onClick={() => onOpenBank(type, batchSectionChapter || category)} className="flex items-center gap-2 px-4 py-2.5 bg-white border-2 border-slate-200 text-slate-600 rounded-2xl text-[10px] font-black uppercase hover:bg-slate-50 transition-colors"><Database size={14}/> Ngân hàng</button>
                     <button onClick={addManual} className="flex items-center gap-2 px-6 py-2.5 bg-slate-900 text-white rounded-2xl text-[10px] font-black uppercase hover:bg-black transition-all shadow-xl active:scale-95"><Plus size={14}/> Thêm câu mới</button>
                 </div>
             </div>
@@ -2806,6 +2808,7 @@ export default function QuizEditor(props: QuizEditorProps) {
                 relevantChapters={relevantChapters}
                 subject={props.subject}
                 grade={props.grade}
+                category={props.category}
                 customApiKey={props.customApiKey}
                 onOpenStorageModal={() => setIsStorageModalOpen(true)}
             />
@@ -2821,6 +2824,7 @@ export default function QuizEditor(props: QuizEditorProps) {
                 relevantChapters={relevantChapters}
                 subject={props.subject}
                 grade={props.grade}
+                category={props.category}
                 customApiKey={props.customApiKey}
                 onOpenStorageModal={() => setIsStorageModalOpen(true)}
             />
@@ -2836,6 +2840,7 @@ export default function QuizEditor(props: QuizEditorProps) {
                 relevantChapters={relevantChapters}
                 subject={props.subject}
                 grade={props.grade}
+                category={props.category}
                 customApiKey={props.customApiKey}
                 onOpenStorageModal={() => setIsStorageModalOpen(true)}
             />
