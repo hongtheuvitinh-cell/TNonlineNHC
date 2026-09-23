@@ -17,7 +17,7 @@ interface ChapterManagerProps {
     isSuperAdmin?: boolean;
 }
 
-const DEFAULT_SUBJECTS = ['Toán', 'Vật lí', 'Hóa học', 'Sinh học', 'Tin học', 'Ngữ văn', 'Tiếng Anh', 'Lịch sử', 'Địa lí', 'GDCD', 'Công nghệ'];
+const DEFAULT_SUBJECTS = ['Vật lí'];
 
 export default function ChapterManager({ 
     chapters, 
@@ -532,7 +532,7 @@ export default function ChapterManager({
                         <div className="space-y-1.5 md:col-span-1">
                             <label className="text-[10px] font-black uppercase text-slate-400 ml-2">Chọn nhanh môn</label>
                             <div className="flex flex-wrap gap-1.5 pt-1">
-                                {['Vật lí', 'Toán', 'Hóa học', 'Sinh học', 'Tiếng Anh'].map(s => (
+                                {['Vật lí'].map(s => (
                                     <button
                                         key={s}
                                         type="button"

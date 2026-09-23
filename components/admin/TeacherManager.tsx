@@ -35,7 +35,7 @@ export default function TeacherManager({
     fullName: '',
     username: '',
     password: '123',
-    subject: '',
+    subject: 'Vật lí',
     email: '',
     phone: '',
     role: 'admin' as 'admin' | 'superadmin'
@@ -60,7 +60,7 @@ export default function TeacherManager({
       fullName: '',
       username: '',
       password: '123',
-      subject: '',
+      subject: 'Vật lí',
       email: '',
       phone: '',
       role: 'admin'
@@ -430,17 +430,7 @@ export default function TeacherManager({
                     onChange={e => setFormData({ ...formData, subject: e.target.value })}
                   />
                   <datalist id="teacher-subject-suggestions">
-                    <option value="Toán"/>
                     <option value="Vật lí"/>
-                    <option value="Hóa học"/>
-                    <option value="Sinh học"/>
-                    <option value="Ngữ văn"/>
-                    <option value="Tiếng Anh"/>
-                    <option value="Lịch sử"/>
-                    <option value="Địa lí"/>
-                    <option value="GDCD"/>
-                    <option value="Tin học"/>
-                    <option value="Công nghệ"/>
                   </datalist>
                 </div>
 

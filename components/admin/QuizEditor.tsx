@@ -197,7 +197,7 @@ const QuestionSection: React.FC<QuestionSectionProps> = ({
 
         setSolvingQuestionId(qId);
         try {
-            const res = await solveQuestionWithAI(targetQ, subject || 'Toán', grade || '12', customApiKey);
+            const res = await solveQuestionWithAI(targetQ, subject || 'Vật lí', grade || '12', customApiKey);
             const nl = [...questions];
             const i = nl.findIndex(x => x.id === qId);
             if (i >= 0) {
@@ -1453,7 +1453,7 @@ export default function QuizEditor(props: QuizEditorProps) {
 
             const updated = await solveMultipleQuestionsWithAI(
                 props.questions,
-                props.subject || 'Toán',
+                props.subject || 'Vật lí',
                 props.grade || '12',
                 props.customApiKey,
                 (prog: SolveProgressUpdate) => {
@@ -1953,7 +1953,7 @@ export default function QuizEditor(props: QuizEditorProps) {
                             {props.isSuperAdmin ? (
                                 <select 
                                     className="w-full border-2 border-slate-200 rounded-xl p-2.5 text-xs font-black uppercase bg-slate-50 focus:border-blue-400 outline-none cursor-pointer" 
-                                    value={props.subject || 'Toán'} 
+                                    value={props.subject || 'Vật lí'} 
                                     onChange={e => { 
                                         if (props.setSubject) props.setSubject(e.target.value); 
                                         props.setCategory(''); 

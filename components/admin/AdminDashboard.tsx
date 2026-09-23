@@ -241,8 +241,8 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
   const [quizAcademicYear, setQuizAcademicYear] = useState<string>(getCurrentAcademicYear());
   const [quizType, setQuizType] = useState<QuizType>('test');
   const [quizMaxAttempts, setQuizMaxAttempts] = useState<number>(1);
-  const [quizSubject, setQuizSubject] = useState<string>(() => currentUser?.subject || 'Toán');
-  const [mySubject, setMySubject] = useState<string>(() => currentUser?.subject || 'Toán');
+  const [quizSubject, setQuizSubject] = useState<string>(() => currentUser?.subject || 'Vật lí');
+  const [mySubject, setMySubject] = useState<string>(() => currentUser?.subject || 'Vật lí');
   const [isPublished, setIsPublished] = useState(false);
   const [isMonitored, setIsMonitored] = useState(false);
   const [showResultAnswers, setShowResultAnswers] = useState(true);
@@ -313,7 +313,7 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
   const [qAcademicYearFilter, setQAcademicYearFilter] = useState<string>(getCurrentAcademicYear());
   const [qSubjectFilter, setQSubjectFilter] = useState<string>(() => {
     if (!isSuperAdmin && currentUser?.subject) return currentUser.subject;
-    return 'Toán';
+    return 'Vật lí';
   });
   const [qGradeFilter, setQGradeFilter] = useState<Grade | 'all'>('12');
   const [qAuthorFilter, setQAuthorFilter] = useState<string>(() => isSuperAdmin ? 'all' : 'mine');
@@ -327,9 +327,9 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
     setRGradeFilter('12');
 
     if (isSuperAdmin) {
-      setQSubjectFilter('Toán');
+      setQSubjectFilter('Vật lí');
       setQAuthorFilter('all');
-      setBSubjectFilter('Toán');
+      setBSubjectFilter('Vật lí');
       setBGradeFilter('12');
     } else if (currentUser) {
       setQAuthorFilter('mine');
@@ -337,8 +337,8 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
         setQSubjectFilter(currentUser.subject);
         setBSubjectFilter(currentUser.subject);
       } else {
-        setQSubjectFilter('Toán');
-        setBSubjectFilter('Toán');
+        setQSubjectFilter('Vật lí');
+        setBSubjectFilter('Vật lí');
       }
       setBGradeFilter((currentUser.grade as Grade) || '12');
     }
@@ -403,7 +403,7 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
   const [bSearch, setBSearch] = useState('');
   const [bSubjectFilter, setBSubjectFilter] = useState<string>(() => {
     if (!isSuperAdmin && currentUser?.subject) return currentUser.subject;
-    return 'Toán';
+    return 'Vật lí';
   });
 
   // Thông minh nhận diện môn & khối từ thông tin giáo viên đang đăng nhập
@@ -743,7 +743,7 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
     setEditingQuizId(null); setQuizTitle(''); setQuizGrade('12'); setQuizType('test');
     setQuizMaxAttempts(1);
     setQuizAcademicYear(getCurrentAcademicYear());
-    setQuizSubject(mySubject || currentUser?.subject || 'Toán');
+    setQuizSubject(mySubject || currentUser?.subject || 'Vật lí');
     setIsPublished(false); setIsMonitored(false); setShowResultAnswers(true); setIsUnlisted(false);
     setIsSharedWithTeachers(false);
     setTargetType(isSuperAdmin ? 'all' : 'classes'); setAssignedClassIds([]);
@@ -792,7 +792,7 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
         setQuizTitle(qData.title || ''); 
         setQuizGrade(qData.grade || '12');
         setQuizAcademicYear(qData.academicYear || getQuizAcademicYear(qData));
-        setQuizSubject(qData.subject || mySubject || currentUser?.subject || 'Toán');
+        setQuizSubject(qData.subject || mySubject || currentUser?.subject || 'Vật lí');
         setQuizType(qData.type || 'test'); 
         setQuizMaxAttempts(qData.maxAttempts !== undefined ? qData.maxAttempts : (qData.type === 'test' ? 1 : 0));
         setIsPublished(Boolean(qData.isPublished)); 
@@ -818,7 +818,7 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
         setQuizTitle(quiz.title || '');
         setQuizGrade(quiz.grade || '12');
         setQuizAcademicYear(quiz.academicYear || getQuizAcademicYear(quiz));
-        setQuizSubject(quiz.subject || mySubject || currentUser?.subject || 'Toán');
+        setQuizSubject(quiz.subject || mySubject || currentUser?.subject || 'Vật lí');
         setQuizMaxAttempts(quiz.maxAttempts !== undefined ? quiz.maxAttempts : (quiz.type === 'test' ? 1 : 0));
         setShowResultAnswers(quiz.showResultAnswers !== false);
         setQuizFolderId(quiz.folderId || '');
@@ -1241,7 +1241,7 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
     
     setIsSavingInProgress(true);
     const existingQuiz = editingQuizId ? quizzes.find(q => q.id === editingQuizId) : null;
-    const finalQuizSubject = quizSubject || existingQuiz?.subject || mySubject || currentUser?.subject || 'Toán';
+    const finalQuizSubject = quizSubject || existingQuiz?.subject || mySubject || currentUser?.subject || 'Vật lí';
 
     const finalTargetType = isSuperAdmin ? (targetType || 'all') : 'classes';
 
@@ -1904,7 +1904,7 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
             ) : (
               <div className="bg-slate-800/80 px-2.5 py-1.5 rounded-lg border border-white/10 flex items-center justify-between">
                 <span className="text-white text-xs font-black uppercase tracking-wider">
-                  Môn {mySubject || currentUser?.subject || 'Toán'}
+                  Môn {mySubject || currentUser?.subject || 'Vật lí'}
                 </span>
                 <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" title="Môn đã liên kết với tài khoản" />
               </div>
@@ -1979,7 +1979,7 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
                     onOpenBank={(type, chapter) => { 
                         setBTypeFilter(type); 
                         const targetG = quizGrade || (currentUser?.grade as Grade) || '12';
-                        const targetS = quizSubject || currentUser?.subject || 'Toán';
+                        const targetS = quizSubject || currentUser?.subject || 'Vật lí';
                         setBGradeFilter(targetG); 
                         setBSubjectFilter(targetS);
                         setBChapterFilter(chapter || category || 'all');

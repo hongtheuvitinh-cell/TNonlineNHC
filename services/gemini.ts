@@ -546,9 +546,9 @@
     ${sourceInstruction}
 
     THÔNG TIN ĐỀ THI:
-    - Môn học: ${config.subject || 'Toán'}
+    - Môn học: ${config.subject || 'Vật lí'}
     - Khối lớp: ${config.grade}
-    - Tiêu đề / Chủ đề: ${config.topic || `Đề thi kiểm tra môn ${config.subject || 'Toán'} Khối ${config.grade}`}
+    - Tiêu đề / Chủ đề: ${config.topic || `Đề thi kiểm tra môn ${config.subject || 'Vật lí'} Khối ${config.grade}`}
     ${config.promptAdditions ? `\n- YÊU CẦU ĐẶC BIỆT CỦA GIÁO VIÊN:\n"""\n${config.promptAdditions}\n"""` : ''}
 
     DANH SÁCH CHI TIẾT CÁC CÂU CẦN TẠO THEO MA TRẬN (TỔNG CỘNG MẺ NÀY: ${chunkTotal} CÂU):
@@ -994,7 +994,7 @@
 
     export const solveQuestionWithAI = async (
         question: Question,
-        subject: string = 'Toán',
+        subject: string = 'Vật lí',
         grade: string = '12',
         customApiKey?: string
     ): Promise<{ solution: string; correctAnswer?: string }> => {
@@ -1090,7 +1090,7 @@
 
     export const solveMultipleQuestionsWithAI = async (
         questions: Question[],
-        subject: string = 'Toán',
+        subject: string = 'Vật lí',
         grade: string = '12',
         customApiKey?: string,
         onProgress?: (progress: SolveProgressUpdate) => void,
@@ -1472,7 +1472,7 @@
                 return block;
             }).join('\n\n');
 
-            const prompt = `Bạn là chuyên gia thẩm định và phân loại đề thi môn ${options?.subject || 'Toán'} lớp ${options?.grade || '12'}.
+            const prompt = `Bạn là chuyên gia thẩm định và phân loại đề thi môn ${options?.subject || 'Vật lí'} lớp ${options?.grade || '12'}.
 Nhiệm vụ: Đọc kỹ nội dung của ${batch.length} câu hỏi dưới đây và gán từng câu vào đúng 1 chương trong danh sách chương cho sẵn.
 
 DANH SÁCH CHƯƠNG ĐANG CÓ TRONG HỆ THỐNG:
@@ -1737,7 +1737,7 @@ Trả về JSON Array:
                 return textBlock;
             }).join('\n\n');
 
-            const prompt = `Bạn là chuyên gia thẩm định ma trận đề thi và khảo thí THPT Quốc gia môn ${options?.subject || 'Toán'} lớp ${options?.grade || '12'}.
+            const prompt = `Bạn là chuyên gia thẩm định ma trận đề thi và khảo thí THPT Quốc gia môn ${options?.subject || 'Vật lí'} lớp ${options?.grade || '12'}.
 Nhiệm vụ: Đọc kỹ đề bài, các ý hỏi và lời giải của ${batch.length} câu hỏi dưới đây để phân tích tư duy và đánh giá chính xác mức độ nhận thức:
 
 THANG ĐO 4 MỨC ĐỘ NHẬN THỨC CHUẨN:

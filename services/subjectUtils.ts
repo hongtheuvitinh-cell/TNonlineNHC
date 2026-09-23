@@ -1,16 +1,5 @@
 export const STANDARD_SUBJECTS = [
-  'Toán',
-  'Vật lí',
-  'Hóa học',
-  'Sinh học',
-  'Ngữ văn',
-  'Tiếng Anh',
-  'Lịch sử',
-  'Địa lí',
-  'GDCD',
-  'Tin học',
-  'Công nghệ',
-  'KHTN'
+  'Vật lí'
 ];
 
 /**

@@ -155,7 +155,7 @@ export default function AIRenderer({
     const availableSubjects = useMemo(() => {
         const list = new Set<string>();
         // Các môn phổ biến
-        ['Vật lí', 'Toán', 'Hóa học', 'Sinh học', 'Ngữ văn', 'Tiếng Anh', 'Lịch sử', 'Địa lí', 'Tin học', 'GDCD', 'Công nghệ', 'KHTN'].forEach(s => list.add(s));
+        ['Vật lí'].forEach(s => list.add(s));
         // Thêm các môn từ danh sách chương nếu có
         chapters.forEach(c => {
             if (c.subject && c.subject.trim()) {
