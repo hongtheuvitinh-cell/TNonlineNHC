@@ -23,7 +23,7 @@ export default function LatexText({ text }: LatexTextProps) {
   // Tách text theo cú pháp LaTeX $...$
   const parts = useMemo(() => {
     try {
-      return cleanText.split(/(\$.*?\$)/g);
+      return cleanText.split(/(\$[\s\S]*?\$)/g);
     } catch {
       return [cleanText];
     }
