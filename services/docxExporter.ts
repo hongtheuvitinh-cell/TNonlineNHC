@@ -341,7 +341,7 @@ function parseMixedTextToDocxRuns(
     if (!rawText) return [new TextRun({ text: '', font: baseOptions.font || 'Times New Roman' })];
 
     const clean = normalizeFullText(rawText);
-    const parts = clean.split(/(\$.*?\$)/g);
+    const parts = clean.split(/(\$[\s\S]*?\$)/g);
     const runs: (TextRun | any)[] = [];
 
     const fontName = baseOptions.font || 'Times New Roman';
