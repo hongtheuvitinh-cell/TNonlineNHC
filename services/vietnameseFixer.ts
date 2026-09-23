@@ -291,7 +291,7 @@ export function normalizeFullText(text: string): string {
     }
 
     // Tách chuỗi thành các phần LaTeX ($...$) và văn bản thường
-    const parts = cleanedText.split(/(\$.*?\$)/gs);
+    const parts = cleanedText.split(/(\$[\s\S]*?\$)/g);
     
     return parts.map(part => {
         if (part.startsWith('$') && part.endsWith('$')) {
