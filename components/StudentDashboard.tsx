@@ -345,6 +345,31 @@ export default function StudentDashboard({ user, targetQuizId }: StudentDashboar
     return { isLocked: false };
   };
 
+  const isQuizExpired = useCallback((q: Quiz) => {
+    const curNow = new Date();
+    if (q.type === 'test') {
+      const startX = q.startTime ? new Date(q.startTime) : null;
+      const endY = q.endTime ? new Date(q.endTime) : null;
+      const isFlexibleWindow = Boolean(startX && endY && endY.getTime() > startX.getTime());
+      if (startX) {
+        if (isFlexibleWindow && endY) {
+          return isAfter(curNow, endY);
+        } else {
+          const globalDeadline = addMinutes(startX, q.durationMinutes);
+          return isAfter(curNow, globalDeadline);
+        }
+      } else if (endY) {
+        return isAfter(curNow, endY);
+      }
+      return false;
+    } else {
+      if (q.endTime) {
+        return isAfter(curNow, new Date(q.endTime));
+      }
+      return false;
+    }
+  }, []);
+
   const filteredQuizzes = useMemo(() => {
     return quizzes.filter((q: Quiz) => {
         const matchGrade = gradeFilter === 'all' || q.grade === gradeFilter || q.grade === 'all';
@@ -361,6 +386,18 @@ export default function StudentDashboard({ user, targetQuizId }: StudentDashboar
         return matchGrade && matchChapter && matchClass;
     });
   }, [quizzes, gradeFilter, chapterFilter, user.classId]);
+
+  const openTestQuizzes = useMemo(() => {
+    return filteredQuizzes.filter(q => q.type === 'test' && !isQuizExpired(q));
+  }, [filteredQuizzes, isQuizExpired]);
+
+  const openPracticeQuizzes = useMemo(() => {
+    return filteredQuizzes.filter(q => q.type === 'practice' && !isQuizExpired(q));
+  }, [filteredQuizzes, isQuizExpired]);
+
+  const expiredQuizzes = useMemo(() => {
+    return filteredQuizzes.filter(q => isQuizExpired(q));
+  }, [filteredQuizzes, isQuizExpired]);
 
   if (activeQuiz) {
     return <QuizTaker quiz={activeQuiz} student={user} onExit={handleExitQuiz} />;
@@ -441,7 +478,7 @@ export default function StudentDashboard({ user, targetQuizId }: StudentDashboar
         </div>
 
         <div className="ml-auto text-[9px] font-black uppercase text-slate-400 italic">
-            {user.className ? `Lớp ${user.className} • ` : ''}Học sinh Khối {user.grade || '12'} | Hiển thị: {filteredQuizzes.length} đề thi
+            {user.className ? `Lớp ${user.className} • ` : ''}Học sinh Khối {user.grade || '12'} | Đang mở: {openTestQuizzes.length + openPracticeQuizzes.length} đề
         </div>
       </section>
 
@@ -503,14 +540,14 @@ export default function StudentDashboard({ user, targetQuizId }: StudentDashboar
       </div>
 
       <section className="space-y-12">
-          {testQuizzes.length > 0 && (
+          {openTestQuizzes.length > 0 && (
               <div>
                   <div className="flex items-center gap-4 mb-8 px-2">
                       <h2 className="text-sm font-black text-slate-800 uppercase tracking-tight">Bài kiểm tra định kỳ (Làm bài)</h2>
                       <div className="h-px flex-1 bg-red-100"></div>
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-                      {testQuizzes.map(q => {
+                      {openTestQuizzes.map(q => {
                           const startX = q.startTime ? new Date(q.startTime) : null;
                           const endY = q.endTime ? new Date(q.endTime) : null;
                           const isFlexibleWindow = Boolean(startX && endY && endY.getTime() > startX.getTime());
@@ -660,71 +697,79 @@ export default function StudentDashboard({ user, targetQuizId }: StudentDashboar
               </div>
           )}
 
-          <div>
-              <div className="flex items-center gap-4 mb-8 px-2">
-                  <h2 className="text-sm font-black text-slate-800 uppercase tracking-tight">Kho đề luyện tập (Xem ngay đáp án)</h2>
-                  <div className="h-px flex-1 bg-slate-100"></div>
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-                {practiceQuizzes.sort((a, b) => (a.orderIndex || 0) - (b.orderIndex || 0)).map(q => {
-                    const status = getQuizStatus(q);
-                    const isPracticeExpired = Boolean(q.endTime && isAfter(now, new Date(q.endTime)));
-                    const qStats = (qid: string) => {
-                      const attempts = results.filter(r => r.quizId === qid);
-                      if (attempts.length === 0) return null;
-                      return { count: attempts.length, max: Math.max(...attempts.map(r => r.score)) };
-                    };
-                    const qs = qStats(q.id);
-                    return (
-                      <div key={q.id} className={`bg-white rounded-[1.5rem] border border-slate-200 p-6 flex flex-col transition-all border-b-4 ${status.isLocked || isPracticeExpired ? 'opacity-75 grayscale border-slate-300' : 'hover:shadow-xl hover:-translate-y-1 group hover:border-b-blue-600'}`}>
-                        <div className="flex justify-between items-start mb-3">
-                          <div className="flex items-center gap-1.5 flex-wrap">
-                            <div className="px-2 py-1 bg-blue-50 text-blue-600 rounded-lg font-black text-[8px] uppercase">{q.questions.length} câu</div>
-                            {isPracticeExpired ? (
-                              <span className="px-2 py-0.5 bg-amber-100 text-amber-800 border border-amber-200 rounded-lg font-black text-[7px] uppercase">HẾT HẠN LUYỆN</span>
-                            ) : (
-                              <span className="px-2 py-0.5 bg-emerald-50 text-emerald-600 border border-emerald-100 rounded-lg font-black text-[7px] uppercase">TỰ DO LUYỆN</span>
+          {openPracticeQuizzes.length > 0 && (
+              <div>
+                  <div className="flex items-center gap-4 mb-8 px-2">
+                      <h2 className="text-sm font-black text-slate-800 uppercase tracking-tight">Kho đề luyện tập (Xem ngay đáp án)</h2>
+                      <div className="h-px flex-1 bg-slate-100"></div>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+                    {openPracticeQuizzes.sort((a, b) => (a.orderIndex || 0) - (b.orderIndex || 0)).map(q => {
+                        const status = getQuizStatus(q);
+                        const isPracticeExpired = Boolean(q.endTime && isAfter(now, new Date(q.endTime)));
+                        return (
+                          <div key={q.id} className={`bg-white rounded-[1.5rem] border border-slate-200 p-6 flex flex-col transition-all border-b-4 ${status.isLocked || isPracticeExpired ? 'opacity-75 grayscale border-slate-300' : 'hover:shadow-xl hover:-translate-y-1 group hover:border-b-blue-600'}`}>
+                            <div className="flex justify-between items-start mb-3">
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <div className="px-2 py-1 bg-blue-50 text-blue-600 rounded-lg font-black text-[8px] uppercase">{q.questions.length} câu</div>
+                                {isPracticeExpired ? (
+                                  <span className="px-2 py-0.5 bg-amber-100 text-amber-800 border border-amber-200 rounded-lg font-black text-[7px] uppercase">HẾT HẠN LUYỆN</span>
+                                ) : (
+                                  <span className="px-2 py-0.5 bg-emerald-50 text-emerald-600 border border-emerald-100 rounded-lg font-black text-[7px] uppercase">TỰ DO LUYỆN</span>
+                                )}
+                                {q.disablePractice && (
+                                  <span className="px-2 py-1 bg-rose-50 text-rose-600 border border-rose-100 rounded-lg font-black text-[7px] uppercase">ĐÃ TẮT LUYỆN</span>
+                                )}
+                              </div>
+                              <span className="text-[9px] font-black text-slate-300 uppercase">{q.grade === 'all' ? 'Chung' : `Khối ${q.grade}`}</span>
+                            </div>
+                            {q.category && <p className="text-[8px] font-black text-blue-500 uppercase tracking-widest mb-1 italic truncate">{q.category}</p>}
+                            <h3 className="font-black text-slate-800 text-[13px] leading-tight mb-2 group-hover:text-blue-600 uppercase flex items-center gap-2 line-clamp-2 min-h-[2.5em]">
+                                {(status.isLocked || isPracticeExpired) && <Lock size={14} className="text-slate-400 shrink-0"/>}
+                                {q.title}
+                            </h3>
+
+                            {q.endTime && (
+                                <div className="text-[9px] font-bold text-slate-500 mb-3 bg-slate-50 px-2.5 py-1 rounded-lg border border-slate-100 flex items-center gap-1.5">
+                                    <Calendar size={11} className="text-amber-500 shrink-0"/>
+                                    <span>Hạn chót luyện: <strong>{format(new Date(q.endTime), 'HH:mm dd/MM/yyyy')}</strong></span>
+                                </div>
                             )}
-                            {q.disablePractice && (
-                              <span className="px-2 py-1 bg-rose-50 text-rose-600 border border-rose-100 rounded-lg font-black text-[7px] uppercase">ĐÃ TẮT LUYỆN</span>
+                            
+                            {status.isLocked || isPracticeExpired ? (
+                                <div className="mt-auto bg-slate-50 p-3 rounded-xl border border-slate-200">
+                                    <p className="text-[8px] font-black text-slate-400 uppercase mb-0.5">Đã đóng băng</p>
+                                    <p className="text-[9px] font-bold text-slate-600 leading-tight">{status.reason || 'Đã hết thời hạn luyện tập đề thi này'}</p>
+                                </div>
+                            ) : (
+                                <div className="mt-auto pt-2">
+                                    <button 
+                                      onClick={() => handleStartPractice(q)} 
+                                      className="w-full flex items-center justify-center gap-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white py-3 rounded-2xl text-[11px] font-black uppercase shadow-lg shadow-blue-500/20 active:scale-95 transition-all" 
+                                      title="Luyện tập tự do không tính điểm, xem ngay đáp án & lời giải chi tiết từng câu"
+                                    >
+                                      <Zap size={14} className="text-yellow-300"/> Luyện tập ngay
+                                    </button>
+                                </div>
                             )}
                           </div>
-                          <span className="text-[9px] font-black text-slate-300 uppercase">{q.grade === 'all' ? 'Chung' : `Khối ${q.grade}`}</span>
-                        </div>
-                        {q.category && <p className="text-[8px] font-black text-blue-500 uppercase tracking-widest mb-1 italic truncate">{q.category}</p>}
-                        <h3 className="font-black text-slate-800 text-[13px] leading-tight mb-2 group-hover:text-blue-600 uppercase flex items-center gap-2 line-clamp-2 min-h-[2.5em]">
-                            {(status.isLocked || isPracticeExpired) && <Lock size={14} className="text-slate-400 shrink-0"/>}
-                            {q.title}
-                        </h3>
-
-                        {q.endTime && (
-                            <div className="text-[9px] font-bold text-slate-500 mb-3 bg-slate-50 px-2.5 py-1 rounded-lg border border-slate-100 flex items-center gap-1.5">
-                                <Calendar size={11} className="text-amber-500 shrink-0"/>
-                                <span>Hạn chót luyện: <strong>{format(new Date(q.endTime), 'HH:mm dd/MM/yyyy')}</strong></span>
-                            </div>
-                        )}
-                        
-                        {status.isLocked || isPracticeExpired ? (
-                            <div className="mt-auto bg-slate-50 p-3 rounded-xl border border-slate-200">
-                                <p className="text-[8px] font-black text-slate-400 uppercase mb-0.5">Đã đóng băng</p>
-                                <p className="text-[9px] font-bold text-slate-600 leading-tight">{status.reason || 'Đã hết thời hạn luyện tập đề thi này'}</p>
-                            </div>
-                        ) : (
-                            <div className="mt-auto pt-2">
-                                <button 
-                                  onClick={() => handleStartPractice(q)} 
-                                  className="w-full flex items-center justify-center gap-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white py-3 rounded-2xl text-[11px] font-black uppercase shadow-lg shadow-blue-500/20 active:scale-95 transition-all" 
-                                  title="Luyện tập tự do không tính điểm, xem ngay đáp án & lời giải chi tiết từng câu"
-                                >
-                                  <Zap size={14} className="text-yellow-300"/> Luyện tập ngay
-                                </button>
-                            </div>
-                        )}
-                      </div>
-                    );
-                })}
+                        );
+                    })}
+                  </div>
               </div>
-          </div>
+          )}
+
+          {openTestQuizzes.length === 0 && openPracticeQuizzes.length === 0 && (
+              <div className="bg-white rounded-[2.5rem] p-12 border border-slate-200 text-center space-y-3 shadow-sm">
+                  <div className="w-14 h-14 bg-blue-50 text-blue-500 rounded-2xl flex items-center justify-center mx-auto">
+                      <Calendar size={28}/>
+                  </div>
+                  <h3 className="font-black text-slate-800 uppercase text-sm">Hiện không có đề thi hoặc đề luyện tập nào đang mở</h3>
+                  <p className="text-slate-500 text-xs font-medium max-w-md mx-auto">
+                      Tất cả các đề hiện tại đã hết hạn hoặc chưa đến giờ mở. Bạn có thể xem lại bài làm đã nộp trong mục Lịch sử nộp bài gần đây phía dưới.
+                  </p>
+              </div>
+          )}
       </section>
 
       <section className="pt-10">
