@@ -10,6 +10,7 @@ import LatexText from '../LatexText';
 import { v4 as uuidv4 } from 'uuid';
 import { isSameSubject, STANDARD_SUBJECTS, normalizeSubject, getDisplaySubject, isSameGrade } from '../../services/subjectUtils';
 import { getQuestionFingerprint } from '../../services/storage';
+import { cleanGroupPassageText } from '../../utils/groupShuffleUtils';
 
 interface QuestionBankProps {
     questions: Question[];
@@ -813,6 +814,16 @@ export default function QuestionBank({
                                         </span>
                                     )}
                                 </div>
+
+                                {/* Lời dẫn / Ngữ cảnh dùng chung nếu có */}
+                                {bq.groupPassage && (
+                                    <div className="mb-3 p-3.5 bg-amber-50 border border-amber-200/90 rounded-2xl text-xs font-medium text-amber-950">
+                                        <span className="font-black text-amber-900 uppercase text-[10px] tracking-wider block mb-1 flex items-center gap-1.5">
+                                            <BookOpen size={13} className="text-amber-600"/> LỜI DẪN / NGỮ CẢNH DÙNG CHUNG:
+                                        </span>
+                                        <LatexText text={cleanGroupPassageText(bq.groupPassage)} />
+                                    </div>
+                                )}
 
                                 {/* Thân nội dung câu hỏi */}
                                 <div className="text-slate-900 text-sm font-bold leading-relaxed overflow-x-auto">

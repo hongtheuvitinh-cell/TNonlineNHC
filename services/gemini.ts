@@ -154,10 +154,31 @@
             const strippedOptions = item.options ? item.options.map((opt: string) => stripOptionLabel(opt)) : (type === 'mcq' ? [] : undefined);
             let finalCorrectAnswer = item.correctAnswer ? cleanLatexTextTags(String(item.correctAnswer)) : item.correctAnswer;
 
-            // Xử lý trích xuất level từ text câu hỏi nếu chưa có
+            // Xử lý trích xuất level và lời dẫn chung (groupPassage / context) từ text hoặc thuộc tính riêng
+            let extractedPassage = (
+                item.groupPassage || 
+                item.context || 
+                item.passage || 
+                item.passageText || 
+                item.sharedContext || 
+                item.doan_van || 
+                item.bai_doc || 
+                ''
+            )?.toString().trim() || '';
+
             let extractedMain = extractLevelFromText(item.text || "");
-            let finalLevel = normalizeLevel(item.level) || extractedMain.level;
             let cleanedText = normalizeFullText(extractedMain.cleanText);
+
+            // Nếu chưa có groupPassage riêng nhưng nội dung bắt đầu bằng "Dữ liệu dùng chung cho..."
+            if (!extractedPassage) {
+                const passageMatch = cleanedText.match(/^(Dữ\s+liệu|Đoạn\s+văn|Lời\s+dẫn|Thông\s+tin)\s+dùng\s+chung\s+cho\s+(câu|Câu)\s*\d+\s*[-–— đến\s]+\d+\s*:\s*([\s\S]+?)(?:\n+|\r\n+)([\s\S]+)$/i);
+                if (passageMatch) {
+                    extractedPassage = passageMatch[3].trim();
+                    cleanedText = passageMatch[4].trim();
+                }
+            }
+
+            let finalLevel = normalizeLevel(item.level) || extractedMain.level;
             let cleanedSolution = normalizeFullText(item.solution || "");
 
             if (type === 'mcq' && item.correctAnswer && item.options) {
@@ -199,6 +220,8 @@
                 type,
                 id: uuidv4(),
                 bankQuestionId: item.bankQuestionId || (item.id && typeof item.id === 'string' ? item.id : undefined),
+                groupPassage: extractedPassage || undefined,
+                context: extractedPassage || undefined,
                 text: cleanedText,
                 solution: cleanedSolution,
                 level: finalLevel,
@@ -901,22 +924,18 @@
                 }
             }
 
-            // Question text: hợp nhất context (ngữ cảnh/đoạn văn) + câu hỏi
-            let rawText = '';
-            const contextStr = q.context || q.doan_van || q.bai_doc || '';
-            const mainTextStr = q.text || q.question || q.content || q.cau_hoi || q.title || '';
-
-            if (contextStr && mainTextStr) {
-                rawText = `${contextStr}\n${mainTextStr}`;
-            } else {
-                rawText = mainTextStr || contextStr || '';
-            }
+            // Question text & context/groupPassage
+            const contextStr = (q.groupPassage || q.context || q.passage || q.passageText || q.sharedContext || q.doan_van || q.bai_doc || q.loi_dan || '').toString().trim();
+            const mainTextStr = (q.text || q.question || q.content || q.cau_hoi || q.title || '').toString().trim();
+            let rawText = mainTextStr || contextStr || '';
 
             const rawSolution = q.solution || q.explanation || q.loi_giai || q.huong_dan_giai || q.guide || '';
 
             return {
                 ...q,
                 type,
+                groupPassage: contextStr || undefined,
+                context: contextStr || undefined,
                 text: rawText.replace(/\\\(|\\\)/g, '$').replace(/\\\[|\\\]/g, '$$'),
                 options: type === 'mcq' ? options : undefined,
                 correctAnswer: typeof correctAnswer === 'string' ? correctAnswer.replace(/\\\(|\\\)/g, '$').replace(/\\\[|\\\]/g, '$$') : String(correctAnswer),

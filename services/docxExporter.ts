@@ -29,6 +29,7 @@ import { mml2omml } from '@hungknguyen/mathml2omml';
 import { mathJaxReady } from '@hungknguyen/docx-math-converter';
 import { Quiz, Question } from '../types';
 import { normalizeFullText } from './vietnameseFixer';
+import { getGroupPassageHeaderInfo } from '../utils/groupShuffleUtils';
 
 // Chuẩn hóa và làm sạch mã LaTeX trước khi chuyển sang MathML/OMML
 function cleanLatexForDocx(latex: string): string {
@@ -425,6 +426,55 @@ export interface ExportDocxOptions {
     layoutMode?: 'single' | 'auto';
 }
 
+async function addGroupPassageToDoc(
+    docChildren: (Paragraph | Table)[],
+    questions: Question[],
+    index: number
+): Promise<void> {
+    const groupInfo = getGroupPassageHeaderInfo(questions, index);
+    if (!groupInfo || !groupInfo.isFirst) return;
+
+    const passageRuns = parseMixedTextToDocxRuns(groupInfo.passageText, { size: 22, font: 'Times New Roman' });
+    const table = new Table({
+        width: { size: 100, type: WidthType.PERCENTAGE },
+        borders: {
+            top: { style: BorderStyle.SINGLE, size: 8, color: 'D97706' },
+            bottom: { style: BorderStyle.SINGLE, size: 8, color: 'D97706' },
+            left: { style: BorderStyle.SINGLE, size: 8, color: 'D97706' },
+            right: { style: BorderStyle.SINGLE, size: 8, color: 'D97706' },
+        },
+        rows: [
+            new TableRow({
+                children: [
+                    new TableCell({
+                        shading: { fill: 'FEF3C7' },
+                        margins: { top: 120, bottom: 120, left: 180, right: 180 },
+                        children: [
+                            new Paragraph({
+                                spacing: { after: 60 },
+                                children: [
+                                    new TextRun({
+                                        text: groupInfo.headerTitle,
+                                        bold: true,
+                                        font: 'Times New Roman',
+                                        size: 22,
+                                        color: '92400E'
+                                    })
+                                ]
+                            }),
+                            new Paragraph({
+                                spacing: { after: 40 },
+                                children: passageRuns
+                            })
+                        ]
+                    })
+                ]
+            })
+        ]
+    });
+    docChildren.push(table);
+}
+
 export async function exportQuizToDocx(quiz: Quiz, options: ExportDocxOptions = {}): Promise<void> {
     const { isAdmin = true, layoutMode = 'single' } = options;
 
@@ -552,6 +602,7 @@ export async function exportQuizToDocx(quiz: Quiz, options: ExportDocxOptions = 
         );
 
         for (let idx = 0; idx < mcqQuestions.length; idx++) {
+            await addGroupPassageToDoc(docChildren, mcqQuestions, idx);
             const q = mcqQuestions[idx];
             await addQuestionToDoc(docChildren, q, idx + 1, layoutMode);
         }
@@ -570,6 +621,7 @@ export async function exportQuizToDocx(quiz: Quiz, options: ExportDocxOptions = 
         );
 
         for (let idx = 0; idx < groupTfQuestions.length; idx++) {
+            await addGroupPassageToDoc(docChildren, groupTfQuestions, idx);
             const q = groupTfQuestions[idx];
             await addGroupTfQuestionToDoc(docChildren, q, idx + 1);
         }
@@ -588,6 +640,7 @@ export async function exportQuizToDocx(quiz: Quiz, options: ExportDocxOptions = 
         );
 
         for (let idx = 0; idx < shortQuestions.length; idx++) {
+            await addGroupPassageToDoc(docChildren, shortQuestions, idx);
             const q = shortQuestions[idx];
             await addShortQuestionToDoc(docChildren, q, idx + 1);
         }

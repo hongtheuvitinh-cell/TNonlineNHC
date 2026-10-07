@@ -1,10 +1,11 @@
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { X, CheckCircle2, XCircle, HelpCircle, Info, Lock, Loader2, ChevronUp, ChevronDown } from 'lucide-react';
+import { X, CheckCircle2, XCircle, HelpCircle, Info, Lock, Loader2, ChevronUp, ChevronDown, BookOpen } from 'lucide-react';
 import { Result, Quiz, Question } from '../../types';
 import LatexText from '../LatexText';
 import { isAfter, addMinutes } from 'date-fns';
 import { getQuizById } from '../../services/storage';
+import { getGroupPassageHeaderInfo } from '../../utils/groupShuffleUtils';
 
 interface ResultDetailModalProps {
     isOpen: boolean;
@@ -115,7 +116,7 @@ export default function ResultDetailModal({ isOpen, result, quiz: initialQuiz, i
         return [...parts.mcq, ...parts['group-tf'], ...parts.short];
     }, [questions, result.shuffledQuestionIds]);
 
-    const renderQuestionDetail = (q: Question, idx: number) => {
+    const renderQuestionDetail = (q: Question, idx: number, allQs: Question[] = orderedQuestions) => {
         const ans = userAnswers[q.id];
         let isCorrect = false;
 
@@ -142,9 +143,23 @@ export default function ResultDetailModal({ isOpen, result, quiz: initialQuiz, i
         }
 
         const isPartial = (q as any)._isPartial;
+        const groupInfo = getGroupPassageHeaderInfo(allQs, idx);
 
         return (
-            <div key={q.id} className={`bg-white p-10 rounded-[2.5rem] border-2 shadow-sm relative transition-all ${showDetailAnswers ? (isCorrect ? 'border-emerald-100' : (isPartial ? 'border-amber-100' : 'border-red-100')) : 'border-slate-100'}`}>
+            <React.Fragment key={q.id}>
+                {groupInfo && groupInfo.isFirst && (
+                    <div className="bg-amber-50/90 border-2 border-amber-200 p-6 rounded-[2rem] shadow-sm mb-4">
+                        <div className="font-black text-amber-900 text-xs md:text-sm uppercase mb-2 flex items-center gap-2">
+                            <BookOpen size={18} className="text-amber-600 shrink-0" />
+                            <span>{groupInfo.headerTitle}</span>
+                        </div>
+                        <div className="text-slate-800 text-sm md:text-base font-medium leading-relaxed">
+                            <LatexText text={groupInfo.passageText} />
+                        </div>
+                    </div>
+                )}
+
+                <div className={`bg-white p-10 rounded-[2.5rem] border-2 shadow-sm relative transition-all ${showDetailAnswers ? (isCorrect ? 'border-emerald-100' : (isPartial ? 'border-amber-100' : 'border-red-100')) : 'border-slate-100'}`}>
                 {showDetailAnswers && (
                     <div className="absolute top-8 right-8 flex items-center gap-2">
                         {isPartial && <span className="bg-amber-100 text-amber-600 text-[8px] font-black px-2 py-1 rounded-md uppercase">Đúng một phần</span>}
@@ -245,7 +260,8 @@ export default function ResultDetailModal({ isOpen, result, quiz: initialQuiz, i
                         <div className="text-slate-600 text-sm italic leading-relaxed"><LatexText text={q.solution}/></div>
                     </div>
                 )}
-            </div>
+                </div>
+            </React.Fragment>
         );
     };
 

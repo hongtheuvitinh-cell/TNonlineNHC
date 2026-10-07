@@ -141,6 +141,7 @@ export function mapBankQuestionFromDb(row: any): Question {
     id: row.id,
     type: row.type || 'mcq',
     text: row.text,
+    groupPassage: row.group_passage || row.groupPassage || (row as any).context || undefined,
     points: Number(row.points) || 0.25,
     level: row.level || undefined,
     imageUrl: row.image_url || row.imageUrl || undefined,
@@ -180,6 +181,7 @@ export function mapBankQuestionToDb(q: Question): any {
     id: q.id || uuidv4(),
     type: normType,
     text: q.text || '',
+    group_passage: q.groupPassage || (q as any).context || null,
     points: Number(q.points) || 0.25,
     level: normLevel,
     image_url: q.imageUrl || null,
@@ -535,8 +537,22 @@ export const supabaseDb = {
     const client = getSupabase();
     if (!client) return [];
     const { data, error } = await client.from('chapters').select('*').order('order', { ascending: true });
-    if (error || !data) return [];
-    return data.map(mapChapterFromDb);
+    const chapters = (error || !data) ? [] : data.map(mapChapterFromDb);
+    const grades: Grade[] = ['10', '11', '12', 'all'];
+    for (const g of grades) {
+      const exists = chapters.some(c => (c.grade === g || c.grade === 'all') && (c.name === 'Chưa phân chương' || c.name === 'Chưa phân thư mục'));
+      if (!exists) {
+        chapters.push({
+          id: `default_uncategorized_${g}`,
+          grade: g,
+          name: 'Chưa phân chương',
+          order: 9999,
+          subject: 'Vật lí',
+          isSharedWithTeachers: true
+        });
+      }
+    }
+    return chapters;
   },
 
   async saveChapter(c: Chapter): Promise<void> {

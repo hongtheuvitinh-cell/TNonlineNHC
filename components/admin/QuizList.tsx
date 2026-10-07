@@ -984,7 +984,8 @@ export default function QuizList({
             if (qGradeFilter !== 'all' && q.grade !== qGradeFilter) return false;
             
             // 3. Lọc theo Chương
-            if (qChapterFilter !== 'all' && q.category !== qChapterFilter) return false;
+            const effectiveCategory = (q.category && q.category.trim() && q.category !== 'Mặc định') ? q.category.trim() : 'Chưa phân chương';
+            if (qChapterFilter !== 'all' && effectiveCategory !== qChapterFilter) return false;
             
             // 4. Tìm kiếm từ khóa
             if (qSearch.trim() && !q.title.toLowerCase().includes(qSearch.toLowerCase())) return false;

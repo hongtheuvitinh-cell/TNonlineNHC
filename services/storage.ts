@@ -25,6 +25,7 @@ import { isSameSubject, normalizeSubject, isSameGrade } from './subjectUtils';
 import { getCurrentAcademicYear, getQuizAcademicYear } from './academicUtils';
 import { uploadImageToSupabaseStorage } from './supabaseMigration';
 import { supabaseDb, isSupabaseConnected } from './supabaseService';
+import { autoRepairQuizQuestions } from '../utils/groupShuffleUtils';
 
 import firebaseConfig from '../firebase-applet-config.json';
 
@@ -1267,6 +1268,7 @@ export const getQuizById = async (id: string, forceRefresh: boolean = false): Pr
   if (isSupabasePrimary()) {
     const sbQuiz = await supabaseDb.getQuizById(id);
     if (sbQuiz && Array.isArray(sbQuiz.questions) && sbQuiz.questions.length > 0) {
+      sbQuiz.questions = autoRepairQuizQuestions(sbQuiz.questions);
       if (!memoryCache.quizDetails) memoryCache.quizDetails = new Map();
       const expires = now + 15 * 60 * 1000; // 15 phút cache
       memoryCache.quizDetails.set(id, { data: sbQuiz, expires });
@@ -1345,7 +1347,7 @@ export const getQuizById = async (id: string, forceRefresh: boolean = false): Pr
       isUnlisted: data.isUnlisted !== undefined ? Boolean(data.isUnlisted) : Boolean(quiz.isUnlisted),
       targetType: data.targetType || quiz.targetType || 'all',
       assignedClassIds: data.assignedClassIds || quiz.assignedClassIds || [],
-      questions: extractedQuestions,
+      questions: autoRepairQuizQuestions(extractedQuestions),
       questionCount: actualQuestionCount,
       attemptCount: data.attemptCount !== undefined ? data.attemptCount : (quiz.attemptCount || 0)
     };
@@ -1572,8 +1574,15 @@ export const saveQuizToFirestore = async (enrichedQuiz: Quiz): Promise<void> => 
 export const saveQuiz = async (quiz: Quiz): Promise<void> => {
   const rawQList = quiz.questions || [];
   const qList = await optimizeQuizQuestions(rawQList);
+  const finalCategory = (quiz.category && quiz.category.trim() && quiz.category !== 'Mặc định') 
+    ? quiz.category.trim() 
+    : 'Chưa phân chương';
+  const finalSubject = (quiz.subject && quiz.subject.trim()) ? quiz.subject.trim() : 'Vật lí';
+
   const enrichedQuiz = { 
     ...quiz, 
+    category: finalCategory,
+    subject: finalSubject,
     academicYear: quiz.academicYear || getQuizAcademicYear(quiz),
     questions: qList,
     questionCount: qList.length 
@@ -1929,11 +1938,12 @@ export const syncAllQuizzesMetadata = async (): Promise<number> => {
       } else if (row.data && Array.isArray((row.data as any).questions)) {
         qs = (row.data as any).questions;
       }
-      const questionCount = qs.length > 0 ? qs.length : (row.questionCount || quiz.questionCount || 0);
-      const updatedQuiz = { ...quiz, questions: qs, questionCount };
+      const repairedQuestions = autoRepairQuizQuestions(qs);
+      const questionCount = repairedQuestions.length > 0 ? repairedQuestions.length : (row.questionCount || quiz.questionCount || 0);
+      const updatedQuiz = { ...quiz, questions: repairedQuestions, questionCount };
       batch.update(docItem.ref, {
         questionCount,
-        questions: qs,
+        questions: repairedQuestions,
         data: cleanUndefined(updatedQuiz)
       });
       count++;
@@ -1977,6 +1987,23 @@ export const getChapters = async (forceRefresh: boolean = false): Promise<Chapte
       } as Chapter;
     });
     const sorted = chapters.sort((a, b) => (a.order || 0) - (b.order || 0));
+    
+    // Đảm bảo luôn có thư mục / chương mặc định "Chưa phân chương" cho các khối lớp
+    const grades: Grade[] = ['10', '11', '12', 'all'];
+    for (const g of grades) {
+      const exists = sorted.some(c => (c.grade === g || c.grade === 'all') && (c.name === 'Chưa phân chương' || c.name === 'Chưa phân thư mục'));
+      if (!exists) {
+        sorted.push({
+          id: `default_uncategorized_${g}`,
+          grade: g,
+          name: 'Chưa phân chương',
+          order: 9999,
+          subject: 'Vật lí',
+          isSharedWithTeachers: true
+        });
+      }
+    }
+
     memoryCache.chapters = { data: sorted, expires: now + 5 * 60 * 1000 };
     return sorted;
   } catch (e) {

@@ -884,6 +884,42 @@ const QuestionSection: React.FC<QuestionSectionProps> = ({
                         </div>
                     </div>
 
+                    {/* Ô NHẬP LỜI DẪN CHUNG CHO NHÓM CÂU HỎI (NẾU CÓ DỮ LIỆU DÙNG CHUNG) */}
+                    <div className="mb-6 p-4 bg-amber-50/80 border-2 border-amber-200/80 rounded-[2rem] space-y-2">
+                        <div className="flex items-center justify-between px-2">
+                            <label className="text-[10px] font-black text-amber-900 uppercase flex items-center gap-1.5">
+                                <BookOpen size={14} className="text-amber-600 shrink-0"/>
+                                <span>LỜI DẪN CHUNG / NGỮ CẢNH DÙNG CHUNG (DÙNG CHO NHÓM CÂU HỎI)</span>
+                            </label>
+                            {globalIndex > 0 && questions[globalIndex - 1]?.groupPassage && (
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        const nl = [...questions];
+                                        const i = nl.findIndex(x => x.id === q.id);
+                                        nl[i].groupPassage = questions[globalIndex - 1].groupPassage;
+                                        setQuestions(nl);
+                                    }}
+                                    className="text-[9px] font-black text-amber-800 bg-amber-100 hover:bg-amber-200 px-3 py-1 rounded-xl uppercase transition-all shadow-sm"
+                                    title="Dùng lại lời dẫn chung từ câu phía trước để tự động ghép vào cùng 1 nhóm"
+                                >
+                                    📋 Dùng lại lời dẫn câu trước
+                                </button>
+                            )}
+                        </div>
+                        <textarea
+                            className="w-full p-4 bg-white border border-amber-200 rounded-2xl text-xs font-medium text-slate-800 outline-none focus:border-amber-400 transition-colors min-h-[55px]"
+                            value={q.groupPassage || ''}
+                            onChange={e => {
+                                const nl = [...questions];
+                                const i = nl.findIndex(x => x.id === q.id);
+                                nl[i].groupPassage = e.target.value;
+                                setQuestions(nl);
+                            }}
+                            placeholder="VD: Một ấm đun nước bằng điện có công suất... (Nếu câu 1 và câu 2 có cùng lời dẫn này, khi học sinh làm bài chúng sẽ tự động ghép thành 1 nhóm và không bị xáo rời nhau)"
+                        />
+                    </div>
+
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
                         <div className="space-y-2">
                             <div className="flex items-center justify-between ml-2 mr-2">

@@ -93,6 +93,7 @@ export interface Question {
   createdByName?: string;
   isShared?: boolean;
   bankQuestionId?: string; // ID của câu hỏi gốc trong Ngân hàng câu hỏi (để chống trùng lặp khi đồng bộ)
+  groupPassage?: string; // Lời dẫn chung / Ngữ cảnh dùng chung cho nhóm câu hỏi
 }
 
 export interface Quiz {

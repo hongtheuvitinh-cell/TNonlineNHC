@@ -4,6 +4,7 @@ import { Quiz, Question } from '../../types';
 import LatexText from '../LatexText';
 import { normalizeFullText, repairVietnameseText } from '../../services/vietnameseFixer';
 import { exportQuizToDocx } from '../../services/docxExporter';
+import { getGroupPassageHeaderInfo } from '../../utils/groupShuffleUtils';
 
 interface QuizPreviewModalProps {
     quiz: Quiz;
@@ -634,16 +635,39 @@ export default function QuizPreviewModal({ quiz, onClose, isAdmin = true }: Quiz
                                     </div>
                                     
                                     <div className="space-y-6">
-                                        {typeQs.map((q, idx) => (
-                                            <div 
-                                                key={q.id} 
-                                                className="question-block" 
-                                                style={{ 
-                                                    marginBottom: '14pt', 
-                                                    textAlign: 'justify', 
-                                                    pageBreakInside: 'avoid' 
-                                                }}
-                                            >
+                                        {typeQs.map((q, idx) => {
+                                            const groupInfo = getGroupPassageHeaderInfo(typeQs, idx);
+                                            return (
+                                                <React.Fragment key={q.id}>
+                                                    {groupInfo && groupInfo.isFirst && (
+                                                        <div 
+                                                            className="group-passage-box shadow-sm"
+                                                            style={{
+                                                                backgroundColor: '#fffbeb',
+                                                                border: '1.5pt solid #f59e0b',
+                                                                padding: '8pt 12pt',
+                                                                borderRadius: '8pt',
+                                                                marginBottom: '10pt',
+                                                                marginTop: '8pt'
+                                                            }}
+                                                        >
+                                                            <p style={{ fontWeight: 'bold', color: '#92400e', margin: '0 0 4pt 0', fontSize: '10.5pt', textTransform: 'uppercase' }}>
+                                                                {groupInfo.headerTitle}
+                                                            </p>
+                                                            <div style={{ fontStyle: 'normal', color: '#1e293b', fontSize: '10.5pt', lineHeight: '1.3' }}>
+                                                                <LatexText text={groupInfo.passageText} />
+                                                            </div>
+                                                        </div>
+                                                    )}
+
+                                                    <div 
+                                                        className="question-block" 
+                                                        style={{ 
+                                                            marginBottom: '14pt', 
+                                                            textAlign: 'justify', 
+                                                            pageBreakInside: 'avoid' 
+                                                        }}
+                                                    >
                                                 {/* Tiêu đề câu và nội dung trên cùng 1 đoạn văn (KHÔNG dùng flex/nested block) */}
                                                 <p 
                                                     className="question-title" 
@@ -727,8 +751,10 @@ export default function QuizPreviewModal({ quiz, onClose, isAdmin = true }: Quiz
                                                         Đáp số: ........................................................................
                                                     </p>
                                                 )}
-                                            </div>
-                                        ))}
+                                                    </div>
+                                                </React.Fragment>
+                                            );
+                                        })}
                                     </div>
                                 </div>
                             );

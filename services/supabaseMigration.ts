@@ -557,6 +557,7 @@ CREATE TABLE IF NOT EXISTS public.bank_questions (
     id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
     type TEXT NOT NULL CHECK (type IN ('mcq', 'group-tf', 'short')),
     text TEXT NOT NULL,
+    group_passage TEXT,
     points NUMERIC DEFAULT 0.25,
     level TEXT CHECK (level IN ('B', 'H', 'VD', 'VDC')),
     image_url TEXT,

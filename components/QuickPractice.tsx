@@ -3,6 +3,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { Quiz, Question, User } from '../types';
 import { ChevronRight, ChevronLeft, CheckCircle2, XCircle, HelpCircle, Lightbulb, Home, Brain, Zap, ArrowRight, BookOpen } from 'lucide-react';
 import LatexText from './LatexText';
+import { shuffleQuestionsPreservingGroups, getGroupPassageHeaderInfo } from '../utils/groupShuffleUtils';
 
 interface QuickPracticeProps {
   quiz: Quiz;
@@ -27,12 +28,16 @@ export default function QuickPractice({ quiz, student, onExit }: QuickPracticePr
   const [showContent, setShowContent] = useState(true);
   const [memoryTimer, setMemoryTimer] = useState(10); 
 
-  // Xáo trộn riêng từng phần: Phần I (MCQ), Phần II (Đúng/Sai), Phần III (Trả lời ngắn)
+  // Xáo trộn riêng từng phần (giữ nguyên nhóm câu hỏi có lời dẫn chung): Phần I (MCQ), Phần II (Đúng/Sai), Phần III (Trả lời ngắn)
   const orderedQuestions = useMemo(() => {
     const mcq = quiz.questions.filter(q => q.type === 'mcq');
     const tf = quiz.questions.filter(q => q.type === 'group-tf');
     const short = quiz.questions.filter(q => q.type === 'short');
-    return [...shuffleArray(mcq), ...shuffleArray(tf), ...shuffleArray(short)];
+    return [
+      ...shuffleQuestionsPreservingGroups(mcq),
+      ...shuffleQuestionsPreservingGroups(tf),
+      ...shuffleQuestionsPreservingGroups(short)
+    ];
   }, [quiz.questions]);
 
   const currentQuestion = orderedQuestions[currentIndex] || quiz.questions[0];
@@ -153,9 +158,27 @@ export default function QuickPractice({ quiz, student, onExit }: QuickPracticePr
              </button>
           </div>
 
-          <div className="flex-1 p-6 flex flex-col items-center justify-start text-center pt-10 overflow-y-auto custom-scrollbar">
+          <div className="flex-1 p-6 flex flex-col items-center justify-start text-center pt-6 overflow-y-auto custom-scrollbar">
             {showContent ? (
               <div className="space-y-6 animate-fade-in w-full">
+                {(() => {
+                  const groupInfo = getGroupPassageHeaderInfo(orderedQuestions, currentIndex);
+                  if (groupInfo && groupInfo.passageText) {
+                    return (
+                      <div className="bg-amber-50/90 border-2 border-amber-200 p-5 rounded-[1.5rem] text-left shadow-sm mb-4">
+                        <div className="font-black text-amber-900 text-xs uppercase mb-2 flex items-center gap-2">
+                          <BookOpen size={16} className="text-amber-600 shrink-0" />
+                          <span>{groupInfo.headerTitle}</span>
+                        </div>
+                        <div className="text-slate-800 text-sm font-medium leading-relaxed">
+                          <LatexText text={groupInfo.passageText} />
+                        </div>
+                      </div>
+                    );
+                  }
+                  return null;
+                })()}
+
                 <div className="text-lg font-medium text-slate-700 leading-snug px-2">
                   <LatexText text={currentQuestion.text} />
                 </div>

@@ -3,9 +3,10 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Quiz, User, Result, Question, ExamSession } from '../types';
 import { saveResult, addPointsToUser, saveExamSession, deleteExamSession, verifyResultExists } from '../services/storage';
 import { v4 as uuidv4 } from 'uuid';
-import { Clock, Send, XCircle, ShieldAlert, Loader2, Trophy, Home, SearchCheck, ChevronUp, ChevronDown } from 'lucide-react';
+import { Clock, Send, XCircle, ShieldAlert, Loader2, Trophy, Home, SearchCheck, ChevronUp, ChevronDown, BookOpen } from 'lucide-react';
 import LatexText from './LatexText';
 import { addMinutes, differenceInSeconds } from 'date-fns';
+import { shuffleQuestionsPreservingGroups, getGroupPassageHeaderInfo } from '../utils/groupShuffleUtils';
 
 interface QuizTakerProps {
     quiz: Quiz;
@@ -61,14 +62,14 @@ export default function QuizTaker({ quiz, student, onExit }: QuizTakerProps) {
             } catch (e) {}
         }
 
-        // 2. Xáo trộn riêng từng phần:
+        // 2. Xáo trộn riêng từng phần (giữ nguyên các nhóm câu hỏi có lời dẫn chung):
         const mcq = quiz.questions.filter(q => q.type === 'mcq');
         const tf = quiz.questions.filter(q => q.type === 'group-tf');
         const short = quiz.questions.filter(q => q.type === 'short');
 
-        const shuffledMcq = shuffleArray(mcq);
-        const shuffledTf = shuffleArray(tf);
-        const shuffledShort = shuffleArray(short);
+        const shuffledMcq = shuffleQuestionsPreservingGroups(mcq);
+        const shuffledTf = shuffleQuestionsPreservingGroups(tf);
+        const shuffledShort = shuffleQuestionsPreservingGroups(short);
 
         const fullOrdered = [...shuffledMcq, ...shuffledTf, ...shuffledShort];
 
@@ -496,6 +497,25 @@ export default function QuizTaker({ quiz, student, onExit }: QuizTakerProps) {
                                     </div>
                                 </div>
                             )}
+                            {/* Hiển thị Lời dẫn chung nếu câu hỏi thuộc nhóm có ngữ cảnh chung */}
+                            {(() => {
+                                const groupInfo = getGroupPassageHeaderInfo(orderedQuestions, idx);
+                                if (groupInfo && groupInfo.isFirst) {
+                                    return (
+                                        <div className="bg-amber-50/90 border-2 border-amber-200 p-6 rounded-[2rem] shadow-sm mb-4">
+                                            <div className="font-black text-amber-900 text-xs md:text-sm uppercase mb-2 flex items-center gap-2">
+                                                <BookOpen size={18} className="text-amber-600 shrink-0" />
+                                                <span>{groupInfo.headerTitle}</span>
+                                            </div>
+                                            <div className="text-slate-800 text-sm md:text-base font-medium leading-relaxed">
+                                                <LatexText text={groupInfo.passageText} />
+                                            </div>
+                                        </div>
+                                    );
+                                }
+                                return null;
+                            })()}
+
                             <div className="bg-white p-8 rounded-[2.5rem] border shadow-sm transition-all hover:border-blue-100">
                                 <div className="flex items-start gap-4 mb-6">
                                     <span className="text-blue-600 font-black italic underline uppercase shrink-0">Câu {idx + 1}.</span>
