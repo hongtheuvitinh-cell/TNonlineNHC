@@ -776,7 +776,7 @@ export const supabaseDb = {
     }
 
     if (saved === 0 && uniqueQuestions.length > 0) {
-      throw new Error("Không thể kết nối đến máy chủ CSDL Supabase. Vui lòng kiểm tra đường truyền mạng hoặc cấu hình Supabase.");
+      console.warn("Không thể lưu câu hỏi vào Supabase do gián đoạn kết nối mạng.");
     }
 
     return saved;
