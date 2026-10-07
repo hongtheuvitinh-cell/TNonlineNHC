@@ -3,6 +3,7 @@ import { User, Quiz, Result, Chapter, Question, ExamSession, PublishedResult, Gr
 import { getSavedSupabaseConfig } from './supabaseMigration';
 import { normalizeDateTimeForStorage } from './dateUtils';
 import { normalizeSubject, normalizeGrade } from './subjectUtils';
+import { cleanGroupPassageText, repairQuestionPassage, autoRepairQuizQuestions } from '../utils/groupShuffleUtils';
 import { v4 as uuidv4 } from 'uuid';
 
 let _supabaseClient: SupabaseClient | null = null;
@@ -137,10 +138,10 @@ export function mapChapterToDb(c: Chapter): any {
 }
 
 export function mapBankQuestionFromDb(row: any): Question {
-  return {
+  const baseQ: Question = {
     id: row.id,
     type: row.type || 'mcq',
-    text: row.text,
+    text: row.text || '',
     groupPassage: row.group_passage || row.groupPassage || (row as any).context || undefined,
     points: Number(row.points) || 0.25,
     level: row.level || undefined,
@@ -160,6 +161,7 @@ export function mapBankQuestionFromDb(row: any): Question {
     isShared: row.is_shared ?? row.isShared ?? true,
     bankQuestionId: row.bank_question_id || row.bankQuestionId || undefined
   };
+  return repairQuestionPassage(baseQ);
 }
 
 export function mapBankQuestionToDb(q: Question): any {
@@ -177,11 +179,15 @@ export function mapBankQuestionToDb(q: Question): any {
     else if (str === 'VD' || str.includes('VẬN DỤNG')) normLevel = 'VD';
   }
 
+  const repaired = repairQuestionPassage(q);
+  const cleanPassage = cleanGroupPassageText(repaired.groupPassage || (q as any).context || '');
+  const cleanText = (repaired.text || '').replace(/^\[PASSAGE\][\s\S]*?\[\/PASSAGE\]\s*/i, '').trim();
+  const dbText = cleanPassage ? `[PASSAGE]${cleanPassage}[/PASSAGE]\n${cleanText}` : cleanText;
+
   return {
     id: q.id || uuidv4(),
     type: normType,
-    text: q.text || '',
-    group_passage: q.groupPassage || (q as any).context || null,
+    text: dbText,
     points: Number(q.points) || 0.25,
     level: normLevel,
     image_url: q.imageUrl || null,
@@ -236,7 +242,8 @@ export function mapQuizFolderToDb(f: QuizFolder): any {
 }
 
 export function mapQuizFromDb(row: any): Quiz {
-  const questionsList = Array.isArray(row.questions) ? row.questions : [];
+  const rawList = Array.isArray(row.questions) ? row.questions : [];
+  const questionsList = autoRepairQuizQuestions(rawList);
   return {
     id: row.id,
     title: row.title,

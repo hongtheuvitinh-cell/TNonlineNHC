@@ -192,6 +192,7 @@ export default function QuestionBank({
             const query = bSearch.toLowerCase().trim();
             return selectedList.filter(q => 
                 q.text.toLowerCase().includes(query) ||
+                (q.groupPassage && q.groupPassage.toLowerCase().includes(query)) ||
                 (q.quizTitle && q.quizTitle.toLowerCase().includes(query)) ||
                 (q.subject && q.subject.toLowerCase().includes(query))
             );
@@ -210,6 +211,7 @@ export default function QuestionBank({
             const cleanSearch = bSearch ? bSearch.trim().toLowerCase() : '';
             const matchSearchText = !cleanSearch || 
                               q.text.toLowerCase().includes(cleanSearch) ||
+                              (q.groupPassage && q.groupPassage.toLowerCase().includes(cleanSearch)) ||
                               (q.quizTitle && q.quizTitle.toLowerCase().includes(cleanSearch)) ||
                               (q.chapterName && q.chapterName.toLowerCase().includes(cleanSearch)) ||
                               (q.quizCategory && q.quizCategory.toLowerCase().includes(cleanSearch)) ||

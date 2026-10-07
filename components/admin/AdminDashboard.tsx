@@ -1053,7 +1053,10 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
         detailMsg += `\n\n✅ Toàn bộ câu hỏi đã có sẵn và đồng bộ đầy đủ trong Ngân hàng, không phát sinh bản sao trùng lặp!`;
       }
       showAlert("Đồng bộ thành công", detailMsg, "success");
-      await loadTabData('bank');
+      const sub = bSubjectFilter !== 'all' ? bSubjectFilter : (isSuperAdmin ? undefined : currentUser?.subject);
+      const gr = bGradeFilter !== 'all' ? bGradeFilter : undefined;
+      const refreshedBank = await getBankQuestions(true, { subject: sub, grade: gr });
+      setBankQuestions(refreshedBank);
     } catch (e: any) {
       showAlert("Lỗi đồng bộ", "Lỗi khi đồng bộ Ngân hàng: " + (e.message || "Lỗi không xác định"), "error");
     } finally {
@@ -1090,7 +1093,10 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
               "info"
             );
           }
-          await loadTabData('bank');
+          const sub = bSubjectFilter !== 'all' ? bSubjectFilter : (isSuperAdmin ? undefined : currentUser?.subject);
+          const gr = bGradeFilter !== 'all' ? bGradeFilter : undefined;
+          const refreshedBank = await getBankQuestions(true, { subject: sub, grade: gr });
+          setBankQuestions(refreshedBank);
         } catch (e: any) {
           showAlert("Lỗi dọn dẹp", "Lỗi khi quét trùng lặp: " + (e.message || "Lỗi không xác định"), "error");
         } finally {
@@ -1289,10 +1295,15 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
       if (editingQuizId) {
           await updateQuiz(quiz);
           // Cập nhật ngay trong local state của quizzes
-          setQuizzes(prev => prev.map(q => q.id === quiz.id ? { ...q, ...quiz, questionCount: quiz.questions?.length || 0 } : q));
+          setQuizzes(prev => prev.map(q => q.id === quiz.id ? { ...q, ...quiz, questionCount: quiz.questions?.length || 0, syncedToBank: true } : q));
       } else {
           await saveQuiz(quiz);
-          setQuizzes(prev => [quiz, ...prev.filter(q => q.id !== quiz.id)]);
+          setQuizzes(prev => [{ ...quiz, syncedToBank: true }, ...prev.filter(q => q.id !== quiz.id)]);
+      }
+      if (loadedTabsRef.current.has('bank')) {
+          const sub = bSubjectFilter !== 'all' ? bSubjectFilter : (isSuperAdmin ? undefined : currentUser?.subject);
+          const gr = bGradeFilter !== 'all' ? bGradeFilter : undefined;
+          getBankQuestions(true, { subject: sub, grade: gr }).then(res => setBankQuestions(res)).catch(() => {});
       }
       setIsEditingQuiz(false);
       setEditingQuizId(null);

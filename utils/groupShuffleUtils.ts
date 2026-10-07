@@ -1,4 +1,4 @@
-import { Question } from '../types';
+import { Question, Quiz } from '../types';
 
 /**
  * Normalizes and strips dynamic header prefix from group passage text if present.
@@ -7,8 +7,9 @@ import { Question } from '../types';
 export function cleanGroupPassageText(passage: string): string {
   if (!passage) return '';
   return passage
-    .replace(/^(Dữ\s+liệu|Đoạn\s+văn|Lời\s+dẫn|Thông\s+tin)\s+dùng\s+chung\s+cho\s+(câu|Câu)\s*\d+\s*[-–— đến\s]+\d+\s*:\s*/i, '')
-    .replace(/^(Dữ\s+liệu|Đoạn\s+văn|Lời\s+dẫn|Thông\s+tin)\s+dùng\s+chung\s+cho\s+(câu|Câu)\s*\d+\s*:\s*/i, '')
+    .replace(/^\[PASSAGE\]([\s\S]*?)\[\/PASSAGE\]\s*/i, '$1')
+    .replace(/^(Dữ\s+liệu|Đoạn\s+văn|Lời\s+dẫn|Thông\s+tin|Sử\s+dụng\s+thông\s+tin|Đọc\s+thông\s+tin|Cho\s+thông\s+tin)(\s+sau)?\s+(dùng\s+chung\s+cho|cho)\s+(các\s+)?(câu|Câu)\s*\d+\s*([-–— đếnvà,\s]+\s*(câu|Câu)?\s*\d+)?\s*:\s*/i, '')
+    .replace(/^(Dữ\s+liệu|Đoạn\s+văn|Lời\s+dẫn|Thông\s+tin)\s+dùng\s+chung\s*:\s*/i, '')
     .trim();
 }
 
@@ -25,23 +26,51 @@ export function shuffleArray<T>(array: T[]): T[] {
 }
 
 /**
+ * Groups questions that share the same non-empty normalized groupPassage so they are contiguous,
+ * while preserving the relative order of questions and groups.
+ */
+export function groupQuestionsBySharedPassage(questions: Question[]): Question[] {
+  if (!questions || questions.length <= 1) return [...(questions || [])];
+
+  const blocks: Question[][] = [];
+  const passageToBlockIndex = new Map<string, number>();
+
+  for (const q of questions) {
+    const normPassage = cleanGroupPassageText(q.groupPassage || '');
+    if (normPassage) {
+      const existingIdx = passageToBlockIndex.get(normPassage);
+      if (existingIdx !== undefined && blocks[existingIdx][0].type === q.type) {
+        blocks[existingIdx].push(q);
+        continue;
+      }
+      passageToBlockIndex.set(normPassage, blocks.length);
+    }
+    blocks.push([q]);
+  }
+
+  return blocks.flat();
+}
+
+/**
  * Shuffles a list of questions preserving groups (questions sharing the same non-empty groupPassage).
- * Consecutive questions with the exact same groupPassage are kept together as an indivisible block.
+ * Questions with the same groupPassage are kept together as an indivisible block.
  */
 export function shuffleQuestionsPreservingGroups(questions: Question[]): Question[] {
   if (!questions || questions.length <= 1) return [...questions];
 
-  // Group questions into blocks
+  // Group questions by shared normalized passage into indivisible blocks
   const blocks: Question[][] = [];
+  const passageToBlockIndex = new Map<string, number>();
+
   for (const q of questions) {
-    const rawPassage = (q.groupPassage || '').trim();
-    if (rawPassage && blocks.length > 0) {
-      const lastBlock = blocks[blocks.length - 1];
-      const lastPassage = (lastBlock[0].groupPassage || '').trim();
-      if (lastPassage && lastPassage === rawPassage) {
-        lastBlock.push(q);
+    const normPassage = cleanGroupPassageText(q.groupPassage || '');
+    if (normPassage) {
+      const existingIdx = passageToBlockIndex.get(normPassage);
+      if (existingIdx !== undefined) {
+        blocks[existingIdx].push(q);
         continue;
       }
+      passageToBlockIndex.set(normPassage, blocks.length);
     }
     blocks.push([q]);
   }
@@ -66,12 +95,13 @@ export function getGroupPassageHeaderInfo(questions: Question[], index: number):
 } | null {
   const currentQ = questions[index];
   const rawPassage = (currentQ?.groupPassage || '').trim();
-  if (!rawPassage) return null;
+  const normPassage = cleanGroupPassageText(rawPassage);
+  if (!normPassage) return null;
 
-  // Check if previous question in the list has the exact same groupPassage
+  // Check if previous question in the list has the same normalized groupPassage
   if (index > 0) {
-    const prevPassage = (questions[index - 1]?.groupPassage || '').trim();
-    if (prevPassage === rawPassage) {
+    const prevNorm = cleanGroupPassageText(questions[index - 1]?.groupPassage || '');
+    if (prevNorm === normPassage) {
       return { isFirst: false, headerTitle: '', passageText: '', startNum: 0, endNum: 0 };
     }
   }
@@ -79,11 +109,13 @@ export function getGroupPassageHeaderInfo(questions: Question[], index: number):
   // Find end of group
   const startNum = index + 1; // 1-based index
   let endNum = startNum;
-  while (endNum < questions.length && (questions[endNum].groupPassage || '').trim() === rawPassage) {
+  while (
+    endNum < questions.length &&
+    cleanGroupPassageText(questions[endNum].groupPassage || '') === normPassage
+  ) {
     endNum++;
   }
 
-  const cleanedPassage = cleanGroupPassageText(rawPassage);
   const headerTitle = startNum === endNum
     ? `Dữ liệu dùng chung cho Câu ${startNum}:`
     : `Dữ liệu dùng chung cho Câu ${startNum} – Câu ${endNum}:`;
@@ -91,7 +123,7 @@ export function getGroupPassageHeaderInfo(questions: Question[], index: number):
   return {
     isFirst: true,
     headerTitle,
-    passageText: cleanedPassage,
+    passageText: normPassage,
     startNum,
     endNum
   };
@@ -101,21 +133,68 @@ export function getGroupPassageHeaderInfo(questions: Question[], index: number):
  * Automatically detects embedded passages in question text and populates groupPassage if missing.
  */
 export function repairQuestionPassage(q: Question): Question {
-  if (q.groupPassage && q.groupPassage.trim()) {
-    return q;
+  const rawText = q.text || '';
+
+  // 1. Check for explicit [PASSAGE]...[/PASSAGE] tag stored in text
+  const tagMatch = rawText.match(/^\[PASSAGE\]([\s\S]*?)\[\/PASSAGE\]\s*([\s\S]*)$/i);
+  if (tagMatch) {
+    const extractedPassage = cleanGroupPassageText(tagMatch[1].trim());
+    const explicitPassage = cleanGroupPassageText(q.groupPassage || '');
+    const finalPassage = explicitPassage || extractedPassage;
+    let remainingText = (tagMatch[2] || '').trim();
+    if (finalPassage) {
+      remainingText = remainingText.replace(/^(?:tiếp\s*(?:theo)?\s*(?:câu|bài)\s*\d+[\.\:\s\-\)]*)/i, '').trim();
+    }
+    return {
+      ...q,
+      groupPassage: finalPassage || undefined,
+      text: remainingText || rawText
+    };
   }
 
-  const text = q.text || '';
-  // Match patterns like "Dữ liệu dùng chung cho Câu 1 - Câu 2: [Đoạn văn]\n[Nội dung câu hỏi]"
-  const headerMatch = text.match(/^(Dữ\s+liệu|Đoạn\s+văn|Lời\s+dẫn|Thông\s+tin|Sử\s+dụng\s+thông\s+tin)\s+(dùng\s+chung\s+cho|cho)\s+(câu|Câu)\s*\d+[\s\S]*?:\s*([\s\S]+?)(?:\n\n|\r\n\r\n|\n[A-Z0-9ĐÁÂÊÔƯa-z0-9áàảãạâấầẩẫậăắằẳẵặc-z]|\nCâu|\n\n)([\s\S]+)$/i);
-  
-  if (headerMatch) {
-    const extractedPassage = headerMatch[4].trim();
-    const remainingText = headerMatch[5].trim();
+  if (q.groupPassage && q.groupPassage.trim()) {
+    const cleanedPassage = cleanGroupPassageText(q.groupPassage);
+    let cleanedStem = rawText.replace(/^(?:tiếp\s*(?:theo)?\s*(?:câu|bài)\s*\d+[\.\:\s\-\)]*)/i, '').trim();
+    if (cleanedPassage && cleanedStem.startsWith(cleanedPassage)) {
+      const stripped = cleanedStem.slice(cleanedPassage.length).replace(/^(?:[\r\n\s]+|(?:Câu|Bài)\s*\d+\s*[.:\-)]\s*)+/i, '').trim();
+      if (stripped.length >= 3) {
+        cleanedStem = stripped;
+      }
+    }
+    return {
+      ...q,
+      groupPassage: cleanedPassage,
+      text: cleanedStem || rawText
+    };
+  }
+
+  // 2. Match inline or multiline "Sử dụng thông tin sau cho Câu 1 và Câu 2: [Đoạn văn] Câu 1. [Nội dung câu hỏi]"
+  const inlineQuestionMatch = rawText.match(
+    /^(Dữ\s+liệu|Đoạn\s+văn|Lời\s+dẫn|Thông\s+tin|Sử\s+dụng\s+thông\s+tin|Đọc\s+thông\s+tin|Cho\s+thông\s+tin)(\s+sau)?\s+(dùng\s+chung\s+cho|cho)\s+(các\s+)?(câu|Câu)\s*\d+[\s\S]*?:\s*([\s\S]+?)(?:[\r\n]+|(?<=[.!?])\s+)(?:Câu|Bài)\s*\d+\s*[.:\-)]\s*([\s\S]+)$/i
+  );
+  if (inlineQuestionMatch) {
+    const extractedPassage = cleanGroupPassageText(inlineQuestionMatch[6].trim());
+    const remainingText = inlineQuestionMatch[7].trim();
     if (extractedPassage && remainingText) {
       return {
         ...q,
-        groupPassage: cleanGroupPassageText(extractedPassage),
+        groupPassage: extractedPassage,
+        text: remainingText
+      };
+    }
+  }
+
+  // 3. Match multiline "Dữ liệu dùng chung cho Câu 1 - Câu 2: [Đoạn văn]\n[Nội dung câu hỏi]"
+  const headerMatch = rawText.match(
+    /^(Dữ\s+liệu|Đoạn\s+văn|Lời\s+dẫn|Thông\s+tin|Sử\s+dụng\s+thông\s+tin|Đọc\s+thông\s+tin|Cho\s+thông\s+tin)(\s+sau)?\s+(dùng\s+chung\s+cho|cho)\s+(các\s+)?(câu|Câu)\s*\d+[\s\S]*?:\s*([\s\S]+?)(?:\r?\n)+\s*([\s\S]+)$/i
+  );
+  if (headerMatch) {
+    const extractedPassage = cleanGroupPassageText(headerMatch[6].trim());
+    const remainingText = headerMatch[7].replace(/^(?:Câu|Bài)\s*\d+\s*[.:\-)]\s*/i, '').trim();
+    if (extractedPassage && remainingText) {
+      return {
+        ...q,
+        groupPassage: extractedPassage,
         text: remainingText
       };
     }
@@ -155,3 +234,109 @@ export function autoRepairQuizQuestions(questions: Question[]): Question[] {
 
   return repaired;
 }
+
+export interface ExamVariant {
+  examCode: string;
+  quiz: Quiz;
+}
+
+export interface GenerateVariantsOptions {
+  examCodes: string[];
+  shuffleQuestions?: boolean;
+  shuffleOptions?: boolean;
+  keepFirstVersionOriginal?: boolean;
+}
+
+/**
+ * Generates multiple shuffled exam variants (Mã đề) for paper testing.
+ * Preserves question sections (mcq, group-tf, short) and shared passage groups.
+ */
+export function generateShuffledExamVariants(
+  baseQuiz: Quiz,
+  options: GenerateVariantsOptions
+): ExamVariant[] {
+  const {
+    examCodes,
+    shuffleQuestions = true,
+    shuffleOptions = true,
+    keepFirstVersionOriginal = false
+  } = options;
+
+  const rawQuestions = autoRepairQuizQuestions(
+    Array.isArray(baseQuiz.questions) ? baseQuiz.questions : []
+  );
+
+  const mcqBase = rawQuestions.filter(q => q.type === 'mcq');
+  const groupTfBase = rawQuestions.filter(q => q.type === 'group-tf');
+  const shortBase = rawQuestions.filter(q => q.type === 'short');
+
+  const shuffleSingleSection = (sectionQs: Question[], doShuffleQ: boolean, doShuffleOpt: boolean): Question[] => {
+    // Deep clone questions first
+    const cloned: Question[] = sectionQs.map(q => ({
+      ...q,
+      options: q.options ? [...q.options] : undefined,
+      subQuestions: q.subQuestions ? q.subQuestions.map(sq => ({ ...sq })) : undefined
+    }));
+
+    // 1. Shuffle question order (preserving shared passage groups and shuffling within each group)
+    let orderedQs = cloned;
+    if (doShuffleQ && cloned.length > 1) {
+      const blocks: Question[][] = [];
+      const passageToBlockIndex = new Map<string, number>();
+
+      for (const q of cloned) {
+        const normPassage = cleanGroupPassageText(q.groupPassage || '');
+        if (normPassage) {
+          const existingIdx = passageToBlockIndex.get(normPassage);
+          if (existingIdx !== undefined) {
+            blocks[existingIdx].push(q);
+            continue;
+          }
+          passageToBlockIndex.set(normPassage, blocks.length);
+        }
+        blocks.push([q]);
+      }
+
+      // Shuffle questions inside multi-question shared-passage blocks as well
+      const internallyShuffledBlocks = blocks.map(block =>
+        block.length > 1 ? shuffleArray(block) : block
+      );
+      orderedQs = shuffleArray(internallyShuffledBlocks).flat();
+    }
+
+    // 2. Shuffle MCQ options if enabled
+    if (doShuffleOpt) {
+      orderedQs = orderedQs.map(q => {
+        if (q.type === 'mcq' && q.options && q.options.length > 1) {
+          const newOpts = shuffleArray(q.options);
+          return {
+            ...q,
+            options: newOpts
+          };
+        }
+        return q;
+      });
+    }
+
+    return orderedQs;
+  };
+
+  return examCodes.map((code, index) => {
+    const isOriginal = keepFirstVersionOriginal && index === 0;
+    const doQ = !isOriginal && shuffleQuestions;
+    const doOpt = !isOriginal && shuffleOptions;
+
+    const mcqVariant = shuffleSingleSection(mcqBase, doQ, doOpt);
+    const groupTfVariant = shuffleSingleSection(groupTfBase, doQ, false);
+    const shortVariant = shuffleSingleSection(shortBase, doQ, false);
+
+    return {
+      examCode: code,
+      quiz: {
+        ...baseQuiz,
+        questions: [...mcqVariant, ...groupTfVariant, ...shortVariant]
+      }
+    };
+  });
+}
+

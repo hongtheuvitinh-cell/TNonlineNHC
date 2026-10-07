@@ -25,7 +25,7 @@ import { isSameSubject, normalizeSubject, isSameGrade } from './subjectUtils';
 import { getCurrentAcademicYear, getQuizAcademicYear } from './academicUtils';
 import { uploadImageToSupabaseStorage } from './supabaseMigration';
 import { supabaseDb, isSupabaseConnected } from './supabaseService';
-import { autoRepairQuizQuestions } from '../utils/groupShuffleUtils';
+import { autoRepairQuizQuestions, repairQuestionPassage, cleanGroupPassageText } from '../utils/groupShuffleUtils';
 
 import firebaseConfig from '../firebase-applet-config.json';
 
@@ -1626,7 +1626,8 @@ export const updateQuiz = async (enrichedQuiz: Quiz): Promise<void> => {
     ...enrichedQuiz, 
     academicYear: effectiveYear,
     questions: qList,
-    questionCount: qList.length 
+    questionCount: qList.length,
+    syncedToBank: false
   };
 
   // Tách biệt metadata và questions để KHÔNG lưu trùng lặp danh sách câu hỏi 2 lần trong cùng 1 document
@@ -2670,56 +2671,80 @@ export const getUnassignedStudents = async (): Promise<User[]> => {
  * Loại bỏ toàn bộ nhiễu (nhãn câu [B], Câu 1., nhãn A. B. C. D., khoảng trắng thừa, thẻ HTML, delimiter LaTeX).
  * Giúp phát hiện và ngăn chặn câu hỏi trùng lặp 100%.
  */
+export const normalizeTextForMatching = (str: string): string => {
+  if (!str) return '';
+  let s = str
+    .replace(/^\[PASSAGE\][\s\S]*?\[\/PASSAGE\]\s*/i, '')
+    .replace(/<[^>]*>?/gm, '')
+    .replace(/\\\(|\\\)|\\\[|\\\]|\$|\$\$/g, '')
+    .trim()
+    .toLowerCase();
+  // 1. Loại bỏ các nhãn mức độ: [B], [NB], [TH], [VD], [VDC], (B), <B>, [Nhận biết], etc.
+  s = s.replace(/(?:\[|\(|\<)\s*(?:b|nb|h|th|vd|vdc|nhận biết|thông hiểu|vận dụng cao|vận dụng|biết|hiểu)\s*(?:\]|\)|\>)/gi, '');
+  // 2. Loại bỏ tiền tố thứ tự câu: "Câu 1:", "Câu 1.", "Câu 12 -", "Bài 1:", "Question 1.", "1.", "1:"
+  s = s.replace(/^(?:\*?\s*(?:câu|bài|question)\s*\d+[\.\:\s\-\)]*|\*?\s*\d+[\.\:\s\-\)]+)/gi, '');
+  // 2b. Loại bỏ tiền tố "Tiếp theo câu 1:", "Tiếp câu 1:"
+  s = s.replace(/^(?:tiếp\s*(?:theo)?\s*(?:câu|bài)\s*\d+[\.\:\s\-\)]*)/gi, '');
+  // 3. Loại bỏ nhãn lựa chọn nếu có ở đầu chuỗi (A., B., C., D., a), b), etc.)
+  s = s.replace(/^(\*?[a-z0-9][\.\)\/\-:\s]\s*)/gi, '');
+  // 4. Chuẩn hóa khoảng trắng & ký tự không nhìn thấy
+  s = s.replace(/&nbsp;/g, ' ').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return s;
+};
+
+export const getQuestionOptionsSignature = (q: Partial<Question>): string => {
+  if (!q) return '';
+  const type = (q.type || 'mcq').toLowerCase().replace('_', '-');
+  if (type === 'mcq' && q.options && q.options.length > 0) {
+    return q.options
+      .map(opt => normalizeTextForMatching(opt || ''))
+      .filter(Boolean)
+      .sort()
+      .join('###');
+  } else if ((type === 'group-tf' || type === 'tf') && q.subQuestions && q.subQuestions.length > 0) {
+    return q.subQuestions
+      .map(sq => `${normalizeTextForMatching(sq.text || '')}:${(sq.correctAnswer || '').replace(/<[^>]*>?/gm, '').trim().toLowerCase()}`)
+      .filter(Boolean)
+      .sort()
+      .join('###');
+  } else if (type === 'short') {
+    return normalizeTextForMatching(q.correctAnswer || '');
+  }
+  return '';
+};
+
 export const getQuestionFingerprint = (q: Partial<Question>): string => {
   if (!q) return '';
-  
-  // Hàm loại bỏ HTML tags để lấy plain text, đồng thời chuẩn hóa/loại bỏ delimiter LaTeX để tránh khác biệt
-  const stripHtml = (html: string) => {
-    if (!html) return '';
-    return html
-      .replace(/<[^>]*>?/gm, '')
-      .replace(/\\\(|\\\)|\\\[|\\\]|\$|\$\$/g, ''); // Bỏ qua tất cả delimiter LaTeX khi tính fingerprint
-  };
 
-  const stripNoise = (str: string): string => {
-    if (!str) return '';
-    let s = stripHtml(str).trim().toLowerCase();
-    // 1. Loại bỏ các nhãn mức độ: [B], [NB], [TH], [VD], [VDC], (B), <B>, [Nhận biết], etc.
-    s = s.replace(/(?:\[|\(|\<)\s*(?:b|nb|h|th|vd|vdc|nhận biết|thông hiểu|vận dụng cao|vận dụng|biết|hiểu)\s*(?:\]|\)|\>)/gi, '');
-    // 2. Loại bỏ tiền tố thứ tự câu: "Câu 1:", "Câu 1.", "Câu 12 -", "Bài 1:", "Question 1.", "1.", "1:"
-    s = s.replace(/^(?:\*?\s*(?:câu|bài|question)\s*\d+[\.\:\s\-\)]*|\*?\s*\d+[\.\:\s\-\)]+)/gi, '');
-    // 3. Loại bỏ nhãn lựa chọn nếu có ở đầu chuỗi (A., B., C., D., a), b), etc.)
-    s = s.replace(/^(\*?[a-z0-9][\.\)\/\-:\s]\s*)/gi, '');
-    // 4. Chuẩn hóa khoảng trắng & ký tự không nhìn thấy
-    s = s.replace(/&nbsp;/g, ' ').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim();
-    return s;
-  };
-
-  let normText = stripNoise(q.text || '');
+  const repairedQ = repairQuestionPassage(q as Question);
+  const normText = normalizeTextForMatching(repairedQ.text || '');
   const normSub = normalizeSubject(q.subject || '');
   const type = (q.type || 'mcq').toLowerCase().replace('_', '-');
 
-  // Nếu cả nội dung câu hỏi quá ngắn (< 3 ký tự) và không có options/lời giải thì không tạo fingerprint để tránh nhận nhầm câu rỗng
   if (normText.length < 3 && (!q.options || q.options.length === 0) && (!q.subQuestions || q.subQuestions.length === 0)) {
     return '';
   }
 
-  let optionsSig = '';
-  if (type === 'mcq' && q.options && q.options.length > 0) {
-    optionsSig = q.options
-      .map(opt => stripNoise(opt || ''))
-      .sort()
-      .join('###');
-  } else if ((type === 'group-tf' || type === 'tf') && q.subQuestions && q.subQuestions.length > 0) {
-    optionsSig = q.subQuestions
-      .map(sq => `${stripNoise(sq.text || '')}:${stripHtml(sq.correctAnswer || '').trim().toLowerCase()}`)
-      .sort()
-      .join('###');
-  } else if (type === 'short') {
-    optionsSig = stripNoise(q.correctAnswer || '');
-  }
-
+  const optionsSig = getQuestionOptionsSignature(repairedQ);
   return `${normSub}__${type}__${normText}__${optionsSig}`;
+};
+
+/**
+ * Tạo chữ ký kết hợp cả Lời dẫn chung (groupPassage) + Nội dung câu hỏi (text)
+ * Giúp nhận diện chính xác câu hỏi cũ (khi lời dẫn còn nằm chung trong text) và câu hỏi mới (khi đã tách lời dẫn sang groupPassage)
+ */
+export const getCombinedQuestionFingerprint = (q: Partial<Question>): string => {
+  if (!q) return '';
+  const repairedQ = repairQuestionPassage(q as Question);
+  const cleanPass = cleanGroupPassageText(repairedQ.groupPassage || '');
+  const cleanStem = normalizeTextForMatching(repairedQ.text || '');
+  const combinedRaw = cleanPass ? `${ normalizeTextForMatching(cleanPass) } ${ cleanStem }` : cleanStem;
+  const normCombined = combinedRaw.replace(/\s+/g, ' ').trim();
+  const normSub = normalizeSubject(q.subject || '');
+  const type = (q.type || 'mcq').toLowerCase().replace('_', '-');
+  if (normCombined.length < 3) return '';
+  const optionsSig = getQuestionOptionsSignature(repairedQ);
+  return `${normSub}__${type}__${normCombined}__${optionsSig}`;
 };
 
 export const getBankQuestions = async (
@@ -2777,10 +2802,10 @@ export const getBankQuestions = async (
     let questions = snapshot.docs.map(d => {
       const row = d.data();
       const rawQ = (row.data as Question) || (row as Question);
-      return {
+      return repairQuestionPassage({
         ...rawQ,
         id: d.id, // Đồng bộ ID câu hỏi với Firestore Document ID thực tế để thao tác xóa/gộp chính xác
-      };
+      });
     });
 
     if (filters?.grade && filters.grade !== 'all') {
@@ -2822,6 +2847,7 @@ export const getBankQuestions = async (
 
 export interface SyncBankOptions {
   forceAll?: boolean; // false: Chế độ thông minh (chỉ quét đề mới / có sửa đổi), true: Quét lại toàn bộ tất cả đề thi
+  singleQuiz?: Quiz;  // Chỉ đồng bộ 1 đề thi cụ thể (dùng khi vừa Lưu đề thi)
 }
 
 export interface SyncBankResult {
@@ -2842,8 +2868,9 @@ export const syncQuizzesToBank = async (
   options?: SyncBankOptions
 ): Promise<SyncBankResult> => {
   const forceAll = options?.forceAll ?? false;
+  const singleQuiz = options?.singleQuiz;
   try {
-    const isFiltered = targetSubject && targetSubject !== 'all';
+    const isFiltered = Boolean(targetSubject && targetSubject !== 'all');
     
     // 1. Tải toàn bộ câu hỏi hiện có trong Ngân hàng (từ Supabase hoặc Firestore, lọc theo môn nếu có)
     let existingBankList: Question[] = [];
@@ -2855,28 +2882,46 @@ export const syncQuizzesToBank = async (
       existingBankList = existingBankSnap.docs.map(d => {
         const row = d.data();
         const bq = (row.data as Question) || (row as Question);
-        return { ...bq, id: d.id || bq.id };
+        return repairQuestionPassage({ ...bq, id: d.id || bq.id });
       });
-      if (isFiltered) {
+      if (isFiltered && targetSubject) {
         existingBankList = existingBankList.filter(q => isSameSubject(q.subject || '', targetSubject));
       }
     }
 
     const existingBankMapById = new Map<string, Question>();
     const existingBankMapByFingerprint = new Map<string, string>(); // fingerprint -> docId
+    const existingBankMapByCombinedFp = new Map<string, string>(); // combinedFp -> docId
+
+    // Sắp xếp câu đã có groupPassage lên trước để ưu tiên chọn làm bản gốc nếu có trùng lặp
+    existingBankList.sort((a, b) => {
+      const aHasPass = cleanGroupPassageText(a.groupPassage || '') ? 1 : 0;
+      const bHasPass = cleanGroupPassageText(b.groupPassage || '') ? 1 : 0;
+      return bHasPass - aHasPass;
+    });
 
     existingBankList.forEach(bq => {
-      const bqId = bq.id;
-      existingBankMapById.set(bqId, bq);
-      const fp = getQuestionFingerprint(bq);
-      if (fp) {
+      const repairedBq = repairQuestionPassage(bq);
+      const bqId = repairedBq.id;
+      existingBankMapById.set(bqId, repairedBq);
+      const fp = getQuestionFingerprint(repairedBq);
+      if (fp && !existingBankMapByFingerprint.has(fp)) {
         existingBankMapByFingerprint.set(fp, bqId);
+      }
+      const cfp = getCombinedQuestionFingerprint(repairedBq);
+      if (cfp && !existingBankMapByCombinedFp.has(cfp)) {
+        existingBankMapByCombinedFp.set(cfp, bqId);
       }
     });
 
-    // 2. Tải đề thi (lọc theo môn trực tiếp ở tầng CSDL để giảm 80-90% dữ liệu cần tải)
+    // 2. Tải đề thi (hoặc dùng singleQuiz nếu chỉ đồng bộ 1 đề vừa lưu)
     let allQuizzes: Quiz[] = [];
-    if (isSupabasePrimary()) {
+    if (singleQuiz) {
+      allQuizzes = [{
+        ...singleQuiz,
+        questions: autoRepairQuizQuestions(Array.isArray(singleQuiz.questions) ? singleQuiz.questions : [])
+      }];
+    } else if (isSupabasePrimary()) {
       allQuizzes = await supabaseDb.getQuizzes(undefined, isFiltered ? targetSubject : undefined);
     } else if (db) {
       const quizSnap = await getDocs(collection(db, 'quizzes'));
@@ -2884,12 +2929,25 @@ export const syncQuizzesToBank = async (
       allQuizzes = quizSnap.docs.map(d => {
         const row = d.data();
         const qz = (row.data as Quiz) || (row as Quiz);
-        return { ...qz, id: d.id || qz.id };
+        const qs = (Array.isArray(row.questions) && row.questions.length > 0)
+          ? row.questions
+          : (Array.isArray(qz.questions) ? qz.questions : []);
+        return { ...qz, id: d.id || qz.id, questions: autoRepairQuizQuestions(qs) };
       });
-      if (isFiltered) {
+      if (isFiltered && targetSubject) {
         allQuizzes = allQuizzes.filter(qz => isSameSubject(qz.subject || '', targetSubject) || (qz.questions && qz.questions.some(q => isSameSubject(q.subject || '', targetSubject))));
       }
     }
+
+    // Sắp xếp ưu tiên các đề thi có chứa câu hỏi có lời dẫn chung (đã chuẩn hóa) và đề mới chỉnh sửa lên đầu
+    allQuizzes.sort((a, b) => {
+      const aHasPassage = (a.questions || []).some(q => !!cleanGroupPassageText(q.groupPassage || '')) ? 1 : 0;
+      const bHasPassage = (b.questions || []).some(q => !!cleanGroupPassageText(q.groupPassage || '')) ? 1 : 0;
+      if (bHasPassage !== aHasPassage) return bHasPassage - aHasPassage;
+      const timeA = new Date((a as any).updatedAt || a.createdAt || 0).getTime();
+      const timeB = new Date((b as any).updatedAt || b.createdAt || 0).getTime();
+      return timeB - timeA;
+    });
 
     const totalQuizzes = allQuizzes.length;
     let scannedQuizzes = 0;
@@ -2900,47 +2958,51 @@ export const syncQuizzesToBank = async (
     let skippedCount = 0;
 
     const questionsToUpsertMap = new Map<string, { docId: string; question: Question; isNew: boolean }>();
-    const quizzesToSaveBack: Quiz[] = [];
+
+    // Tra cứu O(1) tức thời qua Hash Map (tuyệt đối không duyệt vòng lặp lồng nhau gây treo trình duyệt)
+    const findMatchingBankIdFast = (enrichedQ: Question): string | null => {
+      if (enrichedQ.bankQuestionId && existingBankMapById.has(enrichedQ.bankQuestionId)) {
+        return enrichedQ.bankQuestionId;
+      }
+      if (enrichedQ.id && existingBankMapById.has(enrichedQ.id)) {
+        return enrichedQ.id;
+      }
+      const fp = getQuestionFingerprint(enrichedQ);
+      if (fp && existingBankMapByFingerprint.has(fp)) {
+        return existingBankMapByFingerprint.get(fp)!;
+      }
+      const cfp = getCombinedQuestionFingerprint(enrichedQ);
+      if (cfp && existingBankMapByCombinedFp.has(cfp)) {
+        return existingBankMapByCombinedFp.get(cfp)!;
+      }
+      return null;
+    };
+
+    // Hàm kiểm tra nhanh xem câu hỏi có thông tin mới cần bổ sung vào Ngân hàng không
+    const checkNeedsBankUpdate = (q: Question, currentBq: Question): boolean => {
+      const hasNewImage = Boolean(!currentBq.imageUrl && q.imageUrl);
+      const hasNewSolution = Boolean((!currentBq.solution || currentBq.solution.trim().length < 5) && q.solution && q.solution.trim().length >= 5);
+      const hasNewLevel = Boolean(!currentBq.level && q.level);
+      const hasNewCategory = Boolean(!currentBq.quizCategory && q.quizCategory);
+      const hasNewSubject = Boolean(!currentBq.subject && q.subject);
+
+      const qPassage = cleanGroupPassageText(q.groupPassage || '');
+      const bqPassage = cleanGroupPassageText(currentBq.groupPassage || '');
+      const hasPassageChanged = Boolean(qPassage && qPassage !== bqPassage);
+
+      return hasNewImage || hasNewSolution || hasNewLevel || hasNewCategory || hasNewSubject || hasPassageChanged;
+    };
 
     allQuizzes.forEach(quiz => {
-      const rawQuestions = Array.isArray(quiz.questions) ? quiz.questions : [];
+      const rawQuestions = autoRepairQuizQuestions(Array.isArray(quiz.questions) ? quiz.questions : []);
       if (rawQuestions.length === 0) return;
 
-      // CƠ CHẾ CỜ ĐỒNG BỘ THÔNG MINH (Incremental Sync):
-      // Một đề được coi là ĐÃ ĐỒNG BỘ 100% nếu:
-      // - Không phải chế độ quét toàn bộ (forceAll !== true)
-      // - Tất cả câu hỏi trong đề này đều đã có bankQuestionId hợp lệ và đã tồn tại trong Ngân hàng
-      const isQuizAlreadyFullySynced = !forceAll && (
-        quiz.syncedToBank === true ||
-        rawQuestions.every(q => {
-          const candId = q.bankQuestionId || (q.id && existingBankMapById.has(q.id) ? q.id : undefined);
-          return candId && existingBankMapById.has(candId);
-        })
-      );
-
-      if (isQuizAlreadyFullySynced) {
-        // Đề này đã đồng bộ hoàn toàn trước đó -> Bỏ qua, tiết kiệm thời gian quét!
-        skippedQuizzes++;
-        skippedCount += rawQuestions.length;
-        totalScanned += rawQuestions.length;
-        return;
-      }
-
-      scannedQuizzes++;
-      let hasQuizChanges = false;
-
-      rawQuestions.forEach(q => {
+      const enrichedQuestions: Question[] = rawQuestions.map(q => {
         const qSubject = q.subject || quiz.subject || '';
-        if (isFiltered && !isSameSubject(qSubject, targetSubject)) {
-          return; // Bỏ qua câu hỏi thuộc môn khác
-        }
-
-        totalScanned++;
         const specificChapter = q.chapterName || (q.quizCategory && q.quizCategory !== quiz.category ? q.quizCategory : undefined);
         const finalChapterName = specificChapter || quiz.category || undefined;
         const finalQuizCategory = specificChapter || quiz.category || '';
-
-        const enrichedQ: Question = {
+        return repairQuestionPassage({
           ...q,
           quizTitle: quiz.title,
           quizGrade: quiz.grade,
@@ -2950,111 +3012,89 @@ export const syncQuizzesToBank = async (
           subject: qSubject,
           createdBy: q.createdBy || quiz.createdBy || '',
           createdByName: q.createdByName || quiz.createdByName || ''
-        };
+        });
+      });
 
-        const fp = getQuestionFingerprint(enrichedQ);
-
-        // Kiểm tra theo ID gốc từ ngân hàng (bankQuestionId hoặc q.id nếu đã có sẵn trong ngân hàng) hoặc theo Fingerprint
-        let targetDocId: string | null = null;
-        let isForking = false;
-
-        const candidateId = q.bankQuestionId || (q.id && existingBankMapById.has(q.id) ? q.id : undefined);
-
-        if (candidateId && existingBankMapById.has(candidateId)) {
-          const currentBq = existingBankMapById.get(candidateId)!;
-          const currentBqFp = getQuestionFingerprint(currentBq);
-          
-          // BẢO VỆ TÁC GIẢ GỐC: Nếu người tạo đề khác với người tạo câu hỏi gốc, 
-          // VÀ nội dung câu hỏi đã bị thay đổi (fingerprint khác nhau),
-          // Hệ thống sẽ tách (fork) thành một câu hỏi mới thay vì ghi đè lên câu của người khác.
-          if (quiz.createdBy && currentBq.createdBy && quiz.createdBy !== currentBq.createdBy && fp !== currentBqFp) {
-             isForking = true;
-             enrichedQ.bankQuestionId = undefined;
-             enrichedQ.createdBy = quiz.createdBy;
-             enrichedQ.createdByName = quiz.createdByName || '';
-          } else {
-             targetDocId = candidateId;
+      const isQuizAlreadyFullySynced = !forceAll && !singleQuiz && (
+        enrichedQuestions.every(eq => {
+          if (isFiltered && targetSubject && !isSameSubject(eq.subject || '', targetSubject)) {
+            return true;
           }
+          const matchedId = findMatchingBankIdFast(eq);
+          if (!matchedId) return false;
+          const bq = existingBankMapById.get(matchedId)!;
+          return !checkNeedsBankUpdate(eq, bq);
+        })
+      );
+
+      if (isQuizAlreadyFullySynced) {
+        skippedQuizzes++;
+        skippedCount += enrichedQuestions.length;
+        totalScanned += enrichedQuestions.length;
+        return;
+      }
+
+      scannedQuizzes++;
+
+      enrichedQuestions.forEach((enrichedQ) => {
+        if (isFiltered && targetSubject && !isSameSubject(enrichedQ.subject || '', targetSubject)) {
+          return;
         }
 
-        if (!isForking && !targetDocId && fp && existingBankMapByFingerprint.has(fp)) {
-          targetDocId = existingBankMapByFingerprint.get(fp)!;
-        }
+        totalScanned++;
+        const fp = getQuestionFingerprint(enrichedQ);
+        const cfp = getCombinedQuestionFingerprint(enrichedQ);
+        const targetDocId = findMatchingBankIdFast(enrichedQ);
 
         if (targetDocId) {
-          // Gán lại liên kết bankQuestionId cho câu hỏi trong đề nếu chưa có
-          if (q.bankQuestionId !== targetDocId) {
-            q.bankQuestionId = targetDocId;
-            hasQuizChanges = true;
-          }
+          const currentBq = existingBankMapById.get(targetDocId)!;
+          if (checkNeedsBankUpdate(enrichedQ, currentBq)) {
+            const qPassage = cleanGroupPassageText(enrichedQ.groupPassage || '');
+            const bqPassage = cleanGroupPassageText(currentBq.groupPassage || '');
+            const finalPassage = qPassage || bqPassage || undefined;
+            const qCleanText = (enrichedQ.text || '').replace(/^\[PASSAGE\][\s\S]*?\[\/PASSAGE\]\s*/i, '').trim();
+            const bqCleanText = (currentBq.text || '').replace(/^\[PASSAGE\][\s\S]*?\[\/PASSAGE\]\s*/i, '').trim();
 
-          // Câu hỏi đã có trong ngân hàng
-          const currentBq = existingBankMapById.get(targetDocId);
-          
-          // BẢO VỆ TÁC GIẢ GỐC:
-          // Nếu người tạo đề khác với tác giả câu hỏi gốc và câu hỏi này không có thay đổi nội dung:
-          // Tuyệt đối không ghi đè câu hỏi của đồng nghiệp khi bạn chỉ dùng lại câu hỏi đó.
-          // Bỏ qua việc gửi request cập nhật vào CSDL, chỉ tính là đã tái sử dụng (chống trùng lặp).
-          const isDifferentAuthor = Boolean(
-            quiz.createdBy && 
-            currentBq?.createdBy && 
-            quiz.createdBy !== currentBq.createdBy
-          );
+            const mergedQ: Question = repairQuestionPassage({
+              ...currentBq,
+              id: targetDocId,
+              bankQuestionId: targetDocId,
+              text: qPassage ? (qCleanText || bqCleanText) : (bqCleanText || qCleanText),
+              groupPassage: finalPassage,
+              quizTitle: currentBq.quizTitle || enrichedQ.quizTitle,
+              quizCategory: currentBq.quizCategory || enrichedQ.quizCategory,
+              imageUrl: currentBq.imageUrl || enrichedQ.imageUrl,
+              solution: (currentBq.solution && currentBq.solution.trim().length >= 5) ? currentBq.solution : (enrichedQ.solution || currentBq.solution),
+              level: currentBq.level || enrichedQ.level,
+              subject: currentBq.subject || enrichedQ.subject,
+            });
 
-          if (isDifferentAuthor) {
-            skippedCount++;
+            existingBankMapById.set(targetDocId, mergedQ);
+            if (fp) existingBankMapByFingerprint.set(fp, targetDocId);
+            if (cfp) existingBankMapByCombinedFp.set(cfp, targetDocId);
+            questionsToUpsertMap.set(targetDocId, { docId: targetDocId, question: mergedQ, isNew: false });
+            updatedCount++;
           } else {
-            // Kiểm tra xem CÓ THỰC SỰ có dữ liệu mới/bổ sung để cập nhật không
-            const hasNewImage = !currentBq?.imageUrl && !!enrichedQ.imageUrl;
-            const hasNewSolution = (!currentBq?.solution || currentBq.solution.trim().length < 5) && (!!enrichedQ.solution && enrichedQ.solution.trim().length >= 5);
-            const hasNewLevel = !currentBq?.level && !!enrichedQ.level;
-            const hasNewCategory = !currentBq?.quizCategory && !!enrichedQ.quizCategory;
-            const hasNewSubject = !currentBq?.subject && !!enrichedQ.subject;
-            const hasTitleChanged = Boolean(enrichedQ.quizTitle && currentBq?.quizTitle !== enrichedQ.quizTitle);
-
-            if (hasNewImage || hasNewSolution || hasNewLevel || hasNewCategory || hasNewSubject || hasTitleChanged) {
-              const mergedQ: Question = {
-                ...(currentBq || enrichedQ),
-                ...enrichedQ,
-                id: targetDocId,
-                quizTitle: enrichedQ.quizTitle || currentBq?.quizTitle,
-                quizCategory: enrichedQ.quizCategory || currentBq?.quizCategory,
-                imageUrl: enrichedQ.imageUrl || currentBq?.imageUrl,
-                solution: enrichedQ.solution || currentBq?.solution,
-                level: enrichedQ.level || currentBq?.level,
-                subject: enrichedQ.subject || currentBq?.subject,
-              };
-              existingBankMapById.set(targetDocId, mergedQ);
-              questionsToUpsertMap.set(targetDocId, { docId: targetDocId, question: mergedQ, isNew: false });
-              updatedCount++;
-            } else {
-              skippedCount++; // Không có dữ liệu mới -> Không gửi update thừa
-            }
+            skippedCount++;
           }
         } else {
-          // Câu hỏi mới hoàn toàn hoặc được Fork từ câu của người khác
-          const newDocId = (!isForking && q.bankQuestionId) ? q.bankQuestionId : (isForking ? uuidv4() : (q.id || uuidv4()));
+          // Câu hỏi mới hoàn toàn
+          const newDocId = enrichedQ.bankQuestionId || enrichedQ.id || uuidv4();
           enrichedQ.id = newDocId;
-          q.bankQuestionId = newDocId;
-          hasQuizChanges = true;
+          enrichedQ.bankQuestionId = newDocId;
 
           questionsToUpsertMap.set(newDocId, { docId: newDocId, question: enrichedQ, isNew: true });
           existingBankMapById.set(newDocId, enrichedQ);
           if (fp) existingBankMapByFingerprint.set(fp, newDocId);
+          if (cfp) existingBankMapByCombinedFp.set(cfp, newDocId);
           addedCount++;
         }
       });
-
-      if (hasQuizChanges || quiz.syncedToBank !== true) {
-        quiz.syncedToBank = true;
-        quiz.lastBankSyncedAt = new Date().toISOString();
-        quizzesToSaveBack.push(quiz);
-      }
     });
 
     const questionsToUpsert = Array.from(questionsToUpsertMap.values());
 
-    // 3. Thực thi lưu các câu hỏi mới / cập nhật vào Ngân hàng
+    // 3. Chỉ thực thi lưu các câu hỏi mới / cập nhật vào Ngân hàng (không lưu đè lại toàn bộ các đề thi để tránh treo máy)
     if (questionsToUpsert.length > 0) {
       if (isSupabasePrimary()) {
         const qList = questionsToUpsert.map(item => item.question);
@@ -3096,28 +3136,13 @@ export const syncQuizzesToBank = async (
       }
     }
 
-    // 4. Lưu lại cờ syncedToBank và các bankQuestionId cho các đề thi vừa được cập nhật
-    if (quizzesToSaveBack.length > 0) {
-      for (const qz of quizzesToSaveBack) {
-        try {
-          if (isSupabasePrimary()) {
-            await supabaseDb.saveQuiz(qz);
-          } else if (db) {
-            await saveQuizToFirestore(qz);
-          }
-        } catch (err) {
-          console.warn("Lỗi lưu lại cờ đồng bộ cho đề thi:", qz.id, err);
-        }
-      }
-    }
-
     invalidateMemoryCache('bank');
 
     return {
       totalScanned,
       added: addedCount,
       updated: updatedCount,
-      skippedDuplicates: totalScanned - addedCount,
+      skippedDuplicates: Math.max(0, totalScanned - addedCount - updatedCount),
       scannedQuizzes,
       totalQuizzes,
       skippedQuizzes
@@ -3172,15 +3197,21 @@ export const deduplicateBankQuestions = async (targetSubject?: string): Promise<
       return { totalScanned, duplicatesRemoved: 0, uniqueRemaining: totalScanned };
     }
 
-    // Nhóm theo Fingerprint
+    // Nhóm theo Fingerprint chuẩn hoặc Combined Fingerprint (Lời dẫn chung + Thân câu)
     const groups = new Map<string, Question[]>();
-    for (const q of allBankQuestions) {
+    const fpToGroupKey = new Map<string, string>();
+    for (const rawQ of allBankQuestions) {
+      const q = repairQuestionPassage(rawQ);
       const fp = getQuestionFingerprint(q);
-      if (!fp) continue;
-      if (!groups.has(fp)) {
-        groups.set(fp, []);
+      const cfp = getCombinedQuestionFingerprint(q);
+      const primaryKey = (fp && fpToGroupKey.get(fp)) || (cfp && fpToGroupKey.get(cfp)) || cfp || fp;
+      if (!primaryKey) continue;
+      if (fp) fpToGroupKey.set(fp, primaryKey);
+      if (cfp) fpToGroupKey.set(cfp, primaryKey);
+      if (!groups.has(primaryKey)) {
+        groups.set(primaryKey, []);
       }
-      groups.get(fp)!.push(q);
+      groups.get(primaryKey)!.push(q);
     }
 
     const idsToDelete: string[] = [];
@@ -3194,11 +3225,13 @@ export const deduplicateBankQuestions = async (targetSubject?: string): Promise<
         const primary = uniqueInGroup.reduce((best, cur) => {
           let scoreBest = 0;
           let scoreCur = 0;
+          if (best.groupPassage) scoreBest += 4;
           if (best.imageUrl) scoreBest += 3;
           if (best.solution) scoreBest += 2;
           if (best.level) scoreBest += 1;
           if (best.createdByName) scoreBest += 1;
 
+          if (cur.groupPassage) scoreCur += 4;
           if (cur.imageUrl) scoreCur += 3;
           if (cur.solution) scoreCur += 2;
           if (cur.level) scoreCur += 1;

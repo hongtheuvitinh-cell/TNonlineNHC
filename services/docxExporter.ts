@@ -29,7 +29,7 @@ import { mml2omml } from '@hungknguyen/mathml2omml';
 import { mathJaxReady } from '@hungknguyen/docx-math-converter';
 import { Quiz, Question } from '../types';
 import { normalizeFullText } from './vietnameseFixer';
-import { getGroupPassageHeaderInfo } from '../utils/groupShuffleUtils';
+import { getGroupPassageHeaderInfo, ExamVariant } from '../utils/groupShuffleUtils';
 
 // Chuẩn hóa và làm sạch mã LaTeX trước khi chuyển sang MathML/OMML
 function cleanLatexForDocx(latex: string): string {
@@ -424,6 +424,8 @@ function parseMixedTextToDocxRuns(
 export interface ExportDocxOptions {
     isAdmin?: boolean;
     layoutMode?: 'single' | 'auto';
+    variants?: ExamVariant[];
+    answerKeyAtVeryEnd?: boolean;
 }
 
 async function addGroupPassageToDoc(
@@ -475,19 +477,54 @@ async function addGroupPassageToDoc(
     docChildren.push(table);
 }
 
-export async function exportQuizToDocx(quiz: Quiz, options: ExportDocxOptions = {}): Promise<void> {
-    const { isAdmin = true, layoutMode = 'single' } = options;
-
-    // Khởi tạo MathJax engine của bộ chuyển đổi
-    try {
-        await mathJaxReady();
-    } catch (e) {
-        console.warn("MathJax initialization warning:", e);
+async function appendSingleQuizVariantToDoc(
+    docChildren: (Paragraph | Table)[],
+    quiz: Quiz,
+    examCode: string | undefined,
+    layoutMode: 'single' | 'auto',
+    includeAnswerKeyAfterQuiz: boolean,
+    isFirstVariant: boolean
+): Promise<void> {
+    // 1. Header văn bản (Sở GDĐT / Trường - Đề thi chính thức)
+    if (!isFirstVariant) {
+        docChildren.push(
+            new Paragraph({
+                pageBreakBefore: true,
+                spacing: { before: 0, after: 0 },
+                children: []
+            })
+        );
     }
 
-    const docChildren: (Paragraph | Table)[] = [];
+    const headerRightParagraphs: Paragraph[] = [
+        new Paragraph({
+            alignment: AlignmentType.CENTER,
+            spacing: { after: 40 },
+            children: [
+                new TextRun({ text: 'ĐỀ THI CHÍNH THỨC', bold: true, font: 'Times New Roman', size: 23 })
+            ]
+        }),
+        new Paragraph({
+            alignment: AlignmentType.CENTER,
+            spacing: { after: examCode ? 40 : 60 },
+            children: [
+                new TextRun({ text: `Môn: ${quiz.subject || quiz.category || 'Vật lý'} - Khối ${quiz.grade}`, bold: true, font: 'Times New Roman', size: 22 })
+            ]
+        })
+    ];
 
-    // 1. Header văn bản (Sở GDĐT / Trường - Đề thi chính thức)
+    if (examCode) {
+        headerRightParagraphs.push(
+            new Paragraph({
+                alignment: AlignmentType.CENTER,
+                spacing: { before: 20, after: 60 },
+                children: [
+                    new TextRun({ text: `MÃ ĐỀ: ${examCode}`, bold: true, font: 'Times New Roman', size: 24, color: '1E3A8A' })
+                ]
+            })
+        );
+    }
+
     const headerTable = new Table({
         width: { size: 100, type: WidthType.PERCENTAGE },
         borders: {
@@ -522,22 +559,7 @@ export async function exportQuizToDocx(quiz: Quiz, options: ExportDocxOptions = 
                     }),
                     new TableCell({
                         width: { size: 50, type: WidthType.PERCENTAGE },
-                        children: [
-                            new Paragraph({
-                                alignment: AlignmentType.CENTER,
-                                spacing: { after: 40 },
-                                children: [
-                                    new TextRun({ text: 'ĐỀ THI CHÍNH THỨC', bold: true, font: 'Times New Roman', size: 23 })
-                                ]
-                            }),
-                            new Paragraph({
-                                alignment: AlignmentType.CENTER,
-                                spacing: { after: 60 },
-                                children: [
-                                    new TextRun({ text: `Môn: ${quiz.category || 'Vật lý'} - Khối ${quiz.grade}`, bold: true, font: 'Times New Roman', size: 22 })
-                                ]
-                            })
-                        ]
+                        children: headerRightParagraphs
                     })
                 ]
             })
@@ -545,7 +567,11 @@ export async function exportQuizToDocx(quiz: Quiz, options: ExportDocxOptions = 
     });
     docChildren.push(headerTable);
 
-    // Khung điền thông tin Họ tên, SBD
+    // Khung điền thông tin Họ tên, SBD, Mã đề
+    const infoBoxText = examCode
+        ? `Họ và tên: ................................................................. SBD: ........................... Mã đề: ${examCode}`
+        : 'Họ và tên: .......................................................................... SBD: .....................................';
+
     const infoBoxTable = new Table({
         width: { size: 100, type: WidthType.PERCENTAGE },
         borders: {
@@ -562,7 +588,7 @@ export async function exportQuizToDocx(quiz: Quiz, options: ExportDocxOptions = 
                         children: [
                             new Paragraph({
                                 children: [
-                                    new TextRun({ text: 'Họ và tên: .......................................................................... SBD: .....................................', bold: true, font: 'Times New Roman', size: 21 })
+                                    new TextRun({ text: infoBoxText, bold: true, font: 'Times New Roman', size: 21 })
                                 ]
                             })
                         ]
@@ -579,7 +605,12 @@ export async function exportQuizToDocx(quiz: Quiz, options: ExportDocxOptions = 
             alignment: AlignmentType.CENTER,
             spacing: { before: 240, after: 180 },
             children: [
-                new TextRun({ text: normalizeFullText(quiz.title).toUpperCase(), bold: true, font: 'Times New Roman', size: 28 })
+                new TextRun({
+                    text: `${normalizeFullText(quiz.title).toUpperCase()}${examCode ? ` — MÃ ĐỀ ${examCode}` : ''}`,
+                    bold: true,
+                    font: 'Times New Roman',
+                    size: 28
+                })
             ]
         })
     );
@@ -646,21 +677,88 @@ export async function exportQuizToDocx(quiz: Quiz, options: ExportDocxOptions = 
         }
     }
 
-    // 3. Bảng đáp án (Nếu là giáo viên / admin)
-    if (isAdmin) {
-        addAnswerKeysToDoc(docChildren, mcqQuestions, groupTfQuestions, shortQuestions);
-    }
-
-    // Footer kết thúc
+    // Footer kết thúc đề
     docChildren.push(
         new Paragraph({
             alignment: AlignmentType.CENTER,
             spacing: { before: 360, after: 120 },
             children: [
-                new TextRun({ text: '--- HẾT ---', bold: true, font: 'Times New Roman', size: 22 })
+                new TextRun({ text: `--- HẾT${examCode ? ` (MÃ ĐỀ ${examCode})` : ''} ---`, bold: true, font: 'Times New Roman', size: 22 })
             ]
         })
     );
+
+    // 3. Bảng đáp án riêng ngay sau đề nếu chọn chế độ đặt sau từng đề
+    if (includeAnswerKeyAfterQuiz) {
+        addAnswerKeysToDoc(docChildren, mcqQuestions, groupTfQuestions, shortQuestions, examCode, true);
+    }
+}
+
+export async function exportQuizToDocx(quiz: Quiz, options: ExportDocxOptions = {}): Promise<void> {
+    const {
+        isAdmin = true,
+        layoutMode = 'single',
+        variants,
+        answerKeyAtVeryEnd = true
+    } = options;
+
+    // Khởi tạo MathJax engine của bộ chuyển đổi
+    try {
+        await mathJaxReady();
+    } catch (e) {
+        console.warn("MathJax initialization warning:", e);
+    }
+
+    const docChildren: (Paragraph | Table)[] = [];
+
+    if (variants && variants.length > 0) {
+        for (let i = 0; i < variants.length; i++) {
+            const v = variants[i];
+            await appendSingleQuizVariantToDoc(
+                docChildren,
+                v.quiz,
+                v.examCode,
+                layoutMode,
+                isAdmin && !answerKeyAtVeryEnd,
+                i === 0
+            );
+        }
+
+        // Nếu chọn gom toàn bộ Bảng đáp án các mã đề ở trang cuối cùng
+        if (isAdmin && answerKeyAtVeryEnd) {
+            docChildren.push(
+                new Paragraph({
+                    pageBreakBefore: true,
+                    alignment: AlignmentType.CENTER,
+                    spacing: { before: 120, after: 200 },
+                    children: [
+                        new TextRun({
+                            text: `BẢNG ĐÁP ÁN TỔNG HỢP (${variants.length} MÃ ĐỀ: ${variants.map(v => v.examCode).join(', ')})`,
+                            bold: true,
+                            font: 'Times New Roman',
+                            size: 28
+                        })
+                    ]
+                })
+            );
+
+            variants.forEach((v, idx) => {
+                const mcqQs = v.quiz.questions.filter(q => q.type === 'mcq');
+                const groupTfQs = v.quiz.questions.filter(q => q.type === 'group-tf');
+                const shortQs = v.quiz.questions.filter(q => q.type === 'short');
+                addAnswerKeysToDoc(docChildren, mcqQs, groupTfQs, shortQs, v.examCode, idx > 0 ? false : false, true);
+            });
+        }
+    } else {
+        await appendSingleQuizVariantToDoc(
+            docChildren,
+            quiz,
+            undefined,
+            layoutMode,
+            isAdmin,
+            true
+        );
+    }
 
     // Tạo Document hoàn chỉnh
     const doc = new Document({
@@ -685,7 +783,8 @@ export async function exportQuizToDocx(quiz: Quiz, options: ExportDocxOptions = 
     const link = document.createElement('a');
     link.href = url;
     const safeTitle = quiz.title.replace(/[/\\?%*:|"<>]/g, '_');
-    link.download = `${safeTitle}.docx`;
+    const suffix = variants && variants.length > 0 ? `_${variants.length}_Ma_De_${variants.map(v => v.examCode).join('-')}` : '';
+    link.download = `${safeTitle}${suffix}.docx`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -979,16 +1078,28 @@ function addAnswerKeysToDoc(
     docChildren: (Paragraph | Table)[],
     mcqQs: Question[],
     groupTfQs: Question[],
-    shortQs: Question[]
+    shortQs: Question[],
+    examCode?: string,
+    pageBreakBefore: boolean = true,
+    isCombinedSection: boolean = false
 ) {
-    // Ngắt trang trước bảng đáp án
+    // Tiêu đề bảng đáp án
     docChildren.push(
         new Paragraph({
-            pageBreakBefore: true,
-            alignment: AlignmentType.CENTER,
-            spacing: { before: 240, after: 200 },
+            pageBreakBefore: pageBreakBefore,
+            alignment: isCombinedSection ? AlignmentType.LEFT : AlignmentType.CENTER,
+            spacing: { before: isCombinedSection ? 280 : 240, after: 140 },
+            border: isCombinedSection
+                ? { bottom: { color: '1E3A8A', size: 10, style: BorderStyle.SINGLE, space: 4 } }
+                : undefined,
             children: [
-                new TextRun({ text: 'BẢNG ĐÁP ÁN', bold: true, font: 'Times New Roman', size: 28 })
+                new TextRun({
+                    text: examCode ? `BẢNG ĐÁP ÁN — MÃ ĐỀ ${examCode}` : 'BẢNG ĐÁP ÁN',
+                    bold: true,
+                    font: 'Times New Roman',
+                    size: isCombinedSection ? 25 : 28,
+                    color: examCode ? '1E3A8A' : '000000'
+                })
             ]
         })
     );
