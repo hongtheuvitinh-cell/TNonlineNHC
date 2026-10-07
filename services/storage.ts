@@ -3184,13 +3184,11 @@ export const deduplicateBankQuestions = async (targetSubject?: string): Promise<
     }
 
     const idsToDelete: string[] = [];
-    const questionsToKeepAndMerge: Question[] = [];
+    const modifiedQuestionsToSave: Question[] = [];
 
     groups.forEach((items) => {
       const uniqueInGroup = Array.from(new Map(items.map(q => [q.id, q])).values());
-      if (uniqueInGroup.length === 1) {
-        questionsToKeepAndMerge.push(uniqueInGroup[0]);
-      } else if (uniqueInGroup.length > 1) {
+      if (uniqueInGroup.length > 1) {
         // Có từ 2 câu trở lên khác ID nhưng trùng lặp nội dung
         // Chọn câu tốt nhất làm câu chính (có ảnh, có lời giải, có phân loại mức độ)
         const primary = uniqueInGroup.reduce((best, cur) => {
@@ -3210,15 +3208,19 @@ export const deduplicateBankQuestions = async (targetSubject?: string): Promise<
         }, uniqueInGroup[0]);
 
         // Gộp những thông tin còn thiếu từ các bản sao vào bản chính
+        let isModified = false;
         const merged: Question = { ...primary };
         for (const item of uniqueInGroup) {
-          if (!merged.imageUrl && item.imageUrl) merged.imageUrl = item.imageUrl;
-          if (!merged.solution && item.solution) merged.solution = item.solution;
-          if (!merged.level && item.level) merged.level = item.level;
-          if (!merged.subject && item.subject) merged.subject = item.subject;
+          if (!merged.imageUrl && item.imageUrl) { merged.imageUrl = item.imageUrl; isModified = true; }
+          if (!merged.solution && item.solution) { merged.solution = item.solution; isModified = true; }
+          if (!merged.level && item.level) { merged.level = item.level; isModified = true; }
+          if (!merged.subject && item.subject) { merged.subject = item.subject; isModified = true; }
+          if (!merged.groupPassage && item.groupPassage) { merged.groupPassage = item.groupPassage; isModified = true; }
         }
 
-        questionsToKeepAndMerge.push(merged);
+        if (isModified) {
+          modifiedQuestionsToSave.push(merged);
+        }
 
         // Các bản sao còn lại đánh dấu để xóa (tuyệt đối không bao gồm primary.id)
         uniqueInGroup.forEach((item) => {
@@ -3250,11 +3252,13 @@ export const deduplicateBankQuestions = async (targetSubject?: string): Promise<
       }
     }
 
-    // Cập nhật lại các câu hỏi đã gộp (nếu cần cập nhật nội dung tốt hơn)
-    if (isSupabasePrimary()) {
-      await supabaseDb.saveBatchBankQuestions(questionsToKeepAndMerge);
-    } else if (db && questionsToKeepAndMerge.length > 0) {
-      await saveBatchBankQuestionsToFirestore(questionsToKeepAndMerge);
+    // Cập nhật lại các câu hỏi đã được bổ sung thông tin
+    if (modifiedQuestionsToSave.length > 0) {
+      if (isSupabasePrimary()) {
+        await supabaseDb.saveBatchBankQuestions(modifiedQuestionsToSave);
+      } else if (db) {
+        await saveBatchBankQuestionsToFirestore(modifiedQuestionsToSave);
+      }
     }
 
     invalidateMemoryCache('bank');
@@ -3262,7 +3266,7 @@ export const deduplicateBankQuestions = async (targetSubject?: string): Promise<
     return {
       totalScanned,
       duplicatesRemoved: idsToDelete.length,
-      uniqueRemaining: questionsToKeepAndMerge.length
+      uniqueRemaining: groups.size
     };
   } catch (e) {
     console.error("Lỗi khi dọn dẹp câu hỏi trùng lặp:", e);
@@ -3321,7 +3325,14 @@ export const saveBatchBankQuestionsToFirestore = async (questions: Question[]): 
 export const saveBatchBankQuestions = async (questions: Question[]): Promise<void> => {
   if (!questions || questions.length === 0) return;
   if (isSupabasePrimary()) {
-    await supabaseDb.saveBatchBankQuestions(questions);
+    try {
+      await supabaseDb.saveBatchBankQuestions(questions);
+    } catch (err: any) {
+      console.warn("Lỗi lưu ngân hàng Supabase, tự động lưu Firestore dự phòng:", err?.message || err);
+      if (db) {
+        await saveBatchBankQuestionsToFirestore(questions).catch(() => {});
+      }
+    }
     if (isDualSyncActive()) {
       saveBatchBankQuestionsToFirestore(questions).catch((err) => {
         console.warn("Dual sync saveBatchBankQuestions to Firestore skipped/failed (non-fatal):", err);
