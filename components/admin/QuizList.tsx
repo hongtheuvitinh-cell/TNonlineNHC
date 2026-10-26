@@ -6,7 +6,8 @@ import {
   EyeOff, ShieldCheck, GraduationCap, Share2, User as UserIcon, Lock, BookOpen,
   Check, X, CheckSquare, Square, Info, Sparkles, Send, Layers, AlertCircle, PauseCircle,
   Calendar, CalendarDays, CheckCircle2, Clock, Zap, Timer, Loader2, Printer,
-  Folder, FolderPlus, FolderOpen, MoreVertical, Plus, MoveRight, FolderEdit, RefreshCw
+  Folder, FolderPlus, FolderOpen, MoreVertical, Plus, MoveRight, FolderEdit, RefreshCw,
+  Copy, ExternalLink, MessageCircle
 } from 'lucide-react';
 import { isSameSubject, STANDARD_SUBJECTS, normalizeSubject, getDisplaySubject } from '../../services/subjectUtils';
 import { getCurrentAcademicYear, getQuizAcademicYear, getAcademicYearOptions } from '../../services/academicUtils';
@@ -103,6 +104,77 @@ export function matchChapterName(folderChapter?: string, filterChapter?: string)
     return fNorm === cNorm || fNorm.includes(cNorm) || cNorm.includes(fNorm);
 }
 
+export function generateZaloAssignmentMessage({
+    quiz,
+    classes = [],
+    selectedClassIds = [],
+    note = ''
+}: {
+    quiz: Quiz;
+    classes?: ClassRoom[];
+    selectedClassIds?: string[];
+    note?: string;
+}): string {
+    const classIdsToUse = (selectedClassIds && selectedClassIds.length > 0)
+        ? selectedClassIds
+        : (quiz.assignedClassIds || []);
+
+    const classNames = classIdsToUse.length > 0
+        ? classIdsToUse.map(id => {
+            const found = classes.find(c => c.id === id);
+            return found ? found.name : id;
+        }).join(', ')
+        : `Toàn khối ${quiz.grade}`;
+
+    const origin = typeof window !== 'undefined' ? window.location.origin : '';
+    const quizLink = `${origin}/?quiz=${quiz.id}`;
+    const questionCount = quiz.questionCount || (quiz.questions ? quiz.questions.length : 0);
+    const duration = quiz.durationMinutes || 45;
+
+    // Lịch thi
+    let scheduleText = 'Mở tự do';
+    if (quiz.startTime && quiz.endTime) {
+        const s = new Date(quiz.startTime);
+        const e = new Date(quiz.endTime);
+        const sStr = s.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }) + ' ' + s.toLocaleDateString('vi-VN');
+        const eStr = e.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }) + ' ' + e.toLocaleDateString('vi-VN');
+        scheduleText = `${sStr} ➔ ${eStr}`;
+    } else if (quiz.endTime) {
+        const e = new Date(quiz.endTime);
+        const eStr = e.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }) + ' ' + e.toLocaleDateString('vi-VN');
+        scheduleText = `Hạn nộp: ${eStr}`;
+    } else if (quiz.startTime) {
+        const s = new Date(quiz.startTime);
+        const sStr = s.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }) + ' ' + s.toLocaleDateString('vi-VN');
+        scheduleText = `Mở từ: ${sStr}`;
+    }
+
+    const modeText = quiz.type === 'test' 
+        ? ((quiz.maxAttempts === 1 || quiz.maxAttempts === undefined) ? 'Làm bài kiểm tra (1 lần duy nhất)' : `Làm bài kiểm tra (Tối đa ${quiz.maxAttempts} lần)`)
+        : 'Luyện tập (Xem đáp án & lời giải ngay)';
+
+    let msg = `📢 [THÔNG BÁO BÀI TẬP / BÀI KIỂM TRA MỚI]\n`;
+    msg += `━━━━━━━━━━━━━━━━━━━━\n`;
+    msg += `📝 Đề thi: ${quiz.title}\n`;
+    if (quiz.subject) {
+        msg += `📚 Môn: ${getDisplaySubject(quiz.subject)} - Khối ${quiz.grade}\n`;
+    } else {
+        msg += `📚 Khối: ${quiz.grade}\n`;
+    }
+    msg += `👥 Lớp: ${classNames}\n`;
+    msg += `⏱️ Thời lượng: ${duration} phút (${questionCount} câu hỏi)\n`;
+    msg += `⏰ Khung giờ / Hạn nộp: ${scheduleText}\n`;
+    msg += `📌 Hình thức: ${modeText}\n`;
+    msg += `━━━━━━━━━━━━━━━━━━━━\n`;
+    msg += `👉 LINK LÀM BÀI TRỰC TIẾP:\n${quizLink}\n\n`;
+    if (note && note.trim()) {
+        msg += `💬 Lời dặn của thầy/cô: ${note.trim()}\n\n`;
+    }
+    msg += `ℹ️ Hướng dẫn: Các em học sinh nhấp vào link trên, đăng nhập bằng Mã số học sinh (MSHS) để bắt đầu làm bài. Chúc các em làm bài đạt kết quả cao!`;
+
+    return msg;
+}
+
 interface QuizCardItemProps {
     quiz: Quiz;
     isMine: boolean;
@@ -125,6 +197,7 @@ interface QuizCardItemProps {
     onDelete: (id: string) => void;
     openAssignModal: (q: Quiz) => void;
     openScheduleModal: (q: Quiz) => void;
+    openZaloModal?: (q: Quiz) => void;
     copyQuizLink: (id: string) => void;
     handleSetAcademicYear: (id: string, yr: string) => void;
     handleToggleShare: (id: string, newShare: boolean) => void;
@@ -152,6 +225,7 @@ const QuizCardItem = React.memo(function QuizCardItem({
     onDelete,
     openAssignModal,
     openScheduleModal,
+    openZaloModal,
     copyQuizLink,
     handleSetAcademicYear,
     handleToggleShare
@@ -482,6 +556,15 @@ const QuizCardItem = React.memo(function QuizCardItem({
                     </div>
 
                     <div className="flex items-center gap-1">
+                        <button 
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); openZaloModal && openZaloModal(q); }} 
+                            className="px-2 py-1 bg-sky-600 hover:bg-sky-700 text-white rounded-lg shadow-2xs transition-all flex items-center gap-1 text-[9px] font-black cursor-pointer active:scale-95" 
+                            title="Tạo tin nhắn thông báo giao đề qua Zalo"
+                        >
+                            <Send size={10}/>
+                            <span>Báo Zalo</span>
+                        </button>
                         {q.isUnlisted && (
                             <button 
                                 type="button"
@@ -1207,6 +1290,21 @@ export default function QuizList({
     const [assignGradeFilter, setAssignGradeFilter] = useState<'matching' | 'all'>('matching');
     const [assignSearchClass, setAssignSearchClass] = useState<string>('');
 
+    // Zalo Announcement State
+    const [zaloModalQuiz, setZaloModalQuiz] = useState<Quiz | null>(null);
+    const [zaloSelectedClassIds, setZaloSelectedClassIds] = useState<string[]>([]);
+    const [zaloNote, setZaloNote] = useState<string>('');
+    const [zaloCopied, setZaloCopied] = useState<boolean>(false);
+    const [zaloLinkCopied, setZaloLinkCopied] = useState<boolean>(false);
+
+    const openZaloModal = useCallback((q: Quiz, specificClassIds?: string[]) => {
+        setZaloModalQuiz(q);
+        setZaloSelectedClassIds(specificClassIds || q.assignedClassIds || []);
+        setZaloNote('');
+        setZaloCopied(false);
+        setZaloLinkCopied(false);
+    }, []);
+
     const openAssignModal = useCallback((q: Quiz) => {
         const isMine = Boolean(currentUser?.id && q.createdBy === currentUser.id);
         if (!isSuperAdmin && !isMine) {
@@ -1833,6 +1931,7 @@ export default function QuizList({
                             onDelete={onDelete}
                             openAssignModal={openAssignModal}
                             openScheduleModal={openScheduleModal}
+                            openZaloModal={openZaloModal}
                             copyQuizLink={copyQuizLink}
                             handleSetAcademicYear={handleSetAcademicYear}
                             handleToggleShare={handleToggleShare}
@@ -2168,11 +2267,11 @@ export default function QuizList({
                         </div>
 
                         {/* Footer Modal */}
-                        <div className="p-4 bg-slate-50 border-t border-slate-200 flex justify-end items-center gap-3 shrink-0">
+                        <div className="p-4 bg-slate-50 border-t border-slate-200 flex flex-wrap justify-end items-center gap-2.5 shrink-0">
                             <button
                                 type="button"
                                 onClick={() => setAssigningQuiz(null)}
-                                className="px-5 py-2.5 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-xl text-xs font-black uppercase transition-all"
+                                className="px-4 py-2.5 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-xl text-xs font-black uppercase transition-all cursor-pointer"
                             >
                                 Hủy bỏ
                             </button>
@@ -2180,7 +2279,7 @@ export default function QuizList({
                                 type="button"
                                 disabled={isSavingAssign}
                                 onClick={handleSaveAssignment}
-                                className="px-6 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-black uppercase transition-all shadow-lg active:scale-95 disabled:opacity-50 flex items-center gap-2"
+                                className="px-5 py-2.5 bg-slate-900 hover:bg-black text-white rounded-xl text-xs font-black uppercase transition-all shadow-md active:scale-95 disabled:opacity-50 flex items-center gap-2 cursor-pointer"
                             >
                                 {isSavingAssign ? (
                                     <>
@@ -2190,9 +2289,25 @@ export default function QuizList({
                                 ) : (
                                     <>
                                         <Check size={16}/>
-                                        <span>Lưu Phân Công Giao Đề</span>
+                                        <span>Lưu Phân Công</span>
                                     </>
                                 )}
+                            </button>
+                            <button
+                                type="button"
+                                disabled={isSavingAssign}
+                                onClick={async () => {
+                                    if (!assigningQuiz) return;
+                                    const currentQ = assigningQuiz;
+                                    const currentClasses = [...selectedClassIdsForAssign];
+                                    await handleSaveAssignment();
+                                    openZaloModal(currentQ, currentClasses);
+                                }}
+                                className="px-5 py-2.5 bg-sky-600 hover:bg-sky-700 text-white rounded-xl text-xs font-black uppercase transition-all shadow-lg active:scale-95 disabled:opacity-50 flex items-center gap-2 cursor-pointer"
+                                title="Lưu phân công và mở hộp thoại sao chép tin nhắn Zalo"
+                            >
+                                <Send size={15}/>
+                                <span>Lưu & Báo Zalo</span>
                             </button>
                         </div>
                     </div>
@@ -2734,6 +2849,184 @@ export default function QuizList({
                             >
                                 Hủy bỏ
                             </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Modal Thông báo Báo bài qua Zalo (Cách 1) */}
+            {zaloModalQuiz && (
+                <div className="fixed inset-0 z-[6000] bg-slate-950/75 backdrop-blur-xs flex items-center justify-center p-3 md:p-6 animate-fade-in">
+                    <div className="bg-white rounded-3xl max-w-2xl w-full max-h-[92vh] flex flex-col shadow-2xl overflow-hidden border border-slate-200 animate-in fade-in zoom-in-95 duration-200">
+                        {/* Header Modal */}
+                        <div className="p-5 bg-gradient-to-r from-sky-600 to-blue-700 text-white flex items-center justify-between shrink-0">
+                            <div className="flex items-center gap-3">
+                                <div className="w-11 h-11 rounded-2xl bg-white/20 backdrop-blur-md flex items-center justify-center text-white shadow-inner shrink-0">
+                                    <Send size={22} />
+                                </div>
+                                <div>
+                                    <div className="flex items-center gap-2">
+                                        <h3 className="text-base font-black uppercase tracking-tight leading-tight">
+                                            BÁO BÀI GIAO CHO HỌC SINH QUA ZALO
+                                        </h3>
+                                        <span className="px-2 py-0.5 bg-white/25 text-white rounded-full text-[9px] font-black uppercase">
+                                            Cách 1
+                                        </span>
+                                    </div>
+                                    <p className="text-[11px] text-sky-100 font-semibold mt-0.5">
+                                        Sao chép nội dung tin nhắn định dạng chuẩn để gửi vào nhóm Zalo lớp
+                                    </p>
+                                </div>
+                            </div>
+                            <button 
+                                onClick={() => setZaloModalQuiz(null)}
+                                className="p-2.5 bg-white/10 hover:bg-white/25 rounded-xl text-white transition-colors cursor-pointer shrink-0"
+                                title="Đóng"
+                            >
+                                <X size={20}/>
+                            </button>
+                        </div>
+
+                        {/* Body */}
+                        <div className="p-6 overflow-y-auto space-y-4 custom-scrollbar">
+                            {/* Tóm tắt đề thi */}
+                            <div className="p-3.5 bg-sky-50/70 border border-sky-200 rounded-2xl flex items-center justify-between gap-3 flex-wrap">
+                                <div className="min-w-0">
+                                    <span className="text-xs font-black uppercase text-slate-800 line-clamp-1">
+                                        {zaloModalQuiz.title}
+                                    </span>
+                                    <div className="flex items-center gap-2 text-[10px] text-slate-600 font-bold mt-1 flex-wrap">
+                                        <span className="px-1.5 py-0.5 bg-white rounded border border-sky-200 text-sky-800">
+                                            Khối {zaloModalQuiz.grade}
+                                        </span>
+                                        {zaloModalQuiz.subject && (
+                                            <span className="px-1.5 py-0.5 bg-white rounded border border-purple-200 text-purple-800">
+                                                Môn {getDisplaySubject(zaloModalQuiz.subject)}
+                                            </span>
+                                        )}
+                                        <span>• {zaloModalQuiz.durationMinutes || 45} phút</span>
+                                        <span>• {zaloModalQuiz.questionCount || (zaloModalQuiz.questions ? zaloModalQuiz.questions.length : 0)} câu</span>
+                                    </div>
+                                </div>
+                                <div className="flex items-center gap-1.5 shrink-0">
+                                    <span className="px-2.5 py-1 bg-white border border-slate-200 text-slate-700 rounded-xl text-[10px] font-black uppercase shadow-2xs">
+                                        {zaloSelectedClassIds.length > 0 ? `${zaloSelectedClassIds.length} lớp được chọn` : `Toàn khối ${zaloModalQuiz.grade}`}
+                                    </span>
+                                </div>
+                            </div>
+
+                            {/* Lời dặn của giáo viên */}
+                            <div className="space-y-1.5">
+                                <label className="text-[10px] font-black uppercase text-slate-700 tracking-wider flex items-center gap-1.5">
+                                    <span>💬 Lời dặn thêm của giáo viên (tùy chọn):</span>
+                                </label>
+                                <input
+                                    type="text"
+                                    placeholder="VD: Các em hoàn thành trước 21h00 tối nay nhé; Bài kiểm tra tính điểm 15 phút..."
+                                    value={zaloNote}
+                                    onChange={(e) => setZaloNote(e.target.value)}
+                                    className="w-full bg-slate-50 border-2 border-slate-200 rounded-xl px-3.5 py-2 text-xs font-bold outline-none focus:border-sky-500 focus:bg-white transition-all text-slate-800 placeholder:text-slate-400"
+                                />
+                            </div>
+
+                            {/* Khung nội dung tin nhắn Zalo chuẩn */}
+                            <div className="space-y-1.5">
+                                <div className="flex items-center justify-between">
+                                    <label className="text-[10px] font-black uppercase text-slate-700 tracking-wider flex items-center gap-1.5">
+                                        <span>📄 Nội dung tin nhắn sẽ gửi Zalo:</span>
+                                    </label>
+                                    <span className="text-[10px] text-slate-500 font-semibold">
+                                        (Đã tự động tạo kèm link đề và hướng dẫn MSHS)
+                                    </span>
+                                </div>
+                                
+                                <div className="p-4 bg-slate-900 text-slate-100 rounded-2xl font-mono text-xs leading-relaxed whitespace-pre-wrap border border-slate-800 shadow-inner max-h-56 overflow-y-auto custom-scrollbar select-all">
+                                    {generateZaloAssignmentMessage({
+                                        quiz: zaloModalQuiz,
+                                        classes,
+                                        selectedClassIds: zaloSelectedClassIds,
+                                        note: zaloNote
+                                    })}
+                                </div>
+                            </div>
+
+                            {/* Thông báo copy thành công */}
+                            {zaloCopied && (
+                                <div className="p-3 bg-emerald-50 border border-emerald-300 rounded-xl flex items-center gap-2 text-emerald-800 text-xs font-bold animate-in fade-in">
+                                    <CheckCircle2 size={16} className="text-emerald-600 shrink-0" />
+                                    <span>Đã sao chép nội dung tin nhắn Zalo! Thầy/cô chỉ cần dán (Ctrl + V) vào nhóm Zalo lớp.</span>
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Footer Modal */}
+                        <div className="p-4 bg-slate-50 border-t border-slate-200 flex flex-wrap items-center justify-between gap-3 shrink-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        const origin = typeof window !== 'undefined' ? window.location.origin : '';
+                                        const link = `${origin}/?quiz=${zaloModalQuiz.id}`;
+                                        navigator.clipboard.writeText(link).then(() => {
+                                            setZaloLinkCopied(true);
+                                            setTimeout(() => setZaloLinkCopied(false), 2000);
+                                        });
+                                    }}
+                                    className="px-3.5 py-2 bg-white border border-slate-300 hover:bg-slate-100 text-slate-700 rounded-xl text-xs font-black uppercase transition-all shadow-xs flex items-center gap-1.5 cursor-pointer"
+                                    title="Sao chép riêng đường link làm bài"
+                                >
+                                    {zaloLinkCopied ? <Check size={14} className="text-emerald-600" /> : <LinkIcon size={14} />}
+                                    <span>{zaloLinkCopied ? "Đã chép link!" : "Chép riêng Link đề"}</span>
+                                </button>
+
+                                <button
+                                    type="button"
+                                    onClick={() => window.open('https://chat.zalo.me', '_blank')}
+                                    className="px-3.5 py-2 bg-white border border-sky-300 text-sky-700 hover:bg-sky-50 rounded-xl text-xs font-black uppercase transition-all shadow-xs flex items-center gap-1.5 cursor-pointer"
+                                    title="Mở ứng dụng Zalo Web để dán tin nhắn vào nhóm lớp"
+                                >
+                                    <ExternalLink size={14} />
+                                    <span>Mở Zalo Web</span>
+                                </button>
+                            </div>
+
+                            <div className="flex items-center gap-2.5">
+                                <button
+                                    type="button"
+                                    onClick={() => setZaloModalQuiz(null)}
+                                    className="px-4 py-2.5 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-xl text-xs font-black uppercase transition-all cursor-pointer"
+                                >
+                                    Đóng
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        const msg = generateZaloAssignmentMessage({
+                                            quiz: zaloModalQuiz,
+                                            classes,
+                                            selectedClassIds: zaloSelectedClassIds,
+                                            note: zaloNote
+                                        });
+                                        navigator.clipboard.writeText(msg).then(() => {
+                                            setZaloCopied(true);
+                                            setTimeout(() => setZaloCopied(false), 3000);
+                                        });
+                                    }}
+                                    className="px-5 py-2.5 bg-sky-600 hover:bg-sky-700 text-white rounded-xl text-xs font-black uppercase transition-all shadow-lg active:scale-95 flex items-center gap-2 cursor-pointer"
+                                >
+                                    {zaloCopied ? (
+                                        <>
+                                            <Check size={16} />
+                                            <span>ĐÃ SAO CHÉP THÀNH CÔNG!</span>
+                                        </>
+                                    ) : (
+                                        <>
+                                            <Copy size={16} />
+                                            <span>SAO CHÉP TIN NHẮN ZALO</span>
+                                        </>
+                                    )}
+                                </button>
+                            </div>
                         </div>
                     </div>
                 </div>
