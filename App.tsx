@@ -20,9 +20,9 @@ const App: React.FC = () => {
     initStorage();
     const cleanupKeyboardScroll = initGlobalKeyboardScroll();
     
-    // Kiểm tra link đề thi từ URL
+    // Kiểm tra link đề thi từ URL (?quiz=... hoặc ?quizId=... hoặc ?id=...)
     const urlParams = new URLSearchParams(window.location.search);
-    const quizId = urlParams.get('quiz');
+    const quizId = urlParams.get('quiz') || urlParams.get('quizId') || urlParams.get('id');
     if (quizId) {
         setTargetQuizId(quizId);
     }
