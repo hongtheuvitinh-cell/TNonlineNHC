@@ -544,7 +544,7 @@ CREATE TABLE IF NOT EXISTS public.quiz_folders (
     subject TEXT,
     chapter_id TEXT,
     chapter_name TEXT,
-    created_by TEXT NOT NULL,
+    created_by TEXT,
     created_by_name TEXT,
     color TEXT DEFAULT '#3b82f6',
     order_index INTEGER DEFAULT 0,
@@ -552,6 +552,7 @@ CREATE TABLE IF NOT EXISTS public.quiz_folders (
 );
 
 CREATE INDEX IF NOT EXISTS idx_quiz_folders_created_by ON public.quiz_folders(created_by);
+CREATE INDEX IF NOT EXISTS idx_quiz_folders_subject ON public.quiz_folders(subject);
 
 CREATE TABLE IF NOT EXISTS public.bank_questions (
     id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
@@ -591,6 +592,8 @@ CREATE TABLE IF NOT EXISTS public.quizzes (
     type TEXT NOT NULL CHECK (type IN ('practice', 'test')),
     grade TEXT NOT NULL CHECK (grade IN ('10', '11', '12', 'all')),
     category TEXT,
+    folder_id TEXT,
+    folder_name TEXT,
     subject TEXT,
     start_time TIMESTAMPTZ,
     end_time TIMESTAMPTZ,
@@ -616,6 +619,7 @@ CREATE TABLE IF NOT EXISTS public.quizzes (
 );
 
 CREATE INDEX IF NOT EXISTS idx_quizzes_grade_subject ON public.quizzes(grade, subject);
+CREATE INDEX IF NOT EXISTS idx_quizzes_folder_id ON public.quizzes(folder_id);
 CREATE INDEX IF NOT EXISTS idx_quizzes_published ON public.quizzes(is_published);
 CREATE INDEX IF NOT EXISTS idx_quizzes_created_by ON public.quizzes(created_by);
 CREATE INDEX IF NOT EXISTS idx_quizzes_academic_year ON public.quizzes(academic_year);
