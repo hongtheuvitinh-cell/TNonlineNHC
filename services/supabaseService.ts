@@ -912,10 +912,24 @@ export const supabaseDb = {
       if (teacherId && teacherId !== 'all') {
         q = q.eq('created_by', teacherId);
       }
-      const { data, error } = await q.order('created_at', { ascending: false });
-      if (error || !data) return [];
+      let { data, error } = await q.order('order_index', { ascending: true }).order('created_at', { ascending: false });
+      if (error) {
+        // Thử lại nếu bảng cũ chưa có cột order_index
+        let retryQ = client.from('quiz_folders').select('*');
+        if (teacherId && teacherId !== 'all') {
+          retryQ = retryQ.eq('created_by', teacherId);
+        }
+        const retryRes = await retryQ.order('created_at', { ascending: false });
+        if (retryRes.error) {
+          console.warn("Lỗi getQuizFolders Supabase:", retryRes.error.message);
+          return [];
+        }
+        data = retryRes.data;
+      }
+      if (!data) return [];
       return data.map(mapQuizFolderFromDb);
-    } catch {
+    } catch (err) {
+      console.warn("Lỗi ngoại lệ getQuizFolders Supabase:", err);
       return [];
     }
   },
@@ -923,11 +937,16 @@ export const supabaseDb = {
   async saveQuizFolder(folder: QuizFolder): Promise<void> {
     const client = getSupabase();
     if (!client) return;
-    try {
-      const row = mapQuizFolderToDb(folder);
-      await client.from('quiz_folders').upsert(row, { onConflict: 'id' });
-    } catch (e) {
-      console.warn("Lỗi lưu quiz_folders sang Supabase:", e);
+    const row = mapQuizFolderToDb(folder);
+    const { error } = await client.from('quiz_folders').upsert(row, { onConflict: 'id' });
+    if (error) {
+      console.error("Lỗi lưu quiz_folders sang Supabase:", error.message);
+      // Nếu lỗi do cột thiếu (ví dụ order_index), thử lưu phiên bản an toàn
+      const { order_index, color, ...safeRow } = row;
+      const retry = await client.from('quiz_folders').upsert(safeRow, { onConflict: 'id' });
+      if (retry.error) {
+        throw new Error(`Không thể lưu thư mục lên Supabase: ${retry.error.message}`);
+      }
     }
   },
 
@@ -935,7 +954,8 @@ export const supabaseDb = {
     const client = getSupabase();
     if (!client) return;
     try {
-      await client.from('quiz_folders').delete().eq('id', folderId);
+      const { error: delErr } = await client.from('quiz_folders').delete().eq('id', folderId);
+      if (delErr) console.warn("Lỗi xóa quiz_folders:", delErr.message);
       // Gỡ liên kết folder_id của các đề thi đang trong thư mục này
       await client.from('quizzes').update({
         folder_id: null,
