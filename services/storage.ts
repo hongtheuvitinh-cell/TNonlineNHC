@@ -1021,6 +1021,12 @@ export const applyFolderAssignments = (quizzesList: Quiz[]): Quiz[] => {
   if (!Array.isArray(quizzesList) || quizzesList.length === 0) return quizzesList || [];
   const assignments = getStoredFolderAssignments();
   return quizzesList.map(q => {
+    // 1. Ưu tiên dữ liệu chính quy lưu trên Database đám mây (Supabase / Firestore)
+    if (q.folderId) {
+      saveStoredFolderAssignment(q.id, q.folderId, q.folderName);
+      return q;
+    }
+    // 2. Dùng bộ nhớ tạm cục bộ nếu DB chưa tải kịp
     const qKey = String(q.id);
     const assigned = assignments[qKey] || assignments[q.id];
     if (assigned && assigned.folderId) {
@@ -1037,10 +1043,6 @@ export const applyFolderAssignments = (quizzesList: Quiz[]): Quiz[] => {
         folderId: undefined,
         folderName: undefined
       };
-    }
-    // Nếu trong DB đã có folderId hợp lệ nhưng chưa có trong local assignments, đồng bộ luôn
-    if (q.folderId) {
-      saveStoredFolderAssignment(q.id, q.folderId, q.folderName);
     }
     return q;
   });
@@ -2098,19 +2100,21 @@ export const getQuizFolders = async (teacherId?: string, forceRefresh: boolean =
   }
 
   let folders: QuizFolder[] = [];
+  let fetchedFromRemote = false;
 
   if (isSupabasePrimary()) {
     try {
       const supaFolders = await supabaseDb.getQuizFolders(teacherId);
-      if (supaFolders && supaFolders.length > 0) {
+      if (Array.isArray(supaFolders)) {
         folders = supaFolders;
+        fetchedFromRemote = true;
       }
     } catch (e) {
       console.warn("Đọc quiz_folders từ Supabase lỗi (dùng fallback):", e);
     }
   }
 
-  if (folders.length === 0 && db) {
+  if (!fetchedFromRemote && db) {
     try {
       const qRef = collection(db, 'quiz_folders');
       const snap = await getDocs(qRef);
@@ -2133,12 +2137,13 @@ export const getQuizFolders = async (teacherId?: string, forceRefresh: boolean =
           createdAt: row.createdAt || parsed.createdAt || new Date().toISOString()
         };
       });
+      fetchedFromRemote = true;
     } catch (e) {
       console.warn("Lỗi đọc quiz_folders từ Firestore:", e);
     }
   }
 
-  if (folders.length === 0) {
+  if (!fetchedFromRemote && folders.length === 0) {
     try {
       const local = localStorage.getItem('eduquiz_quiz_folders_cache');
       if (local) {
