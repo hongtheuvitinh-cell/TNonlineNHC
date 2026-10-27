@@ -243,3 +243,41 @@ export async function uploadExtractedImageToImgBB(
   const url = await uploadBlobToImgBB(blob, key);
   return url;
 }
+
+/**
+ * Tải một ảnh trích xuất lên Supabase Storage bucket 'quiz-images' và trả về Public URL
+ */
+export async function uploadExtractedImageToSupabase(
+  image: ExtractedPdfImage
+): Promise<string> {
+  const { uploadImageToSupabaseStorage } = await import('./storage');
+  const res = await fetch(image.dataUrl);
+  const blob = await res.blob();
+
+  const url = await uploadImageToSupabaseStorage(blob, 'png');
+  if (!url) {
+    throw new Error("Không thể tải ảnh lên Supabase Storage. Vui lòng kiểm tra kết nối CSDL Supabase.");
+  }
+  return url;
+}
+
+/**
+ * Tải ảnh trích xuất theo đích lưu trữ mong muốn: 'supabase' | 'imgbb' | 'base64'
+ */
+export async function uploadExtractedImageByTarget(
+  image: ExtractedPdfImage,
+  target: 'supabase' | 'imgbb' | 'base64',
+  apiKey?: string
+): Promise<string> {
+  if (target === 'base64') {
+    return image.dataUrl;
+  }
+  if (target === 'supabase') {
+    return await uploadExtractedImageToSupabase(image);
+  }
+  if (target === 'imgbb') {
+    return await uploadExtractedImageToImgBB(image, apiKey);
+  }
+  return image.dataUrl;
+}
+

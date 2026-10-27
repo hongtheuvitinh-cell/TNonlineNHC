@@ -7,7 +7,7 @@ import QuizTaker from './QuizTaker';
 import QuickPractice from './QuickPractice';
 import ResultDetailModal from './admin/ResultDetailModal';
 import QuizPreviewModal from './admin/QuizPreviewModal';
-import { Clock, Trophy, BookOpen, Eye, Medal, History, ChevronRight, Star, Award, Users, X, Loader2, RefreshCw, Zap, ShieldAlert, Calendar } from 'lucide-react';
+import { Clock, Trophy, BookOpen, Eye, Medal, History, ChevronRight, Star, Award, Users, X, Loader2, RefreshCw, Zap, ShieldAlert, Calendar, Bell, Sparkles, CheckCircle2 } from 'lucide-react';
 import { format, isBefore, isAfter, addMinutes, differenceInMinutes } from 'date-fns';
 import LatexText from './LatexText';
 import { Lock } from 'lucide-react';
@@ -31,6 +31,25 @@ export default function StudentDashboard({ user, targetQuizId }: StudentDashboar
   const [previewQuiz, setPreviewQuiz] = useState<Quiz | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isCheckingSession, setIsCheckingSession] = useState(false);
+  const [isNotifOpen, setIsNotifOpen] = useState(false);
+  const [dismissedBannerQuizIds, setDismissedBannerQuizIds] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem(`eduquiz_seen_assigned_${user.id}`);
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const markAssignedAsSeen = (quizIds: string[]) => {
+    setDismissedBannerQuizIds(prev => {
+      const next = Array.from(new Set([...prev, ...quizIds]));
+      try {
+        localStorage.setItem(`eduquiz_seen_assigned_${user.id}`, JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+  };
 
   const refreshData = useCallback(async (isSilent = false) => {
     if (!isSilent) setIsLoading(true);
@@ -395,6 +414,17 @@ export default function StudentDashboard({ user, targetQuizId }: StudentDashboar
     return filteredQuizzes.filter(q => q.type === 'practice' && !isQuizExpired(q));
   }, [filteredQuizzes, isQuizExpired]);
 
+  // Danh sách các đề đang giao mà học sinh CHƯA LÀM (dùng để báo chuông thông báo & banner nhắc nhở)
+  const pendingAssignedQuizzes = useMemo(() => {
+    const completedIds = new Set(results.map(r => r.quizId));
+    const allOpen = [...openTestQuizzes, ...openPracticeQuizzes];
+    return allOpen.filter(q => !completedIds.has(q.id));
+  }, [openTestQuizzes, openPracticeQuizzes, results]);
+
+  const unseenAssignedQuizzes = useMemo(() => {
+    return pendingAssignedQuizzes.filter(q => !dismissedBannerQuizIds.includes(q.id));
+  }, [pendingAssignedQuizzes, dismissedBannerQuizIds]);
+
   const expiredQuizzes = useMemo(() => {
     return filteredQuizzes.filter(q => isQuizExpired(q));
   }, [filteredQuizzes, isQuizExpired]);
@@ -420,8 +450,7 @@ export default function StudentDashboard({ user, targetQuizId }: StudentDashboar
             </div>
         </div>
       )}
-      <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white p-8 rounded-[2.5rem] border border-slate-200 shadow-sm relative overflow-hidden">
-        <div className="absolute top-0 right-0 w-32 h-32 bg-yellow-400/10 rounded-full blur-3xl -mr-16 -mt-16"></div>
+      <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white p-8 rounded-[2.5rem] border border-slate-200 shadow-sm relative">
         <div className="relative z-10">
             <h1 className="text-2xl font-black text-slate-800 uppercase tracking-tight italic">Chào mừng, {user.fullName} 👋</h1>
             <p className="text-slate-500 font-medium uppercase text-[10px] tracking-widest mt-1">
@@ -431,8 +460,106 @@ export default function StudentDashboard({ user, targetQuizId }: StudentDashboar
               {` • Mã số: ${user.studentCode}`}
             </p>
         </div>
-        <div className="flex items-center gap-4 relative z-10">
-            <button onClick={() => refreshData()} className={`p-3 rounded-2xl bg-slate-50 text-slate-400 hover:text-blue-600 transition-all ${isLoading ? 'animate-spin' : ''}`}>
+        <div className="flex items-center gap-3 relative z-30">
+            {/* Chuông thông báo đề được giao */}
+            <div className="relative">
+                <button
+                    type="button"
+                    onClick={() => setIsNotifOpen(prev => !prev)}
+                    className={`relative p-3 rounded-2xl border transition-all flex items-center gap-2 ${
+                        pendingAssignedQuizzes.length > 0
+                            ? 'bg-blue-50 border-blue-200 text-blue-600 hover:bg-blue-100'
+                            : 'bg-slate-50 border-slate-100 text-slate-400 hover:text-blue-600'
+                    }`}
+                    title="Thông báo bài tập & đề thi được giao"
+                >
+                    <Bell size={20} className={pendingAssignedQuizzes.length > 0 ? 'animate-bounce' : ''} />
+                    {pendingAssignedQuizzes.length > 0 && (
+                        <span className="px-2 py-0.5 bg-red-600 text-white rounded-full text-[10px] font-black shadow-sm">
+                            {pendingAssignedQuizzes.length} đề mới
+                        </span>
+                    )}
+                </button>
+
+                {isNotifOpen && (
+                    <div className="absolute right-0 mt-3 w-80 sm:w-96 bg-white rounded-3xl shadow-2xl border border-slate-200 overflow-hidden z-50 animate-fade-in">
+                        <div className="p-4 bg-slate-900 text-white flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                                <Bell size={16} className="text-amber-400" />
+                                <span className="text-xs font-black uppercase tracking-wider">
+                                    Đề được giao ({pendingAssignedQuizzes.length})
+                                </span>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={() => setIsNotifOpen(false)}
+                                className="p-1 text-slate-400 hover:text-white rounded-lg"
+                            >
+                                <X size={16} />
+                            </button>
+                        </div>
+
+                        <div className="max-h-80 overflow-y-auto divide-y divide-slate-100 custom-scrollbar">
+                            {pendingAssignedQuizzes.length === 0 ? (
+                                <div className="p-6 text-center space-y-2">
+                                    <CheckCircle2 size={28} className="text-emerald-500 mx-auto" />
+                                    <p className="text-xs font-black text-slate-700 uppercase">Đã hoàn thành hết bài được giao!</p>
+                                    <p className="text-[11px] text-slate-400">Hiện không còn đề thi hay bài luyện tập nào chưa làm.</p>
+                                </div>
+                            ) : (
+                                pendingAssignedQuizzes.map(q => {
+                                    const isClassAssigned = q.targetType === 'classes';
+                                    return (
+                                        <div
+                                            key={q.id}
+                                            className="p-4 hover:bg-blue-50/50 transition-colors flex flex-col gap-2"
+                                        >
+                                            <div className="flex items-center justify-between gap-2">
+                                                <span className={`px-2 py-0.5 rounded-md text-[9px] font-black uppercase ${
+                                                    q.type === 'test'
+                                                        ? 'bg-red-100 text-red-700'
+                                                        : 'bg-blue-100 text-blue-700'
+                                                }`}>
+                                                    {q.type === 'test' ? 'Đề kiểm tra' : 'Đề luyện tập'}
+                                                </span>
+                                                <span className="text-[9px] font-bold text-slate-400 uppercase">
+                                                    {isClassAssigned && user.className ? `Giao riêng Lớp ${user.className}` : `Giao Khối ${user.grade}`}
+                                                </span>
+                                            </div>
+                                            <p className="text-xs font-black text-slate-800 uppercase leading-snug line-clamp-2">
+                                                {q.title}
+                                            </p>
+                                            <div className="flex items-center justify-between pt-1">
+                                                <span className="text-[10px] font-bold text-slate-500">
+                                                    {q.type === 'test' ? `${q.durationMinutes} phút` : `${q.questionCount || q.questions?.length || 0} câu`}
+                                                    {q.endTime ? ` • Hạn: ${format(new Date(q.endTime), 'HH:mm dd/MM')}` : ''}
+                                                </span>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        setIsNotifOpen(false);
+                                                        markAssignedAsSeen([q.id]);
+                                                        if (q.type === 'test') {
+                                                            handleStartQuiz(q);
+                                                        } else {
+                                                            handleStartPractice(q);
+                                                        }
+                                                    }}
+                                                    className="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-[10px] font-black uppercase shadow-sm transition-all"
+                                                >
+                                                    Làm ngay
+                                                </button>
+                                            </div>
+                                        </div>
+                                    );
+                                })
+                            )}
+                        </div>
+                    </div>
+                )}
+            </div>
+
+            <button onClick={() => refreshData()} className={`p-3 rounded-2xl bg-slate-50 text-slate-400 hover:text-blue-600 transition-all ${isLoading ? 'animate-spin' : ''}`} title="Làm mới danh sách đề">
                 <RefreshCw size={20}/>
             </button>
             <div className="flex items-center gap-3 bg-yellow-50 px-6 py-3 rounded-[1.5rem] border border-yellow-100 shadow-sm group">
@@ -444,6 +571,60 @@ export default function StudentDashboard({ user, targetQuizId }: StudentDashboar
             </div>
         </div>
       </header>
+
+      {/* Banner thông báo nổi bật khi có đề mới được giáo viên giao mà học sinh chưa làm */}
+      {unseenAssignedQuizzes.length > 0 && (
+        <div className="bg-gradient-to-r from-blue-600 via-indigo-600 to-violet-600 rounded-[2rem] p-5 text-white shadow-xl flex flex-col md:flex-row items-start md:items-center justify-between gap-4 animate-fade-in">
+          <div className="flex items-start sm:items-center gap-4">
+            <div className="w-12 h-12 rounded-2xl bg-white/20 backdrop-blur-md flex items-center justify-center shrink-0">
+              <Sparkles size={24} className="text-yellow-300" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="px-2.5 py-0.5 bg-yellow-400 text-slate-950 rounded-full text-[9px] font-black uppercase tracking-wider">
+                  Thông báo giao bài mới
+                </span>
+                <span className="text-xs font-bold text-blue-100">
+                  {user.className ? `Lớp ${user.className}` : `Khối ${user.grade}`}
+                </span>
+              </div>
+              <h3 className="text-sm sm:text-base font-black uppercase mt-1">
+                Bạn đang có {unseenAssignedQuizzes.length} đề được giáo viên giao chưa hoàn thành!
+              </h3>
+              <p className="text-xs text-blue-100 font-medium mt-0.5 line-clamp-1">
+                Đề mới nhất: <strong>{unseenAssignedQuizzes[0].title}</strong>
+                {unseenAssignedQuizzes.length > 1 ? ` và ${unseenAssignedQuizzes.length - 1} đề khác` : ''}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 self-end md:self-center shrink-0">
+            <button
+              type="button"
+              onClick={() => {
+                const firstQ = unseenAssignedQuizzes[0];
+                markAssignedAsSeen([firstQ.id]);
+                if (firstQ.type === 'test') {
+                  handleStartQuiz(firstQ);
+                } else {
+                  handleStartPractice(firstQ);
+                }
+              }}
+              className="px-4 py-2.5 bg-white text-blue-700 hover:bg-blue-50 rounded-xl text-[10px] font-black uppercase shadow-lg transition-all active:scale-95"
+            >
+              Vào làm ngay
+            </button>
+            <button
+              type="button"
+              onClick={() => markAssignedAsSeen(unseenAssignedQuizzes.map(q => q.id))}
+              className="px-3 py-2.5 bg-white/15 hover:bg-white/25 text-white rounded-xl text-[10px] font-bold uppercase transition-all"
+              title="Ẩn thông báo nhắc nhở này"
+            >
+              Đã biết
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Filters Section */}
       <section className="bg-white p-4 rounded-3xl border border-slate-200 shadow-sm flex flex-wrap items-center gap-4">

@@ -30,8 +30,6 @@ export default defineConfig(({ mode }) => {
     },
     define: {
       // Đẩy biến này vào code chạy ở trình duyệt
-      'process.env.API_KEY': JSON.stringify(apiKey),
-      'process.env.GEMINI_API_KEY': JSON.stringify(apiKey)
     }
   }
 })

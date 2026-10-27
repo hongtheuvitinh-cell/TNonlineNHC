@@ -1421,16 +1421,14 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
       const url = await uploadQuizImage(f, mode);
       if (url) {
         setQuestions(prev => prev.map(q => q.id === id ? { ...q, imageUrl: url } : q));
-        if (url.startsWith('http')) {
-          showAlert("Thành công", "Đã tải ảnh lên Cloud Storage và lấy link trực tuyến thành công!", "success");
-        } else if (mode === 'cloud') {
-          showAlert(
-            "Đã lưu Base64 dự phòng", 
-            "Không thể tải lên Cloud Storage do Bucket chưa được kích hoạt trên Firebase Console (hoặc lỗi quyền). Ảnh đã được lưu tạm an toàn dưới dạng Base64. Hãy nhấn vào 'Cấu hình Storage' để kích hoạt.", 
-            "warning"
-          );
+        if (url.includes('supabase.co')) {
+          showAlert("Thành công", "Đã lưu ảnh an toàn vào Supabase Storage (lưu trữ lâu dài, không lo bị xóa)!", "success");
+        } else if (url.includes('ibb.co') || url.includes('imgbb')) {
+          showAlert("Thành công", "Đã tải ảnh lên ImgBB thành công (thích hợp thi liền)!", "success");
+        } else if (url.startsWith('http')) {
+          showAlert("Thành công", "Đã tải ảnh lên máy chủ trực tuyến thành công!", "success");
         } else {
-          showAlert("Đã lưu ảnh", "Đã nén và lưu ảnh Base64 vào câu hỏi.", "info");
+          showAlert("Đã lưu ảnh", "Đã mã hóa và nhúng ảnh Base64 an toàn vào câu hỏi (vĩnh viễn không mất).", "info");
         }
       }
     } catch (err: any) {

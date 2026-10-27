@@ -3433,8 +3433,36 @@ export const deleteBatchBankQuestions = async (ids: string[]): Promise<number> =
   return await deleteBatchBankQuestionsFromFirestore(ids);
 };
 
-// Upload Quiz Image (supports Firebase Storage with generous timeout, or compressed Base64 fallback)
-export type ImageStorageDestination = 'cloud' | 'base64' | 'auto';
+// Upload Quiz Image (supports Supabase Storage, ImgBB, and compressed Base64 fallback)
+export type ImageStorageDestination = 'cloud' | 'base64' | 'auto' | 'supabase' | 'imgbb';
+export type ImageStorageTarget = 'supabase' | 'imgbb' | 'base64';
+
+export { uploadImageToSupabaseStorage };
+
+// Lấy mục tiêu lưu trữ ảnh đang kích hoạt: 'supabase' | 'imgbb' | 'base64'
+export const getImageStorageTarget = (): ImageStorageTarget => {
+  try {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('eduquiz_image_storage_target');
+      if (saved === 'supabase' || saved === 'imgbb' || saved === 'base64') {
+        return saved;
+      }
+    }
+  } catch (e) {}
+  // Mặc định ưu tiên Supabase Storage nếu đã kết nối, nếu chưa thì ImgBB
+  return isSupabaseConnected() ? 'supabase' : 'imgbb';
+};
+
+export const setImageStorageTarget = (target: ImageStorageTarget): void => {
+  try {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('eduquiz_image_storage_target', target);
+      window.dispatchEvent(new CustomEvent('eduquiz_image_storage_target_changed', { detail: target }));
+    }
+  } catch (e) {
+    console.error("Lỗi lưu cấu hình lưu trữ ảnh:", e);
+  }
+};
 
 // Lấy ImgBB API Key từ localStorage
 export const getImgBBKey = (): string => {
@@ -3452,6 +3480,7 @@ export const setImgBBKey = (key: string): void => {
     } else {
       localStorage.removeItem('eduquiz_imgbb_api_key');
     }
+    window.dispatchEvent(new CustomEvent('eduquiz_imgbb_key_changed', { detail: key }));
   } catch (e) {
     console.error("Lỗi lưu ImgBB Key:", e);
   }
@@ -3476,6 +3505,68 @@ export const uploadBlobToImgBB = async (blob: Blob, apiKey?: string): Promise<st
   }
 
   return json.data.url;
+};
+
+// Tải ảnh lên điểm lưu trữ theo mục tiêu đã chọn ('supabase' | 'imgbb' | 'base64')
+export const uploadImageByTarget = async (
+  fileOrBlobOrDataUrl: File | Blob | string,
+  target?: ImageStorageTarget
+): Promise<string> => {
+  const activeTarget = target || getImageStorageTarget();
+
+  // 1. Nếu người dùng chọn lưu Base64 trực tiếp vào đề
+  if (activeTarget === 'base64') {
+    if (typeof fileOrBlobOrDataUrl === 'string') {
+      return fileOrBlobOrDataUrl;
+    }
+    const { dataUrl } = await compressImageFile(fileOrBlobOrDataUrl, 900, 900, 0.82);
+    return dataUrl;
+  }
+
+  // Chuyển đổi đầu vào thành Blob và DataUrl dự phòng
+  let blob: Blob;
+  let fallbackDataUrl: string = '';
+  let fileExt: string = 'png';
+
+  if (typeof fileOrBlobOrDataUrl === 'string') {
+    if (!fileOrBlobOrDataUrl.startsWith('data:image/')) {
+      return fileOrBlobOrDataUrl; // Đã là đường dẫn URL online
+    }
+    fallbackDataUrl = fileOrBlobOrDataUrl;
+    const res = await fetch(fileOrBlobOrDataUrl);
+    blob = await res.blob();
+    fileExt = fileOrBlobOrDataUrl.includes('image/jpeg') ? 'jpg' : 'png';
+  } else {
+    const compressed = await compressImageFile(fileOrBlobOrDataUrl, 1000, 1000, 0.85);
+    blob = compressed.blob;
+    fallbackDataUrl = compressed.dataUrl;
+    fileExt = (fileOrBlobOrDataUrl instanceof File && fileOrBlobOrDataUrl.type === 'image/jpeg') ? 'jpg' : 'png';
+  }
+
+  // 2. Tải lên Supabase Storage bucket 'quiz-images'
+  if (activeTarget === 'supabase') {
+    try {
+      const supabaseUrl = await uploadImageToSupabaseStorage(blob, fileExt);
+      if (supabaseUrl) return supabaseUrl;
+      console.warn("Upload lên Supabase Storage thất bại, chuyển sang Base64 dự phòng");
+      return fallbackDataUrl;
+    } catch (sbErr) {
+      console.error("Lỗi upload Supabase Storage:", sbErr);
+      return fallbackDataUrl;
+    }
+  }
+
+  // 3. Tải lên ImgBB
+  if (activeTarget === 'imgbb') {
+    const key = getImgBBKey();
+    if (!key) {
+      throw new Error("Chưa cấu hình ImgBB API Key. Vui lòng bấm cấu hình để nhập key hoặc chuyển sang Supabase Store / Base64.");
+    }
+    const imgbbUrl = await uploadBlobToImgBB(blob, key);
+    return imgbbUrl || fallbackDataUrl;
+  }
+
+  return fallbackDataUrl;
 };
 
 // Định dạng lỗi Firebase Storage thành thông báo tiếng Việt dễ hiểu
@@ -3587,6 +3678,48 @@ export const uploadQuizImage = async (
       return dataUrl;
     }
 
+    const fileExt = (file instanceof File && file.type === 'image/png') ? 'png' : 'jpg';
+
+    // Nếu chỉ định lưu Supabase
+    if (mode === 'supabase') {
+      const supabaseUrl = await uploadImageToSupabaseStorage(blob, fileExt);
+      if (supabaseUrl) return supabaseUrl;
+      return dataUrl;
+    }
+
+    // Nếu chỉ định lưu ImgBB
+    if (mode === 'imgbb') {
+      const imgbbKey = getImgBBKey();
+      if (imgbbKey) {
+        const imgbbUrl = await uploadBlobToImgBB(blob, imgbbKey);
+        if (imgbbUrl) return imgbbUrl;
+      }
+      return dataUrl;
+    }
+
+    // Nếu mode === 'cloud' hoặc 'auto', kiểm tra mục tiêu ưu tiên người dùng đã chọn
+    const userTarget = getImageStorageTarget();
+    if (userTarget === 'supabase') {
+      try {
+        const supabaseUrl = await uploadImageToSupabaseStorage(blob, fileExt);
+        if (supabaseUrl) return supabaseUrl;
+      } catch (sbErr) {
+        console.warn("Supabase upload fallback:", sbErr);
+      }
+    } else if (userTarget === 'imgbb') {
+      const imgbbKey = getImgBBKey();
+      if (imgbbKey) {
+        try {
+          const imgbbUrl = await uploadBlobToImgBB(blob, imgbbKey);
+          if (imgbbUrl) return imgbbUrl;
+        } catch (imgbbErr) {
+          console.warn("Tải lên ImgBB thất bại:", imgbbErr);
+        }
+      }
+    } else if (userTarget === 'base64') {
+      return dataUrl;
+    }
+
     // 2. Kiểm tra nếu có cấu hình ImgBB API Key -> Tải lên ImgBB trước
     const imgbbKey = getImgBBKey();
     if (imgbbKey) {
@@ -3690,25 +3823,54 @@ export const uploadQuizImage = async (
   }
 };
 
-// Tải một chuỗi ảnh Base64 sẵn có lên Firebase Storage hoặc ImgBB và lấy đường dẫn URL
-export const uploadBase64ToStorage = async (dataUrl: string): Promise<string> => {
+// Tải một chuỗi ảnh Base64 sẵn có lên Supabase Storage, ImgBB hoặc Firebase Storage và lấy đường dẫn URL
+export const uploadBase64ToStorage = async (
+  dataUrl: string,
+  target?: ImageStorageTarget
+): Promise<string> => {
   if (!dataUrl || !dataUrl.startsWith('data:image/')) return dataUrl;
+
+  const chosenTarget = target || getImageStorageTarget();
+  if (chosenTarget === 'base64') {
+    return dataUrl;
+  }
 
   const res = await fetch(dataUrl);
   const blob = await res.blob();
+  const fileExt = dataUrl.includes('image/png') ? 'png' : 'jpg';
 
-  // 1. Kiểm tra nếu có cấu hình ImgBB API Key
-  const imgbbKey = getImgBBKey();
-  if (imgbbKey) {
-    return await uploadBlobToImgBB(blob, imgbbKey);
+  // 1. Nếu ưu tiên Supabase Storage
+  if (chosenTarget === 'supabase') {
+    try {
+      const supabaseUrl = await uploadImageToSupabaseStorage(blob, fileExt);
+      if (supabaseUrl) return supabaseUrl;
+    } catch (e) {
+      console.warn("Lỗi upload Supabase từ Base64:", e);
+    }
   }
 
-  // 1.5. Kiểm tra nếu có cấu hình Supabase Storage
-  try {
-    const supabaseUrl = await uploadImageToSupabaseStorage(blob, 'jpg');
-    if (supabaseUrl) return supabaseUrl;
-  } catch {
-    // Thử tiếp các phương thức khác
+  // 2. Nếu ưu tiên ImgBB
+  if (chosenTarget === 'imgbb') {
+    const imgbbKey = getImgBBKey();
+    if (imgbbKey) {
+      return await uploadBlobToImgBB(blob, imgbbKey);
+    }
+  }
+
+  // 3. Fallback Supabase nếu chưa thử
+  if (chosenTarget !== 'supabase') {
+    try {
+      const supabaseUrl = await uploadImageToSupabaseStorage(blob, fileExt);
+      if (supabaseUrl) return supabaseUrl;
+    } catch {}
+  }
+
+  // 4. Fallback ImgBB nếu chưa thử
+  const imgbbKey = getImgBBKey();
+  if (imgbbKey) {
+    try {
+      return await uploadBlobToImgBB(blob, imgbbKey);
+    } catch {}
   }
 
   // 2. Tải lên Firebase Cloud Storage

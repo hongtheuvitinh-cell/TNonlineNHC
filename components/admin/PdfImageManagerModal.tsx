@@ -2,15 +2,22 @@ import React, { useState, useEffect, useRef } from 'react';
 import { 
   X, Image as ImageIcon, UploadCloud, Check, ArrowRight, 
   Crop, Sparkles, Loader2, RefreshCw, AlertCircle, Eye, 
-  ExternalLink, ZoomIn, ZoomOut, CheckCircle2, Copy
+  ExternalLink, ZoomIn, ZoomOut, CheckCircle2, Copy, HardDrive, Database, ShieldCheck
 } from 'lucide-react';
 import { Question } from '../../types';
-import { getImgBBKey, uploadBlobToImgBB } from '../../services/storage';
+import { 
+  getImgBBKey, 
+  uploadBlobToImgBB, 
+  getImageStorageTarget, 
+  setImageStorageTarget, 
+  uploadImageByTarget,
+  ImageStorageTarget
+} from '../../services/storage';
+import { isSupabaseConnected } from '../../services/supabaseService';
 import { 
   ExtractedPdfImage, 
   extractAllImagesFromPdf, 
-  renderPdfPageToCanvas, 
-  uploadExtractedImageToImgBB 
+  renderPdfPageToCanvas 
 } from '../../services/pdfImageExtractor';
 
 interface PdfImageManagerModalProps {
@@ -37,10 +44,14 @@ export default function PdfImageManagerModal({
   const [isExtracting, setIsExtracting] = useState(false);
   const [extractProgress, setExtractProgress] = useState<{ current: number; total: number; count: number } | null>(null);
   
-  // ImgBB Status
+  // Storage Destination Choice: 'supabase' | 'imgbb' | 'base64'
+  const [storageTarget, setStorageTargetState] = useState<ImageStorageTarget>(() => getImageStorageTarget());
   const [imgbbKey, setImgbbKey] = useState(() => getImgBBKey());
+  const [supabaseReady, setSupabaseReady] = useState(() => isSupabaseConnected());
+
   const [uploadingMap, setUploadingMap] = useState<Record<string, boolean>>({});
   const [uploadedUrls, setUploadedUrls] = useState<Record<string, string>>({});
+  const [uploadedTargetMap, setUploadedTargetMap] = useState<Record<string, ImageStorageTarget>>({});
   const [assignedMap, setAssignedMap] = useState<Record<string, string>>({}); // imageId -> questionId
 
   // Crop mode state
@@ -58,6 +69,29 @@ export default function PdfImageManagerModal({
   const [selectedQuestionForCrop, setSelectedQuestionForCrop] = useState<string>(questions[0]?.id || '');
   const [isUploadingCrop, setIsUploadingCrop] = useState<boolean>(false);
 
+  // Change active storage target
+  const handleSelectStorageTarget = (target: ImageStorageTarget) => {
+    setStorageTargetState(target);
+    setImageStorageTarget(target);
+  };
+
+  // Sync when storage config or external events fire
+  useEffect(() => {
+    const handleTargetChange = (e: any) => {
+      if (e?.detail) setStorageTargetState(e.detail);
+    };
+    const handleKeyChange = (e: any) => {
+      setImgbbKey(getImgBBKey());
+    };
+
+    window.addEventListener('eduquiz_image_storage_target_changed', handleTargetChange);
+    window.addEventListener('eduquiz_imgbb_key_changed', handleKeyChange);
+    return () => {
+      window.removeEventListener('eduquiz_image_storage_target_changed', handleTargetChange);
+      window.removeEventListener('eduquiz_imgbb_key_changed', handleKeyChange);
+    };
+  }, []);
+
   // Cập nhật khi pdfFile prop thay đổi
   useEffect(() => {
     if (pdfFile) {
@@ -70,6 +104,9 @@ export default function PdfImageManagerModal({
     if (!isOpen || !activeFile) return;
 
     setImgbbKey(getImgBBKey());
+    setSupabaseReady(isSupabaseConnected());
+    setStorageTargetState(getImageStorageTarget());
+
     const reader = new FileReader();
     reader.onload = async (e) => {
       if (e.target?.result instanceof ArrayBuffer) {
@@ -198,63 +235,68 @@ export default function PdfImageManagerModal({
     }
   };
 
-  // Upload 1 ảnh lên ImgBB
+  // Upload 1 ảnh theo mục tiêu đã chọn
   const handleUploadSingleImage = async (img: ExtractedPdfImage): Promise<string | null> => {
-    const key = getImgBBKey();
-    if (!key) {
+    if (storageTarget === 'imgbb' && !getImgBBKey()) {
       if (onOpenStorageConfig) onOpenStorageConfig();
-      else alert("Vui lòng cấu hình ImgBB API Key trước khi tải ảnh lên đám mây!");
+      else alert("Vui lòng cấu hình ImgBB API Key trước khi tải ảnh lên ImgBB!");
       return null;
     }
 
     setUploadingMap(prev => ({ ...prev, [img.id]: true }));
     try {
-      const url = await uploadExtractedImageToImgBB(img, key);
+      const url = await uploadImageByTarget(img.dataUrl, storageTarget);
       setUploadedUrls(prev => ({ ...prev, [img.id]: url }));
+      setUploadedTargetMap(prev => ({ ...prev, [img.id]: storageTarget }));
       return url;
     } catch (err: any) {
-      alert("Lỗi tải lên ImgBB: " + (err?.message || "Không thể upload"));
+      alert(`Lỗi lưu ảnh (${storageTarget}): ` + (err?.message || "Không thể upload"));
       return null;
     } finally {
       setUploadingMap(prev => ({ ...prev, [img.id]: false }));
     }
   };
 
-  // Gán ảnh vào câu hỏi (Tự upload ImgBB nếu chưa upload)
+  // Gán ảnh vào câu hỏi (Tự upload theo đích đến nếu chưa xử lý)
   const handleAssignToQuestion = async (img: ExtractedPdfImage, questionId: string) => {
     let finalUrl = uploadedUrls[img.id];
 
-    // Nếu chưa có trên ImgBB và có API Key, tự động upload
-    if (!finalUrl && getImgBBKey()) {
-      finalUrl = await handleUploadSingleImage(img) || '';
+    if (!finalUrl) {
+      if (storageTarget === 'base64') {
+        finalUrl = img.dataUrl;
+      } else {
+        finalUrl = await handleUploadSingleImage(img) || img.dataUrl;
+      }
     }
 
-    // Nếu không có API Key, dùng DataURL tạm thời (Base64)
-    const urlToApply = finalUrl || img.dataUrl;
-    onApplyImageToQuestion(questionId, urlToApply);
+    onApplyImageToQuestion(questionId, finalUrl);
     setAssignedMap(prev => ({ ...prev, [img.id]: questionId }));
   };
 
-  // Upload vùng crop lên ImgBB và gán vào câu hỏi đã chọn
+  // Upload vùng crop theo mục tiêu và gán vào câu hỏi đã chọn
   const handleUploadAndAssignCrop = async () => {
     if (!croppedPreviewUrl || !selectedQuestionForCrop) return;
-    const key = getImgBBKey();
-    setIsUploadingCrop(true);
 
-    try {
-      let finalUrl = croppedPreviewUrl;
-      if (key) {
-        // Đổi base64 sang blob
-        const res = await fetch(croppedPreviewUrl);
-        const blob = await res.blob();
-        finalUrl = await uploadBlobToImgBB(blob, key);
+    if (storageTarget === 'imgbb' && !getImgBBKey()) {
+      if (onOpenStorageConfig) {
+        onOpenStorageConfig();
+        return;
       }
+      alert("Vui lòng cấu hình ImgBB API Key trước!");
+      return;
+    }
+
+    setIsUploadingCrop(true);
+    try {
+      const finalUrl = await uploadImageByTarget(croppedPreviewUrl, storageTarget);
       onApplyImageToQuestion(selectedQuestionForCrop, finalUrl);
-      alert(`Đã lưu ảnh và gắn thành công vào câu hỏi được chọn!`);
+
+      const targetLabel = storageTarget === 'supabase' ? 'Supabase Store' : storageTarget === 'imgbb' ? 'ImgBB' : 'Base64';
+      alert(`🎉 Đã lưu ảnh vào [${targetLabel}] và gắn thành công vào câu hỏi được chọn!`);
       setCropRect(null);
       setCroppedPreviewUrl(null);
     } catch (err: any) {
-      alert("Lỗi tải ảnh vùng cắt: " + (err?.message || "Thao tác thất bại"));
+      alert("Lỗi lưu ảnh vùng cắt: " + (err?.message || "Thao tác thất bại"));
     } finally {
       setIsUploadingCrop(false);
     }
@@ -263,19 +305,19 @@ export default function PdfImageManagerModal({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-md z-[4600] flex items-center justify-center p-3 sm:p-6 animate-fade-in">
-      <div className="bg-white w-full max-w-5xl h-[92vh] rounded-[2.5rem] shadow-2xl flex flex-col overflow-hidden border-4 border-white">
+    <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-md z-[4600] flex items-center justify-center p-2 sm:p-6 animate-fade-in">
+      <div className="bg-white w-full max-w-5xl h-[94vh] rounded-[2.5rem] shadow-2xl flex flex-col overflow-hidden border-4 border-white">
         {/* Header Modal */}
-        <div className="px-6 py-4 bg-slate-900 text-white flex items-center justify-between border-b border-slate-800">
+        <div className="px-6 py-4 bg-slate-900 text-white flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-slate-800">
           <div className="flex items-center gap-3">
-            <div className="p-2.5 bg-blue-600/30 text-blue-400 rounded-2xl border border-blue-500/30">
+            <div className="p-2.5 bg-blue-600/30 text-blue-400 rounded-2xl border border-blue-500/30 shrink-0">
               <ImageIcon size={22} />
             </div>
             <div>
-              <h2 className="text-base font-black uppercase tracking-tight flex items-center gap-2">
-                Bộ bóc tách ảnh PDF & Tải lên ImgBB
-                <span className="px-2.5 py-0.5 bg-purple-500/20 text-purple-300 border border-purple-500/30 text-[10px] font-black rounded-lg">
-                  TỰ ĐỘNG
+              <h2 className="text-sm sm:text-base font-black uppercase tracking-tight flex items-center gap-2">
+                BỘ BÓC TÁCH & LƯU TRỮ ẢNH PDF
+                <span className="px-2 py-0.5 bg-blue-500/20 text-blue-300 border border-blue-500/30 text-[10px] font-black rounded-lg">
+                  ĐA NƠI LƯU
                 </span>
               </h2>
               <div className="flex items-center gap-2 mt-0.5">
@@ -284,25 +326,33 @@ export default function PdfImageManagerModal({
                 </p>
                 <label className="text-[10px] text-blue-400 hover:text-blue-300 font-black uppercase underline cursor-pointer shrink-0">
                   <input type="file" accept="application/pdf" className="hidden" onChange={handleManualFileChange} />
-                  {activeFile ? 'Đổi file PDF khác' : 'Chọn file PDF'}
+                  {activeFile ? 'Đổi PDF khác' : 'Chọn PDF'}
                 </label>
               </div>
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
-            {/* Trạng thái ImgBB */}
+          {/* Quick Storage Status Indicator & Close */}
+          <div className="flex items-center gap-2.5 shrink-0">
             <button
               onClick={onOpenStorageConfig}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all border ${
-                imgbbKey 
-                  ? 'bg-purple-950/60 text-purple-300 border-purple-500/40 hover:bg-purple-900/80' 
-                  : 'bg-amber-950/60 text-amber-300 border-amber-500/40 hover:bg-amber-900/80'
+                storageTarget === 'supabase'
+                  ? 'bg-emerald-950/60 text-emerald-300 border-emerald-500/40 hover:bg-emerald-900/80'
+                  : storageTarget === 'imgbb'
+                  ? imgbbKey 
+                    ? 'bg-purple-950/60 text-purple-300 border-purple-500/40 hover:bg-purple-900/80'
+                    : 'bg-amber-950/60 text-amber-300 border-amber-500/40 hover:bg-amber-900/80'
+                  : 'bg-indigo-950/60 text-indigo-300 border-indigo-500/40 hover:bg-indigo-900/80'
               }`}
-              title="Nhấn để cấu hình ImgBB API Key"
+              title="Nhấn để mở Cấu hình lưu trữ chi tiết"
             >
-              <UploadCloud size={14} />
-              {imgbbKey ? 'Đã kết nối ImgBB' : 'Chưa nhập ImgBB Key'}
+              {storageTarget === 'supabase' && <Database size={13} className="text-emerald-400" />}
+              {storageTarget === 'imgbb' && <UploadCloud size={13} className="text-purple-400" />}
+              {storageTarget === 'base64' && <HardDrive size={13} className="text-indigo-400" />}
+              <span className="truncate max-w-[140px]">
+                {storageTarget === 'supabase' ? 'Supabase Store' : storageTarget === 'imgbb' ? (imgbbKey ? 'ImgBB Đã kết nối' : 'Cần nhập Key ImgBB') : 'Nhúng Base64'}
+              </span>
             </button>
 
             <button
@@ -311,6 +361,88 @@ export default function PdfImageManagerModal({
             >
               <X size={20} />
             </button>
+          </div>
+        </div>
+
+        {/* Thanh chọn NƠI LƯU TRỮ ẢNH (3 LỰA CHỌN: Supabase, ImgBB, Base64) */}
+        <div className="px-6 py-2.5 bg-slate-900/95 border-b border-slate-800 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] font-black uppercase tracking-wider text-slate-400 shrink-0">
+              Nơi lưu ảnh:
+            </span>
+            <div className="inline-flex p-1 bg-slate-800/80 rounded-2xl border border-slate-700/60 gap-1">
+              {/* Lựa chọn 1: Supabase Store */}
+              <button
+                type="button"
+                onClick={() => handleSelectStorageTarget('supabase')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-black transition-all ${
+                  storageTarget === 'supabase'
+                    ? 'bg-emerald-600 text-white shadow-md shadow-emerald-900/40'
+                    : 'text-slate-300 hover:text-white hover:bg-slate-700/50'
+                }`}
+                title="Khuyên dùng cho kho đề lâu dài, an toàn tuyệt đối không bao giờ bị xóa"
+              >
+                <Database size={13} />
+                <span>Store Supabase</span>
+                <span className="text-[9px] px-1.5 py-0.2 bg-emerald-400/20 text-emerald-200 rounded font-bold hidden sm:inline">
+                  Lưu kho lâu dài
+                </span>
+              </button>
+
+              {/* Lựa chọn 2: ImgBB */}
+              <button
+                type="button"
+                onClick={() => handleSelectStorageTarget('imgbb')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-black transition-all ${
+                  storageTarget === 'imgbb'
+                    ? 'bg-purple-600 text-white shadow-md shadow-purple-900/40'
+                    : 'text-slate-300 hover:text-white hover:bg-slate-700/50'
+                }`}
+                title="Tải nhanh lên đám mây ngoài, phù hợp cho đề thi cần tổ chức thi liền"
+              >
+                <UploadCloud size={13} />
+                <span>ImgBB</span>
+                <span className="text-[9px] px-1.5 py-0.2 bg-purple-400/20 text-purple-200 rounded font-bold hidden sm:inline">
+                  Thi liền
+                </span>
+              </button>
+
+              {/* Lựa chọn 3: Base64 */}
+              <button
+                type="button"
+                onClick={() => handleSelectStorageTarget('base64')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-black transition-all ${
+                  storageTarget === 'base64'
+                    ? 'bg-blue-600 text-white shadow-md shadow-blue-900/40'
+                    : 'text-slate-300 hover:text-white hover:bg-slate-700/50'
+                }`}
+                title="Ghi trực tiếp vào đề thi, lưu trữ vĩnh viễn không cần host mạng ngoài"
+              >
+                <HardDrive size={13} />
+                <span>Base64</span>
+                <span className="text-[9px] px-1.5 py-0.2 bg-blue-400/20 text-blue-200 rounded font-bold hidden sm:inline">
+                  Nhúng vĩnh viễn
+                </span>
+              </button>
+            </div>
+          </div>
+
+          <div className="text-[11px] text-slate-400 font-medium">
+            {storageTarget === 'supabase' && (
+              <span className="text-emerald-400 font-bold flex items-center gap-1">
+                <ShieldCheck size={12} /> Bucket `quiz-images` trên Supabase (Không lo bị xóa)
+              </span>
+            )}
+            {storageTarget === 'imgbb' && (
+              <span className="text-purple-300 font-bold flex items-center gap-1">
+                🚀 Upload đám mây ImgBB (Tốc độ cao cho đề thi liền)
+              </span>
+            )}
+            {storageTarget === 'base64' && (
+              <span className="text-blue-300 font-bold flex items-center gap-1">
+                💾 Mã hóa trực tiếp trong đề thi (100% offline & an toàn)
+              </span>
+            )}
           </div>
         </div>
 
@@ -381,13 +513,22 @@ export default function PdfImageManagerModal({
                 </div>
               ) : (
                 <div className="space-y-4">
-                  <div className="flex items-center justify-between bg-white p-4 rounded-2xl border border-slate-200/80 shadow-sm">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white p-4 rounded-2xl border border-slate-200/80 shadow-sm">
                     <div className="text-xs font-bold text-slate-700">
-                      Đã trích xuất thành công <span className="text-blue-600 font-black">{extractedImages.length}</span> ảnh từ tài liệu. Chọn câu hỏi để gán ảnh trực tiếp:
+                      Đã trích xuất thành công <span className="text-blue-600 font-black">{extractedImages.length}</span> ảnh. Đang lưu theo chế độ:{' '}
+                      <span className={`px-2 py-0.5 rounded-md font-black text-[11px] ${
+                        storageTarget === 'supabase'
+                          ? 'bg-emerald-100 text-emerald-800'
+                          : storageTarget === 'imgbb'
+                          ? 'bg-purple-100 text-purple-800'
+                          : 'bg-blue-100 text-blue-800'
+                      }`}>
+                        {storageTarget === 'supabase' ? '☁️ Supabase Storage' : storageTarget === 'imgbb' ? '🚀 ImgBB Cloud' : '💾 Base64 Nhúng'}
+                      </span>
                     </div>
                     <button
                       onClick={() => pdfBuffer && startExtraction(pdfBuffer)}
-                      className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-black uppercase transition-all"
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-black uppercase transition-all shrink-0 self-start sm:self-auto"
                     >
                       <RefreshCw size={12} /> Quét lại
                     </button>
@@ -397,6 +538,7 @@ export default function PdfImageManagerModal({
                     {extractedImages.map((img, idx) => {
                       const isUploading = uploadingMap[img.id];
                       const uploadedUrl = uploadedUrls[img.id];
+                      const uploadedTarget = uploadedTargetMap[img.id];
                       const assignedQId = assignedMap[img.id];
                       const assignedQ = questions.find(q => q.id === assignedQId);
 
@@ -417,8 +559,15 @@ export default function PdfImageManagerModal({
                             </div>
 
                             {uploadedUrl && (
-                              <div className="absolute top-2 right-2 px-2 py-0.5 bg-purple-600 text-white text-[10px] font-black rounded-lg flex items-center gap-1 shadow-sm">
-                                <Check size={10} strokeWidth={3} /> ImgBB
+                              <div className={`absolute top-2 right-2 px-2 py-0.5 text-white text-[10px] font-black rounded-lg flex items-center gap-1 shadow-sm ${
+                                uploadedTarget === 'supabase' 
+                                  ? 'bg-emerald-600' 
+                                  : uploadedTarget === 'imgbb' 
+                                  ? 'bg-purple-600' 
+                                  : 'bg-blue-600'
+                              }`}>
+                                <Check size={10} strokeWidth={3} />
+                                {uploadedTarget === 'supabase' ? 'Supabase' : uploadedTarget === 'imgbb' ? 'ImgBB' : 'Base64'}
                               </div>
                             )}
                           </div>
@@ -435,16 +584,26 @@ export default function PdfImageManagerModal({
                             ) : null}
 
                             <div className="flex gap-2">
-                              {/* Nút upload ImgBB thủ công nếu muốn */}
-                              {!uploadedUrl && (
+                              {/* Nút upload theo chế độ đã chọn */}
+                              {!uploadedUrl && storageTarget !== 'base64' && (
                                 <button
                                   onClick={() => handleUploadSingleImage(img)}
                                   disabled={isUploading}
-                                  className="px-3 py-2 bg-purple-50 hover:bg-purple-100 text-purple-700 rounded-xl text-[11px] font-black uppercase transition-all flex items-center gap-1 shrink-0 disabled:opacity-50"
-                                  title="Tải lên ImgBB để lấy link trực tuyến"
+                                  className={`px-3 py-2 rounded-xl text-[11px] font-black uppercase transition-all flex items-center gap-1 shrink-0 disabled:opacity-50 ${
+                                    storageTarget === 'supabase'
+                                      ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-700'
+                                      : 'bg-purple-50 hover:bg-purple-100 text-purple-700'
+                                  }`}
+                                  title={`Tải ảnh lên ${storageTarget === 'supabase' ? 'Supabase Storage' : 'ImgBB'}`}
                                 >
-                                  {isUploading ? <Loader2 className="animate-spin" size={13} /> : <UploadCloud size={13} />}
-                                  {isUploading ? 'Đang tải...' : 'Lên ImgBB'}
+                                  {isUploading ? (
+                                    <Loader2 className="animate-spin" size={13} />
+                                  ) : storageTarget === 'supabase' ? (
+                                    <Database size={13} />
+                                  ) : (
+                                    <UploadCloud size={13} />
+                                  )}
+                                  {isUploading ? 'Đang tải...' : storageTarget === 'supabase' ? 'Lên Supabase' : 'Lên ImgBB'}
                                 </button>
                               )}
 
@@ -553,24 +712,24 @@ export default function PdfImageManagerModal({
                 </div>
               </div>
 
-              {/* Cột phải: Xem trước ảnh đã cắt & gán vào câu hỏi */}
+              {/* Cột phải: Xem trước ảnh đã cắt, chọn nơi lưu & gán vào câu hỏi */}
               <div className="w-full md:w-80 bg-white p-5 flex flex-col justify-between overflow-y-auto space-y-4">
                 <div className="space-y-4">
                   <div>
                     <h4 className="text-xs font-black uppercase text-slate-800 tracking-wider">Hướng dẫn cắt ảnh:</h4>
                     <p className="text-xs text-slate-500 mt-1 leading-relaxed">
-                      Dùng chuột <b>kéo một ô vuông</b> bao quanh hình vẽ đồ thị trên trang PDF bên trái. Vùng ảnh sẽ tự động hiện ở khung bên dưới.
+                      Dùng chuột <b>kéo một ô vuông</b> bao quanh hình vẽ đồ thị trên trang PDF bên trái.
                     </p>
                   </div>
 
                   {/* Vùng xem trước ảnh vừa cắt */}
-                  <div className="border-2 border-dashed border-slate-200 rounded-2xl p-3 bg-slate-50 min-h-[160px] flex flex-col items-center justify-center">
+                  <div className="border-2 border-dashed border-slate-200 rounded-2xl p-3 bg-slate-50 min-h-[140px] flex flex-col items-center justify-center">
                     {croppedPreviewUrl ? (
                       <div className="space-y-2 w-full flex flex-col items-center">
                         <img 
                           src={croppedPreviewUrl} 
                           alt="Crop preview" 
-                          className="max-h-44 object-contain rounded-lg border border-slate-200 shadow-sm bg-white" 
+                          className="max-h-36 object-contain rounded-lg border border-slate-200 shadow-sm bg-white" 
                         />
                         <button
                           onClick={() => {
@@ -588,6 +747,56 @@ export default function PdfImageManagerModal({
                         <span className="text-[11px] font-medium block">Chưa khoanh vùng ảnh nào</span>
                       </div>
                     )}
+                  </div>
+
+                  {/* Lựa chọn nơi lưu ảnh cho vùng cắt này */}
+                  <div className="space-y-1.5">
+                    <label className="text-[11px] font-black uppercase text-slate-700 block">
+                      Nơi lưu trữ ảnh cắt:
+                    </label>
+                    <div className="grid grid-cols-3 gap-1.5 p-1 bg-slate-100 rounded-xl">
+                      <button
+                        type="button"
+                        onClick={() => handleSelectStorageTarget('supabase')}
+                        className={`py-1.5 px-1 rounded-lg text-[10px] font-black flex flex-col items-center gap-0.5 transition-all ${
+                          storageTarget === 'supabase'
+                            ? 'bg-emerald-600 text-white shadow-sm'
+                            : 'text-slate-600 hover:bg-white'
+                        }`}
+                        title="Lưu trữ lâu dài trên Supabase bucket quiz-images"
+                      >
+                        <Database size={13} />
+                        <span>Supabase</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleSelectStorageTarget('imgbb')}
+                        className={`py-1.5 px-1 rounded-lg text-[10px] font-black flex flex-col items-center gap-0.5 transition-all ${
+                          storageTarget === 'imgbb'
+                            ? 'bg-purple-600 text-white shadow-sm'
+                            : 'text-slate-600 hover:bg-white'
+                        }`}
+                        title="Upload ImgBB cho các đề thi liền"
+                      >
+                        <UploadCloud size={13} />
+                        <span>ImgBB</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleSelectStorageTarget('base64')}
+                        className={`py-1.5 px-1 rounded-lg text-[10px] font-black flex flex-col items-center gap-0.5 transition-all ${
+                          storageTarget === 'base64'
+                            ? 'bg-blue-600 text-white shadow-sm'
+                            : 'text-slate-600 hover:bg-white'
+                        }`}
+                        title="Nhúng trực tiếp Base64 vào đề thi"
+                      >
+                        <HardDrive size={13} />
+                        <span>Base64</span>
+                      </button>
+                    </div>
                   </div>
 
                   {/* Chọn câu hỏi cần gán */}
@@ -609,20 +818,36 @@ export default function PdfImageManagerModal({
                   </div>
                 </div>
 
-                {/* Nút hành động Lưu & Đẩy lên ImgBB */}
+                {/* Nút hành động Lưu & Gán vào câu hỏi */}
                 <div className="pt-3 border-t border-slate-100 space-y-2">
                   <button
                     disabled={!croppedPreviewUrl || !selectedQuestionForCrop || isUploadingCrop}
                     onClick={handleUploadAndAssignCrop}
-                    className="w-full py-3 bg-blue-600 hover:bg-black text-white font-black text-xs uppercase rounded-xl transition-all shadow-lg shadow-blue-200 flex items-center justify-center gap-2 disabled:opacity-40"
+                    className={`w-full py-3 text-white font-black text-xs uppercase rounded-xl transition-all shadow-lg flex items-center justify-center gap-2 disabled:opacity-40 ${
+                      storageTarget === 'supabase'
+                        ? 'bg-emerald-600 hover:bg-emerald-700 shadow-emerald-200'
+                        : storageTarget === 'imgbb'
+                        ? 'bg-purple-600 hover:bg-purple-700 shadow-purple-200'
+                        : 'bg-blue-600 hover:bg-black shadow-blue-200'
+                    }`}
                   >
                     {isUploadingCrop ? (
                       <>
-                        <Loader2 className="animate-spin" size={14} /> Đang đẩy lên ImgBB...
+                        <Loader2 className="animate-spin" size={14} /> 
+                        {storageTarget === 'supabase' ? 'Đang lưu vào Supabase...' : storageTarget === 'imgbb' ? 'Đang đẩy lên ImgBB...' : 'Đang xử lý Base64...'}
                       </>
                     ) : (
                       <>
-                        <UploadCloud size={14} /> Lưu ảnh & Gán vào đề thi
+                        {storageTarget === 'supabase' && <Database size={14} />}
+                        {storageTarget === 'imgbb' && <UploadCloud size={14} />}
+                        {storageTarget === 'base64' && <HardDrive size={14} />}
+                        <span>
+                          {storageTarget === 'supabase' 
+                            ? 'Lưu Supabase & Gán vào đề' 
+                            : storageTarget === 'imgbb' 
+                            ? 'Lên ImgBB & Gán vào đề' 
+                            : 'Nhúng Base64 & Gán vào đề'}
+                        </span>
                       </>
                     )}
                   </button>
