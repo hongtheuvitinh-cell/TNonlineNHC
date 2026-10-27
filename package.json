@@ -18,6 +18,7 @@
     "date-fns": "^4.1.0",
     "docx": "^9.7.1",
     "firebase": "^12.18.0",
+    "jszip": "^3.10.2",
     "lucide-react": "^0.556.0",
     "papaparse": "^5.5.3",
     "pdfjs-dist": "^3.11.174",
@@ -26,6 +27,7 @@
     "uuid": "^9.0.1"
   },
   "devDependencies": {
+    "@types/jszip": "^3.4.0",
     "@types/node": "^20.11.24",
     "@types/react": "^18.2.61",
     "@types/react-dom": "^18.2.19",

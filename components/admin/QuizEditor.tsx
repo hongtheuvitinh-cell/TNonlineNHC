@@ -6,7 +6,7 @@ import {
   Target as TargetIcon, Plus, ImageIcon, Loader2, Lightbulb, Eye, ImageMinus, 
   ShieldAlert, ShieldCheck, Sparkles, Zap, Type as TypeIcon, X, Link as LinkIcon, 
   EyeOff, FileCode, GraduationCap, CheckSquare, Square, Users, Copy, Images, Check, Layers, ArrowRight,
-  Key, BookOpen, ClipboardPaste, PauseCircle, Cloud, CloudUpload, UploadCloud, HardDrive, Settings2, Folder, Crop
+  Key, BookOpen, ClipboardPaste, PauseCircle, Cloud, CloudUpload, UploadCloud, HardDrive, Settings2, Folder, Crop, Download
 } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 import LatexText from '../LatexText';
@@ -33,6 +33,7 @@ import {
 } from '../../services/storage';
 import { STANDARD_SUBJECTS, isSameSubject } from '../../services/subjectUtils';
 import { getAcademicYearOptions, getCurrentAcademicYear } from '../../services/academicUtils';
+import { downloadSingleImage, downloadImagesAsZip } from '../../utils/imageDownloader';
 
 function matchChapterName(folderChapter?: string, filterChapter?: string): boolean {
     if (!filterChapter || filterChapter === 'all') return true;
@@ -343,6 +344,27 @@ const QuestionSection: React.FC<QuestionSectionProps> = ({
         return Array.from(set);
     }, [questions]);
 
+    const [isDownloadingGalleryZip, setIsDownloadingGalleryZip] = useState(false);
+
+    const handleDownloadAllGalleryImages = async () => {
+        if (uniqueQuizImages.length === 0) {
+            alert("Chưa có hình ảnh nào trong đề thi này!");
+            return;
+        }
+        setIsDownloadingGalleryZip(true);
+        try {
+            const items = uniqueQuizImages.map((src, i) => ({
+                urlOrDataUrl: src,
+                filename: `Hinh_De_Thi_${String(i + 1).padStart(2, '0')}.png`
+            }));
+            await downloadImagesAsZip(items, `Kho_Anh_De_Thi.zip`);
+        } catch (e: any) {
+            alert("Lỗi khi tải ảnh: " + (e?.message || e));
+        } finally {
+            setIsDownloadingGalleryZip(false);
+        }
+    };
+
     const handleSetAllPoints = () => {
         const val = quickPoints.replace(',', '.');
         const newList = questions.map(q => q.type === type ? { ...q, points: val } : q);
@@ -478,9 +500,23 @@ const QuestionSection: React.FC<QuestionSectionProps> = ({
                                     </p>
                                 </div>
                             </div>
-                            <button onClick={() => setGalleryTargetQId(null)} className="p-2.5 hover:bg-red-600 rounded-xl transition-colors">
-                                <X size={20}/>
-                            </button>
+                            <div className="flex items-center gap-2">
+                                {uniqueQuizImages.length > 0 && (
+                                    <button
+                                        type="button"
+                                        onClick={handleDownloadAllGalleryImages}
+                                        disabled={isDownloadingGalleryZip}
+                                        className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-black uppercase transition-all shadow-sm active:scale-95 disabled:opacity-50"
+                                        title="Nén toàn bộ kho ảnh trong đề thành 1 file ZIP và tải về máy"
+                                    >
+                                        {isDownloadingGalleryZip ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
+                                        <span>{isDownloadingGalleryZip ? 'Đang nén...' : `Tải tất cả (${uniqueQuizImages.length} ảnh ZIP)`}</span>
+                                    </button>
+                                )}
+                                <button onClick={() => setGalleryTargetQId(null)} className="p-2.5 hover:bg-red-600 rounded-xl transition-colors">
+                                    <X size={20}/>
+                                </button>
+                            </div>
                         </div>
 
                         <div className="p-6 overflow-y-auto flex-1 custom-scrollbar space-y-6">
@@ -524,6 +560,14 @@ const QuestionSection: React.FC<QuestionSectionProps> = ({
                                                         >
                                                             {isCurrentQUsing ? <Check size={14}/> : <ArrowRight size={14}/>}
                                                             {isCurrentQUsing ? 'ĐANG DÙNG' : 'CHỌN ẢNH NÀY'}
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => downloadSingleImage(imgSrc, `Hinh_De_Thi_${imgIdx + 1}.png`)}
+                                                            title="Tải riêng ảnh này về máy tính"
+                                                            className="p-2.5 bg-slate-100 text-slate-700 hover:bg-slate-200 rounded-xl transition-all"
+                                                        >
+                                                            <Download size={14}/>
                                                         </button>
                                                         <button
                                                             onClick={() => {
@@ -1041,8 +1085,28 @@ const QuestionSection: React.FC<QuestionSectionProps> = ({
                                                     {convertingId === q.id ? <Loader2 size={10} className="animate-spin"/> : <CloudUpload size={10}/>}
                                                     {imageStorageMode === 'supabase' ? 'Lưu lên Supabase' : imageStorageMode === 'imgbb' ? 'Lên ImgBB' : 'Lưu lên Cloud'}
                                                 </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => downloadSingleImage(q.imageUrl!, `Cau_${globalIndex + 1}_Hinh.png`)}
+                                                    className="inline-flex items-center gap-1 text-[9px] font-black px-2 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 shadow-2xs transition-all active:scale-95"
+                                                    title="Tải file ảnh của câu hỏi này về máy tính"
+                                                >
+                                                    <Download size={11} className="text-slate-600" />
+                                                    <span>Tải về</span>
+                                                </button>
                                             </div>
                                         )
+                                    )}
+                                    {q.imageUrl && q.imageUrl.startsWith('http') && (
+                                        <button
+                                            type="button"
+                                            onClick={() => downloadSingleImage(q.imageUrl!, `Cau_${globalIndex + 1}_Hinh.png`)}
+                                            className="inline-flex items-center gap-1 text-[9px] font-black px-2 py-0.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 shadow-2xs transition-all active:scale-95"
+                                            title="Tải file ảnh của câu hỏi này về máy tính"
+                                        >
+                                            <Download size={10} className="text-slate-600" />
+                                            <span>Tải về máy</span>
+                                        </button>
                                     )}
                                 </div>
 

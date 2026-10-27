@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { 
   X, Image as ImageIcon, UploadCloud, Check, ArrowRight, 
   Crop, Sparkles, Loader2, RefreshCw, AlertCircle, Eye, 
-  ExternalLink, ZoomIn, ZoomOut, CheckCircle2, Copy, HardDrive, Database, ShieldCheck
+  ExternalLink, ZoomIn, ZoomOut, CheckCircle2, Copy, HardDrive, Database, ShieldCheck, Download
 } from 'lucide-react';
 import { Question } from '../../types';
 import { 
@@ -19,6 +19,7 @@ import {
   extractAllImagesFromPdf, 
   renderPdfPageToCanvas 
 } from '../../services/pdfImageExtractor';
+import { downloadSingleImage, downloadImagesAsZip } from '../../utils/imageDownloader';
 
 interface PdfImageManagerModalProps {
   isOpen: boolean;
@@ -53,6 +54,10 @@ export default function PdfImageManagerModal({
   const [uploadedUrls, setUploadedUrls] = useState<Record<string, string>>({});
   const [uploadedTargetMap, setUploadedTargetMap] = useState<Record<string, ImageStorageTarget>>({});
   const [assignedMap, setAssignedMap] = useState<Record<string, string>>({}); // imageId -> questionId
+
+  // Download All State
+  const [isDownloadingAll, setIsDownloadingAll] = useState(false);
+  const [downloadProgressText, setDownloadProgressText] = useState('');
 
   // Crop mode state
   const [numPages, setNumPages] = useState<number>(1);
@@ -145,6 +150,36 @@ export default function PdfImageManagerModal({
       console.error("Lỗi trích xuất ảnh PDF:", err);
     } finally {
       setIsExtracting(false);
+    }
+  };
+
+  // Tải toàn bộ ảnh bóc tách về máy tính dưới dạng file ZIP
+  const handleDownloadAllExtracted = async () => {
+    if (extractedImages.length === 0) {
+      alert("Chưa có hình ảnh nào được bóc tách từ file PDF!");
+      return;
+    }
+
+    setIsDownloadingAll(true);
+    setDownloadProgressText("Đang nén dữ liệu...");
+    try {
+      const baseName = (activeFile?.name || 'De_Thi_PDF')
+        .replace(/\.[^/.]+$/, '')
+        .replace(/[^a-zA-Z0-9_\u00C0-\u024F\u1EA0-\u1EF9-]/g, '_');
+
+      const items = extractedImages.map((img, idx) => ({
+        urlOrDataUrl: uploadedUrls[img.id] || img.dataUrl,
+        filename: `Hinh_${String(idx + 1).padStart(2, '0')}_Trang_${img.pageIndex}.png`
+      }));
+
+      await downloadImagesAsZip(items, `Bo_Anh_PDF_${baseName}.zip`, (cur, tot) => {
+        setDownloadProgressText(`Đang nén ${cur}/${tot}...`);
+      });
+    } catch (err: any) {
+      alert("Lỗi khi tải trọn bộ ảnh: " + (err?.message || err));
+    } finally {
+      setIsDownloadingAll(false);
+      setDownloadProgressText("");
     }
   };
 
@@ -332,8 +367,22 @@ export default function PdfImageManagerModal({
             </div>
           </div>
 
-          {/* Quick Storage Status Indicator & Close */}
-          <div className="flex items-center gap-2.5 shrink-0">
+          {/* Quick Storage Status Indicator & Action Buttons */}
+          <div className="flex items-center gap-2.5 shrink-0 flex-wrap">
+            {/* NÚT TẢI TOÀN BỘ ẢNH BÓC TÁCH VỀ MÁY (ZIP) */}
+            {extractedImages.length > 0 && (
+              <button
+                type="button"
+                onClick={handleDownloadAllExtracted}
+                disabled={isDownloadingAll}
+                className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-black transition-all bg-emerald-600 hover:bg-emerald-500 text-white shadow-md active:scale-95 disabled:opacity-50"
+                title="Tải toàn bộ hình ảnh bóc tách về máy tính thành 1 file ZIP"
+              >
+                {isDownloadingAll ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
+                <span>{isDownloadingAll ? (downloadProgressText || 'Đang tải...') : `Tải ${extractedImages.length} ảnh về máy (ZIP)`}</span>
+              </button>
+            )}
+
             <button
               onClick={onOpenStorageConfig}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all border ${
@@ -526,12 +575,26 @@ export default function PdfImageManagerModal({
                         {storageTarget === 'supabase' ? '☁️ Supabase Storage' : storageTarget === 'imgbb' ? '🚀 ImgBB Cloud' : '💾 Base64 Nhúng'}
                       </span>
                     </div>
-                    <button
-                      onClick={() => pdfBuffer && startExtraction(pdfBuffer)}
-                      className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-black uppercase transition-all shrink-0 self-start sm:self-auto"
-                    >
-                      <RefreshCw size={12} /> Quét lại
-                    </button>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      {/* Nút tải trọn bộ ảnh ZIP */}
+                      <button
+                        onClick={handleDownloadAllExtracted}
+                        disabled={isDownloadingAll}
+                        className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-300 rounded-xl text-xs font-black uppercase transition-all active:scale-95 disabled:opacity-50"
+                        title="Tải tất cả các hình ảnh này về máy tính (file ZIP)"
+                      >
+                        {isDownloadingAll ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
+                        {isDownloadingAll ? (downloadProgressText || 'Đang tải...') : 'Tải hết về máy (ZIP)'}
+                      </button>
+
+                      <button
+                        onClick={() => pdfBuffer && startExtraction(pdfBuffer)}
+                        className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-black uppercase transition-all"
+                      >
+                        <RefreshCw size={12} /> Quét lại
+                      </button>
+                    </div>
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -557,6 +620,16 @@ export default function PdfImageManagerModal({
                             <div className="absolute top-2 left-2 px-2 py-0.5 bg-slate-900/80 backdrop-blur-sm text-white text-[10px] font-black rounded-lg">
                               Trang {img.pageIndex} • {img.width}x{img.height}
                             </div>
+
+                            {/* Nút tải riêng ảnh này về máy */}
+                            <button
+                              type="button"
+                              onClick={() => downloadSingleImage(uploadedUrl || img.dataUrl, `Hinh_${String(idx + 1).padStart(2, '0')}_Trang_${img.pageIndex}.png`)}
+                              className="absolute bottom-2 right-2 p-2 bg-slate-900/80 hover:bg-black text-white rounded-xl text-xs shadow-md backdrop-blur-xs transition-all active:scale-90"
+                              title="Tải riêng hình ảnh này về máy tính"
+                            >
+                              <Download size={13} />
+                            </button>
 
                             {uploadedUrl && (
                               <div className={`absolute top-2 right-2 px-2 py-0.5 text-white text-[10px] font-black rounded-lg flex items-center gap-1 shadow-sm ${
@@ -725,21 +798,35 @@ export default function PdfImageManagerModal({
                   {/* Vùng xem trước ảnh vừa cắt */}
                   <div className="border-2 border-dashed border-slate-200 rounded-2xl p-3 bg-slate-50 min-h-[140px] flex flex-col items-center justify-center">
                     {croppedPreviewUrl ? (
-                      <div className="space-y-2 w-full flex flex-col items-center">
+                      <div className="space-y-2.5 w-full flex flex-col items-center">
                         <img 
                           src={croppedPreviewUrl} 
                           alt="Crop preview" 
                           className="max-h-36 object-contain rounded-lg border border-slate-200 shadow-sm bg-white" 
                         />
-                        <button
-                          onClick={() => {
-                            setCropRect(null);
-                            setCroppedPreviewUrl(null);
-                          }}
-                          className="text-[10px] text-red-500 hover:underline font-bold"
-                        >
-                          Xóa & cắt lại
-                        </button>
+                        
+                        <div className="flex items-center gap-2 w-full">
+                          {/* Nút tải ảnh vừa cắt về máy tính */}
+                          <button
+                            type="button"
+                            onClick={() => downloadSingleImage(croppedPreviewUrl, `Hinh_Cat_Trang_${currentPage}_${Date.now()}.png`)}
+                            className="flex-1 py-1.5 px-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 rounded-xl text-[11px] font-black uppercase flex items-center justify-center gap-1 border border-emerald-200 transition-all active:scale-95 shadow-xs"
+                            title="Lưu file ảnh này về máy tính của bạn"
+                          >
+                            <Download size={13} />
+                            <span>Tải về máy</span>
+                          </button>
+
+                          <button
+                            onClick={() => {
+                              setCropRect(null);
+                              setCroppedPreviewUrl(null);
+                            }}
+                            className="text-[10px] text-red-500 hover:underline font-bold px-2 py-1"
+                          >
+                            Cắt lại
+                          </button>
+                        </div>
                       </div>
                     ) : (
                       <div className="text-center text-slate-400 space-y-1">
