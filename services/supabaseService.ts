@@ -1080,6 +1080,53 @@ export const supabaseDb = {
     return data.map(mapResultFromDb);
   },
 
+  // Lấy kết quả cơ bản của học sinh theo danh sách ID & MAHS (Lazy loading tiết kiệm băng thông)
+  async getResultsForStudents(studentIds: string[], studentCodes?: string[]): Promise<Result[]> {
+    const client = getSupabase();
+    if (!client) return [];
+    const validIds = (studentIds || []).filter(id => id && id.trim());
+    const validCodes = (studentCodes || []).map(c => c?.trim().toUpperCase()).filter(c => c && c !== 'N/A');
+
+    if (validIds.length === 0 && validCodes.length === 0) return [];
+
+    const selectFields = 'id, quiz_id, student_id, student_name, student_code, score, total_questions, submitted_at, duration_seconds, bonus_point, points_awarded';
+    const resultMap = new Map<string, Result>();
+
+    // Chunking 100 ID mỗi đợt để không vượt quá giới hạn URL query
+    for (let i = 0; i < validIds.length; i += 100) {
+      const chunk = validIds.slice(i, i + 100);
+      const { data, error } = await client.from('results')
+        .select(selectFields)
+        .in('student_id', chunk)
+        .limit(3000);
+      if (!error && data) {
+        data.forEach(row => {
+          const r = mapResultFromDb(row);
+          resultMap.set(r.id, r);
+        });
+      }
+    }
+
+    // Lấy thêm theo student_code nếu có học sinh dùng MAHS
+    if (validCodes.length > 0) {
+      for (let i = 0; i < validCodes.length; i += 100) {
+        const chunk = validCodes.slice(i, i + 100);
+        const { data, error } = await client.from('results')
+          .select(selectFields)
+          .in('student_code', chunk)
+          .limit(3000);
+        if (!error && data) {
+          data.forEach(row => {
+            const r = mapResultFromDb(row);
+            resultMap.set(r.id, r);
+          });
+        }
+      }
+    }
+
+    return Array.from(resultMap.values());
+  },
+
   async getResultById(id: string): Promise<Result | null> {
     const client = getSupabase();
     if (!client) return null;

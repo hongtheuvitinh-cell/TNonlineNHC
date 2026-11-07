@@ -16,7 +16,7 @@ interface AIRendererProps {
     subject?: string;
     setSubject?: (val: string) => void;
     chapters: Chapter[];
-    bankQuestions: Question[];
+    bankQuestions?: Question[];
     onOpenEditor?: () => void;
     onOpenBank?: () => void;
     onMatrixGenerateComplete?: (result: {
@@ -42,44 +42,6 @@ interface AIRendererProps {
     isSuperAdmin?: boolean;
     onAddChapter?: (name: string, grade: Grade, subject?: string) => Promise<void>;
 }
-
-// Chuẩn hóa tên chương/chủ đề để so khớp thông minh:
-// Loại bỏ các tiền tố như "Chương 1:", "Chương I -", "Bài 2.", "Chủ đề 3:"...
-const cleanChapterTopic = (name?: string | null): string => {
-    if (!name) return '';
-    let s = name.trim().toLowerCase();
-    s = s.replace(/^(chương|bài|chủ đề|phần)\s*([0-9]+|[ivxlcdm]+)\s*[:\.\-–]\s*/i, '').trim();
-    return s;
-};
-
-/**
- * Kiểm tra xem một câu hỏi có thuộc về một chương hay không
- */
-const isQuestionInChapter = (
-    q: Question,
-    ch: { id: string; name: string }
-): boolean => {
-    if (q.chapterId && q.chapterId === ch.id) return true;
-    
-    const qRaw = (q.chapterName || q.quizCategory || '').trim().toLowerCase();
-    const chRaw = ch.name.trim().toLowerCase();
-    if (!qRaw || !chRaw) return false;
-
-    // 1. So sánh trực tiếp nguyên bản hoặc quan hệ chuỗi con
-    if (qRaw === chRaw || qRaw.includes(chRaw) || chRaw.includes(qRaw)) return true;
-
-    // 2. So sánh thông minh sau khi loại bỏ tiền tố số thứ tự chương (VD: "chương 3: động lực học" <=> "chương 2: động lực học")
-    const qClean = cleanChapterTopic(qRaw);
-    const chClean = cleanChapterTopic(chRaw);
-    if (qClean && chClean) {
-        if (qClean === chClean) return true;
-        if (qClean.length >= 4 && chClean.length >= 4) {
-            if (qClean.includes(chClean) || chClean.includes(qClean)) return true;
-        }
-    }
-
-    return false;
-};
 
 type MatrixModeTab = 'bank' | 'prompt' | 'pdf';
 type QuestionTypeFilter = 'all' | 'mcq' | 'group-tf' | 'short';
@@ -211,41 +173,6 @@ export default function AIRenderer({
         }).sort((a, b) => (a.order || 0) - (b.order || 0));
     }, [chapters, grade, currentSubject]);
 
-    // Thống kê số lượng câu hỏi hiện có trong Ngân hàng cho từng ô:
-    // bankCounts[chapterId / chapterName][type][level] = count
-    const bankCounts = useMemo(() => {
-        const counts: Record<string, Record<QuestionType, Record<QuestionLevel, number>>> = {};
-
-        // Khởi tạo khung cho tất cả các chương
-        activeChapters.forEach(ch => {
-            counts[ch.id] = {
-                mcq: { B: 0, H: 0, VD: 0, VDC: 0 },
-                'group-tf': { B: 0, H: 0, VD: 0, VDC: 0 },
-                short: { B: 0, H: 0, VD: 0, VDC: 0 }
-            };
-        });
-
-        // Duyệt qua ngân hàng câu hỏi
-        bankQuestions.forEach(q => {
-            // Lọc theo khối nếu có
-            if (q.quizGrade && q.quizGrade !== 'all' && q.quizGrade !== grade) return;
-            // Lọc theo môn nếu có (hỗ trợ chuẩn hóa môn học: Vật lí / Vật lý)
-            if (q.subject && currentSubject && !isSameSubject(q.subject, currentSubject)) return;
-
-            const qType: QuestionType = (q.type as QuestionType) || 'mcq';
-            const qLevel: QuestionLevel = (q.level as QuestionLevel) || 'B';
-
-            // Tìm chương tương ứng (so khớp linh hoạt theo ID và tên chủ đề)
-            const matchedChapter = activeChapters.find(c => isQuestionInChapter(q, c));
-
-            if (matchedChapter && counts[matchedChapter.id]?.[qType]?.[qLevel] !== undefined) {
-                counts[matchedChapter.id][qType][qLevel]++;
-            }
-        });
-
-        return counts;
-    }, [bankQuestions, activeChapters, grade, currentSubject]);
-
     // Dữ liệu ma trận số lượng câu hỏi do giáo viên cấu hình
     const [matrixData, setMatrixData] = useState<Record<string, ChapterMatrixData>>({});
 
@@ -289,6 +216,101 @@ export default function AIRenderer({
         });
     };
 
+    // Áp dụng mẫu ma trận nhanh chuẩn GDPT 2018 (Phân bổ tự động đều theo các chương bài học)
+    const handleApplyPreset = (presetType: 'gdpt28' | 'test45' | 'test15') => {
+        if (activeChapters.length === 0) return;
+        const next: Record<string, ChapterMatrixData> = {};
+        activeChapters.forEach(c => {
+            next[c.id] = {
+                mcq: { B: 0, H: 0, VD: 0, VDC: 0 },
+                'group-tf': { B: 0, H: 0, VD: 0, VDC: 0 },
+                short: { B: 0, H: 0, VD: 0, VDC: 0 }
+            };
+        });
+
+        const chCount = activeChapters.length;
+
+        if (presetType === 'gdpt28') {
+            // Đề chuẩn 50 phút GDPT 2018 (28 câu):
+            // Phần I: 18 câu Trắc nghiệm (8 Biết, 6 Hiểu, 4 Vận dụng)
+            const mcqs: { lvl: QuestionLevel; count: number }[] = [
+                { lvl: 'B', count: 8 },
+                { lvl: 'H', count: 6 },
+                { lvl: 'VD', count: 4 }
+            ];
+            mcqs.forEach(({ lvl, count }) => {
+                for (let i = 0; i < count; i++) {
+                    const ch = activeChapters[i % chCount];
+                    next[ch.id].mcq[lvl]++;
+                }
+            });
+
+            // Phần II: 4 câu Đúng/Sai (1 Biết, 2 Hiểu, 1 Vận dụng)
+            const tfs: { lvl: QuestionLevel; count: number }[] = [
+                { lvl: 'B', count: 1 },
+                { lvl: 'H', count: 2 },
+                { lvl: 'VD', count: 1 }
+            ];
+            tfs.forEach(({ lvl, count }) => {
+                for (let i = 0; i < count; i++) {
+                    const ch = activeChapters[i % chCount];
+                    next[ch.id]['group-tf'][lvl]++;
+                }
+            });
+
+            // Phần III: 6 câu Trả lời ngắn (2 Hiểu, 2 Vận dụng, 2 VDC)
+            const shorts: { lvl: QuestionLevel; count: number }[] = [
+                { lvl: 'H', count: 2 },
+                { lvl: 'VD', count: 2 },
+                { lvl: 'VDC', count: 2 }
+            ];
+            shorts.forEach(({ lvl, count }) => {
+                for (let i = 0; i < count; i++) {
+                    const ch = activeChapters[i % chCount];
+                    next[ch.id].short[lvl]++;
+                }
+            });
+        } else if (presetType === 'test45') {
+            // Kiểm tra 45 phút (20 câu): 12 MCQ (6B, 4H, 2VD) + 4 Đúng/Sai (1B, 2H, 1VD) + 4 Trả lời ngắn (1H, 2VD, 1VDC)
+            const mcqs: { lvl: QuestionLevel; count: number }[] = [
+                { lvl: 'B', count: 6 },
+                { lvl: 'H', count: 4 },
+                { lvl: 'VD', count: 2 }
+            ];
+            mcqs.forEach(({ lvl, count }) => {
+                for (let i = 0; i < count; i++) next[activeChapters[i % chCount].id].mcq[lvl]++;
+            });
+            const tfs: { lvl: QuestionLevel; count: number }[] = [
+                { lvl: 'B', count: 1 },
+                { lvl: 'H', count: 2 },
+                { lvl: 'VD', count: 1 }
+            ];
+            tfs.forEach(({ lvl, count }) => {
+                for (let i = 0; i < count; i++) next[activeChapters[i % chCount].id]['group-tf'][lvl]++;
+            });
+            const shorts: { lvl: QuestionLevel; count: number }[] = [
+                { lvl: 'H', count: 1 },
+                { lvl: 'VD', count: 2 },
+                { lvl: 'VDC', count: 1 }
+            ];
+            shorts.forEach(({ lvl, count }) => {
+                for (let i = 0; i < count; i++) next[activeChapters[i % chCount].id].short[lvl]++;
+            });
+        } else if (presetType === 'test15') {
+            // Kiểm tra 15 phút (10 câu trắc nghiệm): 4B, 4H, 2VD
+            const mcqs: { lvl: QuestionLevel; count: number }[] = [
+                { lvl: 'B', count: 4 },
+                { lvl: 'H', count: 4 },
+                { lvl: 'VD', count: 2 }
+            ];
+            mcqs.forEach(({ lvl, count }) => {
+                for (let i = 0; i < count; i++) next[activeChapters[i % chCount].id].mcq[lvl]++;
+            });
+        }
+
+        setMatrixData(next);
+    };
+
     // Xóa trắng ma trận
     const handleClearMatrix = () => {
         const next: Record<string, ChapterMatrixData> = {};
@@ -302,7 +324,7 @@ export default function AIRenderer({
         setMatrixData(next);
     };
 
-    // Tính toán tổng số lượng câu hỏi trong ma trận và thống kê
+    // Tính toán tổng số lượng câu hỏi trong ma trận và thống kê (hoàn toàn dùng AI soạn)
     const matrixStats = useMemo(() => {
         let totalCount = 0;
         let p1Count = 0;
@@ -313,9 +335,6 @@ export default function AIRenderer({
         let hCount = 0;
         let vdCount = 0;
         let vdcCount = 0;
-
-        let availableFromBankCount = 0;
-        let neededFromAiCount = 0;
 
         activeChapters.forEach(ch => {
             const data = matrixData[ch.id];
@@ -338,14 +357,6 @@ export default function AIRenderer({
                     else if (l === 'H') hCount += req;
                     else if (l === 'VD') vdCount += req;
                     else if (l === 'VDC') vdcCount += req;
-
-                    // Đối với Tab 1 (Ngân hàng):
-                    const inBank = bankCounts[ch.id]?.[t]?.[l] || 0;
-                    const takeFromBank = Math.min(req, inBank);
-                    const takeFromAi = Math.max(0, req - inBank);
-
-                    availableFromBankCount += takeFromBank;
-                    neededFromAiCount += takeFromAi;
                 });
             });
         });
@@ -358,11 +369,9 @@ export default function AIRenderer({
             bCount,
             hCount,
             vdCount,
-            vdcCount,
-            availableFromBankCount,
-            neededFromAiCount
+            vdcCount
         };
-    }, [matrixData, activeChapters, bankCounts]);
+    }, [matrixData, activeChapters]);
 
     // Xử lý tệp PDF
     const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -399,29 +408,28 @@ export default function AIRenderer({
         setIsInternalProcessing(true);
         const startTime = Date.now();
         const initialSteps: TimelineStepItem[] = [
-            { id: 'step_fetch', label: '1. Lấy dữ liệu từ Ngân hàng câu hỏi', description: 'Trích xuất các câu hỏi có sẵn theo chương & khối', status: activeTab === 'bank' ? 'active' : 'completed' },
-            { id: 'step_check', label: '2. Đối chiếu ma trận & mức độ nhận thức', description: 'Kiểm tra các mức độ [Biết (B), Hiểu (H), Vận dụng (VD), VDC]', status: 'pending' },
-            { id: 'step_ai', label: '3. AI Soạn câu hỏi mới', description: 'Gemini tự động soạn câu hỏi mới theo đúng mức độ còn thiếu', status: 'pending' },
-            { id: 'step_normalize', label: '4. Chuẩn hóa công thức Toán & LaTeX', description: 'Làm sạch và kiểm tra cú pháp KaTeX/LaTeX', status: 'pending' },
-            { id: 'step_done', label: '5. Hoàn tất ma trận đề thi', description: 'Tổng hợp bộ đề và nạp vào hệ thống', status: 'pending' }
+            { id: 'step_check', label: '1. Phân tích ma trận & chuẩn GDPT 2018', description: `Tổng hợp ${matrixStats.totalCount} câu hỏi theo từng chương & mức độ nhận thức`, status: 'active' },
+            { id: 'step_ai', label: '2. AI Gemini soạn câu hỏi theo ma trận', description: 'Tự động tạo câu hỏi bám sát từng mức độ [Biết, Hiểu, Vận dụng, VDC]', status: 'pending' },
+            { id: 'step_normalize', label: '3. Chuẩn hóa công thức Toán & LaTeX', description: 'Làm sạch và kiểm tra cú pháp KaTeX/LaTeX', status: 'pending' },
+            { id: 'step_done', label: '4. Hoàn tất ma trận đề thi', description: 'Tổng hợp bộ đề và nạp vào Editor/Ngân hàng', status: 'pending' }
         ];
 
         setTimelineProgress({
             isOpen: true,
-            title: activeTab === 'bank' ? 'SOẠN ĐỀ TỪ NGÂN HÀNG & AI THEO MA TRẬN' : (activeTab === 'pdf' ? 'BÓC TÁCH & SOẠN ĐỀ THEO MA TRẬN TỪ PDF' : 'AI SOẠN ĐỀ THEO MA TRẬN TỪ PROMPT'),
-            subtitle: `Môn: ${subject} • Khối: ${grade} • Tổng số ma trận: ${matrixStats.totalCount} câu`,
-            percent: 10,
-            currentAction: activeTab === 'bank' ? 'fetching_bank' : 'checking_matrix',
-            detailsMessage: activeTab === 'bank' ? 'Đang lấy dữ liệu từ ngân hàng: Quét câu hỏi có sẵn theo từng chương...' : 'Đang phân tích cấu trúc ma trận kiến thức...',
+            title: activeTab === 'bank' ? 'AI SOẠN ĐỀ THEO MA TRẬN GDPT 2018' : (activeTab === 'pdf' ? 'BÓC TÁCH & SOẠN ĐỀ THEO MA TRẬN TỪ PDF' : 'AI SOẠN ĐỀ THEO MA TRẬN TỪ PROMPT'),
+            subtitle: `Môn: ${currentSubject} • Khối: ${grade} • Tổng số ma trận: ${matrixStats.totalCount} câu`,
+            percent: 15,
+            currentAction: 'checking_matrix',
+            detailsMessage: `Đang phân tích cấu trúc ma trận kiến thức (${matrixStats.totalCount} câu)...`,
             steps: initialSteps,
-            logs: [`Bắt đầu khởi tạo ma trận đề thi: tổng cộng ${matrixStats.totalCount} câu hỏi.`]
+            logs: [`Bắt đầu khởi tạo ma trận đề thi: tổng cộng ${matrixStats.totalCount} câu hỏi (soạn hoàn toàn bằng AI).`]
         });
 
         try {
             const finalQuestions: Question[] = [];
             const aiMissingRequirements: MatrixRequirementItem[] = [];
 
-            // Duyệt qua toàn bộ các ô trong ma trận
+            // Duyệt qua toàn bộ các ô trong ma trận - Dùng trực tiếp AI soạn theo ma trận
             activeChapters.forEach(ch => {
                 const data = matrixData[ch.id];
                 if (!data) return;
@@ -434,79 +442,34 @@ export default function AIRenderer({
                         const count = data[t]?.[l] || 0;
                         if (count <= 0) return;
 
-                        if (activeTab === 'bank') {
-                            // TAB 1: Ưu tiên bốc từ ngân hàng có sẵn
-                            // Lọc các câu hỏi khớp trong ngân hàng
-                            const matchingInBank = bankQuestions.filter(q => {
-                                if (q.type !== t) return false;
-                                if (q.quizGrade && q.quizGrade !== 'all' && q.quizGrade !== grade) return false;
-                                if (q.subject && subject && !isSameSubject(q.subject, subject)) return false;
-                                const qLevel = q.level || 'B';
-                                if (qLevel !== l) return false;
-
-                                return isQuestionInChapter(q, ch);
-                            });
-
-                            // Xáo trộn ngẫu nhiên để đề phong phú
-                            const shuffled = [...matchingInBank].sort(() => 0.5 - Math.random());
-                            const picked = shuffled.slice(0, count);
-
-                            picked.forEach(q => {
-                                finalQuestions.push({
-                                    ...q,
-                                    chapterId: ch.id,
-                                    chapterName: ch.name,
-                                    quizCategory: ch.name,
-                                    subject: subject,
-                                    quizGrade: grade
-                                });
-                            });
-
-                            const missing = count - picked.length;
-                            if (missing > 0) {
-                                // "nếu không tìm thấy các câu có sẵn, thì AI tự soạn câu tương ứng theo mức độ"
-                                aiMissingRequirements.push({
-                                    chapterId: ch.id,
-                                    chapterName: ch.name,
-                                    type: t,
-                                    level: l,
-                                    count: missing
-                                });
-                            }
-                        } else {
-                            // TAB 2 (Prompt) hoặc TAB 3 (PDF): AI sinh toàn bộ theo ma trận
-                            aiMissingRequirements.push({
-                                chapterId: ch.id,
-                                chapterName: ch.name,
-                                type: t,
-                                level: l,
-                                count: count
-                            });
-                        }
+                        // AI sinh toàn bộ theo ma trận đã cấu hình (bỏ qua duyệt bảng câu hỏi để tiết kiệm tối đa băng thông)
+                        aiMissingRequirements.push({
+                            chapterId: ch.id,
+                            chapterName: ch.name,
+                            type: t,
+                            level: l,
+                            count: count
+                        });
                     });
                 });
             });
 
             const totalNeedAi = aiMissingRequirements.reduce((sum, r) => sum + r.count, 0);
 
-            // Cập nhật bước 1 và bước 2 trong Timeline
+            // Cập nhật bước 1 trong Timeline
             setTimelineProgress(prev => ({
                 ...prev,
                 percent: 25,
                 currentAction: 'checking_matrix',
-                detailsMessage: activeTab === 'bank' 
-                    ? `Đã lấy ${finalQuestions.length} câu có sẵn trong ngân hàng. Cần soạn mới ${totalNeedAi} câu.` 
-                    : `Đã thiết lập ma trận yêu cầu ${totalNeedAi} câu hỏi cho AI.`,
+                detailsMessage: `Đã thiết lập ma trận yêu cầu ${totalNeedAi} câu hỏi cho AI Gemini.`,
                 steps: prev.steps.map(s => {
-                    if (s.id === 'step_fetch') return { ...s, status: 'completed' };
-                    if (s.id === 'step_check') return { ...s, status: 'active' };
+                    if (s.id === 'step_check') return { ...s, status: 'completed' };
+                    if (s.id === 'step_ai') return { ...s, status: 'active' };
                     return s;
                 }),
                 logs: [
                     ...prev.logs, 
-                    activeTab === 'bank' 
-                        ? `Đã lấy dữ liệu từ ngân hàng: ${finalQuestions.length} câu hỏi có sẵn.`
-                        : `Đã nạp ma trận yêu cầu ${totalNeedAi} câu.`
+                    `Đã thiết lập ma trận: Yêu cầu AI soạn mới toàn bộ ${totalNeedAi} câu bám sát chuẩn GDPT 2018.`
                 ]
             }));
 
@@ -660,8 +623,8 @@ export default function AIRenderer({
                             : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
                     }`}
                 >
-                    <Database size={16} className={activeTab === 'bank' ? 'text-indigo-600' : 'text-slate-400'} />
-                    <span>Thư viện có sẵn</span>
+                    <Layers size={16} className={activeTab === 'bank' ? 'text-indigo-600' : 'text-slate-400'} />
+                    <span>AI Soạn theo ma trận</span>
                 </button>
 
                 <button
@@ -722,15 +685,15 @@ export default function AIRenderer({
                         {activeTab === 'bank' && (
                             <>
                                 <div className="inline-flex items-center gap-2 px-3 py-1 bg-indigo-50 border border-indigo-200 rounded-full text-indigo-700 text-[10px] font-black uppercase tracking-wider">
-                                    <Database size={13} />
-                                    <span>TẠO ĐỀ THEO MA TRẬN TỪ NGÂN HÀNG</span>
-                                    <span className="bg-indigo-600 text-white px-2 py-0.5 rounded-full text-[9px]">GDPT 2018</span>
+                                    <Sparkles size={13} />
+                                    <span>AI SOẠN ĐỀ THEO MA TRẬN GDPT 2018</span>
+                                    <span className="bg-indigo-600 text-white px-2 py-0.5 rounded-full text-[9px]">TIẾT KIỆM BĂNG THÔNG</span>
                                 </div>
                                 <h2 className="text-2xl font-black uppercase text-slate-800 tracking-tight">
-                                    Soạn đề từ thư viện câu hỏi có sẵn
+                                    Soạn đề theo ma trận kiến thức (Dùng AI)
                                 </h2>
-                                <p className="text-xs text-slate-500 max-w-2xl">
-                                    Ma trận tích hợp đầy đủ 3 Loại câu hỏi (Phần I: Trắc nghiệm, Phần II: Đúng/Sai, Phần III: Trả lời ngắn) và 4 Mức độ nhận thức. Nếu câu hỏi trong kho chưa đủ, AI sẽ tự động soạn bổ sung đúng theo mức độ yêu cầu.
+                                <p className="text-xs text-slate-500 max-w-2xl leading-relaxed">
+                                    Ma trận tích hợp đầy đủ 3 loại câu hỏi (Phần I: Trắc nghiệm, Phần II: Đúng/Sai, Phần III: Trả lời ngắn) và 4 mức độ nhận thức (B, H, VD, VDC). Hệ thống dùng AI Gemini tạo mới 100% câu hỏi theo đúng ma trận mà không cần duyệt bảng câu hỏi, giúp tải cực nhanh và tiết kiệm tối đa băng thông.
                                 </p>
                             </>
                         )}
@@ -949,65 +912,100 @@ export default function AIRenderer({
                     </div>
                 )}
 
-                {/* BỘ LỌC HIỂN THỊ LOẠI CÂU TRONG MA TRẬN & NÚT XÓA TRẮNG */}
-                <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-100">
-                    <span className="text-[10px] font-black uppercase text-slate-400 tracking-widest mr-2">
-                        HIỂN THỊ LOẠI CÂU TRONG MA TRẬN:
-                    </span>
-                    <button
-                        type="button"
-                        onClick={() => setTypeFilter('all')}
-                        className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase transition-all ${
-                            typeFilter === 'all'
-                                ? 'bg-indigo-600 text-white shadow-sm'
-                                : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                        }`}
-                    >
-                        Tất cả 3 loại câu (Phần I, II, III)
-                    </button>
-                    <button
-                        type="button"
-                        onClick={() => setTypeFilter('mcq')}
-                        className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase transition-all ${
-                            typeFilter === 'mcq'
-                                ? 'bg-indigo-600 text-white shadow-sm'
-                                : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                        }`}
-                    >
-                        Phần I: Trắc nghiệm
-                    </button>
-                    <button
-                        type="button"
-                        onClick={() => setTypeFilter('group-tf')}
-                        className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase transition-all ${
-                            typeFilter === 'group-tf'
-                                ? 'bg-indigo-600 text-white shadow-sm'
-                                : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                        }`}
-                    >
-                        Phần II: Đúng / Sai
-                    </button>
-                    <button
-                        type="button"
-                        onClick={() => setTypeFilter('short')}
-                        className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase transition-all ${
-                            typeFilter === 'short'
-                                ? 'bg-indigo-600 text-white shadow-sm'
-                                : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                        }`}
-                    >
-                        Phần III: Trả lời ngắn
-                    </button>
+                {/* THANH MẪU MA TRẬN NHANH & BỘ LỌC HIỂN THỊ */}
+                <div className="flex flex-col gap-3 pt-2 border-t border-slate-100">
+                    {/* HÀNG CÁC MẪU MA TRẬN NHANH */}
+                    <div className="flex flex-wrap items-center gap-2 bg-indigo-50/70 p-2.5 rounded-2xl border border-indigo-100">
+                        <span className="text-[10px] font-black uppercase text-indigo-900 tracking-wider flex items-center gap-1.5 mr-1">
+                            <Sparkles size={13} className="text-indigo-600" />
+                            <span>MẪU MA TRẬN NHANH:</span>
+                        </span>
+                        <button
+                            type="button"
+                            onClick={() => handleApplyPreset('gdpt28')}
+                            className="px-3 py-1.5 bg-white hover:bg-indigo-600 hover:text-white text-indigo-700 border border-indigo-200 rounded-xl text-[10px] font-black uppercase transition-all shadow-sm active:scale-95"
+                            title="Tự động phân bổ đề chuẩn 50 phút GDPT: 18 MCQ + 4 Đúng/Sai + 6 Điền ngắn"
+                        >
+                            🎯 Chuẩn Bộ GD&ĐT (28 câu)
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => handleApplyPreset('test45')}
+                            className="px-3 py-1.5 bg-white hover:bg-indigo-600 hover:text-white text-indigo-700 border border-indigo-200 rounded-xl text-[10px] font-black uppercase transition-all shadow-sm active:scale-95"
+                            title="Kiểm tra 45 phút: 12 MCQ + 4 Đúng/Sai + 4 Điền ngắn"
+                        >
+                            ⏱️ Kiểm tra 45 phút (20 câu)
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => handleApplyPreset('test15')}
+                            className="px-3 py-1.5 bg-white hover:bg-indigo-600 hover:text-white text-indigo-700 border border-indigo-200 rounded-xl text-[10px] font-black uppercase transition-all shadow-sm active:scale-95"
+                            title="Kiểm tra 15 phút: 10 câu trắc nghiệm"
+                        >
+                            ⚡ Kiểm tra 15 phút (10 câu)
+                        </button>
 
-                    <button
-                        type="button"
-                        onClick={handleClearMatrix}
-                        className="flex items-center gap-1.5 px-3.5 py-1.5 bg-white border border-red-200 text-red-600 rounded-lg text-[10px] font-black uppercase hover:bg-red-50 shadow-sm active:scale-95 transition-all ml-auto"
-                        title="Xóa trắng tất cả số lượng câu hỏi trong ma trận"
-                    >
-                        <RotateCcw size={12} />
-                        <span>Xóa trắng</span>
-                    </button>
+                        <button
+                            type="button"
+                            onClick={handleClearMatrix}
+                            className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-red-200 text-red-600 rounded-xl text-[10px] font-black uppercase hover:bg-red-50 shadow-sm active:scale-95 transition-all ml-auto"
+                            title="Xóa trắng tất cả số lượng câu hỏi trong ma trận"
+                        >
+                            <RotateCcw size={12} />
+                            <span>Xóa trắng</span>
+                        </button>
+                    </div>
+
+                    {/* BỘ LỌC HIỂN THỊ LOẠI CÂU */}
+                    <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-[10px] font-black uppercase text-slate-400 tracking-widest mr-2">
+                            HIỂN THỊ LOẠI CÂU:
+                        </span>
+                        <button
+                            type="button"
+                            onClick={() => setTypeFilter('all')}
+                            className={`px-3 py-1.5 rounded-xl text-[10px] font-black uppercase transition-all ${
+                                typeFilter === 'all'
+                                    ? 'bg-indigo-600 text-white shadow-sm'
+                                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                            }`}
+                        >
+                            Tất cả 3 loại câu (Phần I, II, III)
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => setTypeFilter('mcq')}
+                            className={`px-3 py-1.5 rounded-xl text-[10px] font-black uppercase transition-all ${
+                                typeFilter === 'mcq'
+                                    ? 'bg-indigo-600 text-white shadow-sm'
+                                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                            }`}
+                        >
+                            Phần I: Trắc nghiệm
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => setTypeFilter('group-tf')}
+                            className={`px-3 py-1.5 rounded-xl text-[10px] font-black uppercase transition-all ${
+                                typeFilter === 'group-tf'
+                                    ? 'bg-indigo-600 text-white shadow-sm'
+                                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                            }`}
+                        >
+                            Phần II: Đúng / Sai
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => setTypeFilter('short')}
+                            className={`px-3 py-1.5 rounded-xl text-[10px] font-black uppercase transition-all ${
+                                typeFilter === 'short'
+                                    ? 'bg-indigo-600 text-white shadow-sm'
+                                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                            }`}
+                        >
+                            Phần III: Trả lời ngắn
+                        </button>
+                    </div>
                 </div>
 
                 {/* BẢNG MA TRẬN CHI TIẾT THEO CHƯƠNG & LOẠI CÂU */}
@@ -1066,12 +1064,6 @@ export default function AIRenderer({
                                     short: { B: 0, H: 0, VD: 0, VDC: 0 }
                                 };
 
-                                // Tổng số câu trong kho cho chương này
-                                const chBankTotal = (bankCounts[ch.id]?.mcq ? 
-                                    Object.values(bankCounts[ch.id].mcq).reduce((a, b) => a + b, 0) +
-                                    Object.values(bankCounts[ch.id]['group-tf']).reduce((a, b) => a + b, 0) +
-                                    Object.values(bankCounts[ch.id].short).reduce((a, b) => a + b, 0) : 0);
-
                                 // Tổng câu chọn trong ma trận cho chương này
                                 const chSelectedTotal = 
                                     Object.values(chData.mcq).reduce((a, b) => a + b, 0) +
@@ -1093,9 +1085,6 @@ export default function AIRenderer({
                                                     {isCollapsed ? <ChevronRight size={16} className="text-slate-400" /> : <ChevronDown size={16} className="text-slate-400" />}
                                                     <BookOpen size={14} className="text-indigo-600" />
                                                     <span className="text-xs uppercase tracking-wide">{ch.name}</span>
-                                                    <span className="text-[10px] font-bold text-slate-500 bg-white border border-slate-200 px-2 py-0.5 rounded-full ml-2">
-                                                        Kho: <b className="text-indigo-600">{chBankTotal} câu</b>
-                                                    </span>
                                                 </button>
                                             </td>
                                             <td className="px-3 py-2.5 text-center font-black text-slate-900 bg-slate-200/60">
@@ -1116,12 +1105,7 @@ export default function AIRenderer({
                                                                 <span className="w-5 h-5 rounded-full bg-blue-50 text-blue-600 flex items-center justify-center text-[10px] font-black shrink-0">
                                                                     I
                                                                 </span>
-                                                                <div>
-                                                                    <div className="font-bold text-slate-800 text-[11px]">PHẦN I Trắc nghiệm</div>
-                                                                    <div className="text-[9px] text-slate-400">
-                                                                        Kho: {Object.values(bankCounts[ch.id]?.mcq || {}).reduce((a, b) => a + b, 0)} câu
-                                                                    </div>
-                                                                </div>
+                                                                <div className="font-bold text-slate-800 text-[11px]">PHẦN I: Trắc nghiệm (4 phương án)</div>
                                                             </div>
                                                         </td>
                                                         {(['B', 'H', 'VD', 'VDC'] as QuestionLevel[]).map(lvl => (
@@ -1138,9 +1122,6 @@ export default function AIRenderer({
                                                                             : 'bg-slate-50 border-slate-200 text-slate-600 focus:bg-white focus:border-indigo-400'
                                                                     }`}
                                                                 />
-                                                                <div className="text-[8px] text-slate-400 mt-1">
-                                                                    Kho: {bankCounts[ch.id]?.mcq?.[lvl] || 0}
-                                                                </div>
                                                             </td>
                                                         ))}
                                                         <td className="px-3 py-2 text-center font-black text-slate-800 bg-slate-50/50">
@@ -1160,12 +1141,7 @@ export default function AIRenderer({
                                                                 <span className="w-5 h-5 rounded-full bg-purple-50 text-purple-600 flex items-center justify-center text-[10px] font-black shrink-0">
                                                                     II
                                                                 </span>
-                                                                <div>
-                                                                    <div className="font-bold text-slate-800 text-[11px]">PHẦN II Đúng / Sai</div>
-                                                                    <div className="text-[9px] text-slate-400">
-                                                                        Kho: {Object.values(bankCounts[ch.id]?.['group-tf'] || {}).reduce((a, b) => a + b, 0)} câu
-                                                                    </div>
-                                                                </div>
+                                                                <div className="font-bold text-slate-800 text-[11px]">PHẦN II: Đúng / Sai (4 ý a,b,c,d)</div>
                                                             </div>
                                                         </td>
                                                         {(['B', 'H', 'VD', 'VDC'] as QuestionLevel[]).map(lvl => (
@@ -1182,9 +1158,6 @@ export default function AIRenderer({
                                                                             : 'bg-slate-50 border-slate-200 text-slate-600 focus:bg-white focus:border-indigo-400'
                                                                     }`}
                                                                 />
-                                                                <div className="text-[8px] text-slate-400 mt-1">
-                                                                    Kho: {bankCounts[ch.id]?.['group-tf']?.[lvl] || 0}
-                                                                </div>
                                                             </td>
                                                         ))}
                                                         <td className="px-3 py-2 text-center font-black text-slate-800 bg-slate-50/50">
@@ -1204,12 +1177,7 @@ export default function AIRenderer({
                                                                 <span className="w-5 h-5 rounded-full bg-amber-50 text-amber-600 flex items-center justify-center text-[10px] font-black shrink-0">
                                                                     III
                                                                 </span>
-                                                                <div>
-                                                                    <div className="font-bold text-slate-800 text-[11px]">PHẦN III Trả lời ngắn</div>
-                                                                    <div className="text-[9px] text-slate-400">
-                                                                        Kho: {Object.values(bankCounts[ch.id]?.short || {}).reduce((a, b) => a + b, 0)} câu
-                                                                    </div>
-                                                                </div>
+                                                                <div className="font-bold text-slate-800 text-[11px]">PHẦN III: Trả lời ngắn (Điền số)</div>
                                                             </div>
                                                         </td>
                                                         {(['B', 'H', 'VD', 'VDC'] as QuestionLevel[]).map(lvl => (
@@ -1226,9 +1194,6 @@ export default function AIRenderer({
                                                                             : 'bg-slate-50 border-slate-200 text-slate-600 focus:bg-white focus:border-indigo-400'
                                                                     }`}
                                                                 />
-                                                                <div className="text-[8px] text-slate-400 mt-1">
-                                                                    Kho: {bankCounts[ch.id]?.short?.[lvl] || 0}
-                                                                </div>
                                                             </td>
                                                         ))}
                                                         <td className="px-3 py-2 text-center font-black text-slate-800 bg-slate-50/50">
@@ -1308,23 +1273,18 @@ export default function AIRenderer({
 
                     {/* NGUỒN CÂU HỎI (CHO TAB 1) */}
                     {activeTab === 'bank' && (
-                        <div className="p-4 bg-white rounded-2xl border border-indigo-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
-                            <div className="flex items-center gap-2 text-indigo-900 font-bold">
-                                <Info size={16} className="text-indigo-600 shrink-0" />
+                        <div className="p-4 bg-indigo-50/70 rounded-2xl border border-indigo-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+                            <div className="flex items-center gap-2 text-indigo-950 font-bold">
+                                <Sparkles size={16} className="text-indigo-600 shrink-0" />
                                 <span>
-                                    Phân bổ nguồn câu hỏi:
-                                    <span className="text-emerald-700 font-black ml-1.5 bg-emerald-50 px-2 py-0.5 rounded-lg border border-emerald-200">
-                                        Có sẵn trong kho: {matrixStats.availableFromBankCount} câu
+                                    Cơ chế tạo đề:
+                                    <span className="text-indigo-700 font-black ml-1.5 bg-white px-2.5 py-1 rounded-lg border border-indigo-200 shadow-sm">
+                                        AI Gemini soạn mới 100% ({matrixStats.totalCount} câu) theo ma trận
                                     </span>
-                                    {matrixStats.neededFromAiCount > 0 && (
-                                        <span className="text-purple-700 font-black ml-1.5 bg-purple-50 px-2 py-0.5 rounded-lg border border-purple-200">
-                                            AI tự soạn bù mức độ: {matrixStats.neededFromAiCount} câu
-                                        </span>
-                                    )}
                                 </span>
                             </div>
-                            <p className="text-[10px] text-slate-400 italic">
-                                *Nếu ô nào trong kho chưa đủ số lượng, AI Gemini sẽ tự động soạn câu tương ứng theo đúng mức độ nhận thức.
+                            <p className="text-[11px] text-slate-500 font-medium">
+                                ⚡ Tiết kiệm băng thông: Tạo đề tức thì mà không cần quét bảng câu hỏi.
                             </p>
                         </div>
                     )}
@@ -1350,9 +1310,9 @@ export default function AIRenderer({
                         </>
                     ) : (
                         <>
-                            {activeTab === 'bank' ? <Database size={22} /> : (activeTab === 'prompt' ? <Sparkles size={22} /> : <FileUp size={22} />)}
+                            {activeTab === 'bank' ? <Sparkles size={22} /> : (activeTab === 'prompt' ? <Sparkles size={22} /> : <FileUp size={22} />)}
                             <span>
-                                {activeTab === 'bank' && `TẠO ĐỀ THEO MA TRẬN TỪ NGÂN HÀNG & AI (${matrixStats.totalCount} CÂU)`}
+                                {activeTab === 'bank' && `AI SOẠN ĐỀ THEO MA TRẬN (${matrixStats.totalCount} CÂU)`}
                                 {activeTab === 'prompt' && `AI TẠO ĐỀ THEO MA TRẬN TỪ PROMPT (${matrixStats.totalCount} CÂU)`}
                                 {activeTab === 'pdf' && `BÓC TÁCH & TẠO ĐỀ TỪ TỆP PDF (${matrixStats.totalCount} CÂU)`}
                             </span>

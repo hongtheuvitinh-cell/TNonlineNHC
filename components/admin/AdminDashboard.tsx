@@ -187,8 +187,14 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
           getTeachers(forceRefresh),
           getChapters(forceRefresh)
         ]);
-        setResults(paged.data);
-        setResultsTotal(paged.total);
+        setResults(prev => {
+          const map = new Map<string, Result>();
+          // Giữ lại các kết quả đã được nạp từ trước (ví dụ từ xem lớp)
+          prev.forEach(r => map.set(r.id, r));
+          paged.data.forEach(r => map.set(r.id, r));
+          return Array.from(map.values());
+        });
+        setResultsTotal(prev => Math.max(prev, paged.total));
         setResultsPage(1);
         setQuizzes(q);
         setClasses(cls);
@@ -210,11 +216,8 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
         setChapters(c);
         loadedTabsRef.current.add('chapters');
       } else if (tab === 'ai') {
-        const [b, c] = await Promise.all([
-          getBankQuestions(forceRefresh),
-          getChapters(forceRefresh)
-        ]);
-        setBankQuestions(b);
+        // Tiết kiệm băng thông: Không nạp toàn bộ câu hỏi từ bảng questions khi vào menu Soạn đề AI
+        const c = await getChapters(forceRefresh);
         setChapters(c);
         loadedTabsRef.current.add('ai');
       }
@@ -1814,6 +1817,17 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
     }
   };
 
+  // Cập nhật kết quả thi từ ClassManager (khi nạp on-demand theo từng lớp) vào cache chung của Dashboard
+  const handleResultsUpdated = useCallback((newResults: Result[]) => {
+    if (!newResults || newResults.length === 0) return;
+    setResults(prev => {
+      const map = new Map<string, Result>();
+      prev.forEach(r => map.set(r.id, r));
+      newResults.forEach(r => map.set(r.id, r));
+      return Array.from(map.values());
+    });
+  }, []);
+
   const dbConnected = isDatabaseConnected();
   const rawKey = process.env.API_KEY;
   const isAIReady = Boolean(rawKey && rawKey !== "undefined" && rawKey.length > 10);
@@ -2131,6 +2145,7 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
               chapters={accessibleChapters}
               currentUser={currentUser}
               teachers={teachers}
+              onResultsUpdated={handleResultsUpdated}
               onSaveClass={async (c) => {
                 const classToSave: ClassRoom = {
                   ...c,

@@ -11,7 +11,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { format } from 'date-fns';
 import { STANDARD_SUBJECTS, isSameSubject, getDisplaySubject, normalizeSubject } from '../../services/subjectUtils';
 import { getCurrentAcademicYear, getAcademicYearOptions } from '../../services/academicUtils';
-import { getStudentsByClass, getUnassignedStudents } from '../../services/storage';
+import { getStudentsByClass, getUnassignedStudents, getResultsForClassStudents } from '../../services/storage';
 
 interface ClassManagerProps {
   classes: ClassRoom[];
@@ -25,6 +25,7 @@ interface ClassManagerProps {
   onDeleteClass: (id: string, name: string) => Promise<void>;
   onAssignStudents: (studentIds: string[], classInfo: { classId?: string; className?: string; academicYear?: string; grade?: Grade } | null) => Promise<void>;
   onRefresh?: () => void;
+  onResultsUpdated?: (newResults: Result[]) => void;
 }
 
 type ClassDetailTab = 'students' | 'stats' | 'progress';
@@ -39,7 +40,8 @@ export default function ClassManager({
   teachers = [],
   onSaveClass,
   onDeleteClass,
-  onAssignStudents
+  onAssignStudents,
+  onResultsUpdated
 }: ClassManagerProps) {
   const isSuperAdmin = currentUser?.role === 'superadmin';
 
@@ -61,6 +63,22 @@ export default function ClassManager({
   // Tối ưu băng thông: Nạp danh sách học sinh theo từng lớp khi người dùng nhấn "Xem lớp"
   const [classStudentsMap, setClassStudentsMap] = useState<Record<string, User[]>>({});
   const [isLoadingClassStudents, setIsLoadingClassStudents] = useState<boolean>(false);
+
+  // Tối ưu băng thông & linh hoạt cache: Nạp kết quả thi / điểm tích lũy của học sinh đúng lớp được chọn
+  const [classResultsMap, setClassResultsMap] = useState<Record<string, Result[]>>({});
+  const [isLoadingClassResults, setIsLoadingClassResults] = useState<boolean>(false);
+
+  // Danh sách kết quả thi hợp nhất giữa cache đã nạp từ Tab Điểm thi (props.results) và các lớp đã nạp on-demand
+  const effectiveResults = useMemo(() => {
+    const map = new Map<string, Result>();
+    // 1. Thêm kết quả từ props (nếu GV bấm menu Điểm thi trước)
+    (results || []).forEach(r => map.set(r.id, r));
+    // 2. Thêm kết quả từ các lớp đã lazy load (nếu GV bấm menu Lớp trước)
+    Object.values(classResultsMap).forEach(list => {
+      list.forEach(r => map.set(r.id, r));
+    });
+    return Array.from(map.values());
+  }, [results, classResultsMap]);
 
   // Danh sách học sinh chưa phân lớp nạp on-demand khi mở modal thêm học sinh
   const [unassignedCandidates, setUnassignedCandidates] = useState<User[]>([]);
@@ -296,7 +314,7 @@ export default function ClassManager({
       };
     }
 
-    const quizResults = results.filter(r => r.quizId === currentQuiz.id);
+    const quizResults = effectiveResults.filter(r => r.quizId === currentQuiz.id);
     const submittedList: Array<{
       student: User;
       firstAttempt: Result;
@@ -374,11 +392,11 @@ export default function ClassManager({
       highestFirstScore: highest,
       lowestFirstScore: totalSub > 0 ? lowest : 0
     };
-  }, [currentQuiz, selectedClass, classStudents, results]);
+  }, [currentQuiz, selectedClass, classStudents, effectiveResults]);
 
   // Tab 3: Helper to calculate student progress statistics & automated feedback
   const getStudentTrainingData = (student: User) => {
-    const studentResults = results.filter(r => 
+    const studentResults = effectiveResults.filter(r => 
       r.studentId === student.id || 
       (student.studentCode && r.studentCode && r.studentCode.trim().toUpperCase() === student.studentCode.trim().toUpperCase())
     );
@@ -585,24 +603,81 @@ export default function ClassManager({
     }
   };
 
-  // Chọn xem chi tiết lớp học (Lazy loading danh sách học sinh để tiết kiệm băng thông)
+  // Chọn xem chi tiết lớp học (Lazy loading danh sách học sinh & điểm tích lũy của đúng lớp chọn)
   const handleSelectClass = async (c: ClassRoom) => {
     setSelectedClass(c);
     setActiveTab('students');
-    if (!classStudentsMap[c.id]) {
+    let currentStudents = classStudentsMap[c.id];
+
+    // 1. Nạp danh sách học sinh của lớp nếu chưa có trong cache
+    if (!currentStudents) {
       setIsLoadingClassStudents(true);
       try {
-        const loaded = await getStudentsByClass(c.id, c.name, c.academicYear);
-        setClassStudentsMap(prev => ({ ...prev, [c.id]: loaded }));
+        currentStudents = await getStudentsByClass(c.id, c.name, c.academicYear);
+        setClassStudentsMap(prev => ({ ...prev, [c.id]: currentStudents }));
       } catch (err) {
         console.error("Lỗi nạp danh sách học sinh lớp:", err);
       } finally {
         setIsLoadingClassStudents(false);
       }
     }
+
+    // 2. Nạp kết quả thi / điểm tích lũy của đúng lớp này nếu chưa có trong cache
+    if (!classResultsMap[c.id] && currentStudents && currentStudents.length > 0) {
+      const studentIds = currentStudents.map(s => s.id);
+      const studentCodes = currentStudents.map(s => s.studentCode).filter(Boolean) as string[];
+
+      if (studentIds.length > 0 || studentCodes.length > 0) {
+        setIsLoadingClassResults(true);
+        try {
+          const loadedResults = await getResultsForClassStudents(studentIds, studentCodes);
+          setClassResultsMap(prev => ({ ...prev, [c.id]: loadedResults }));
+          if (onResultsUpdated && loadedResults.length > 0) {
+            onResultsUpdated(loadedResults);
+          }
+        } catch (err) {
+          console.error("Lỗi nạp điểm tích lũy lớp:", err);
+        } finally {
+          setIsLoadingClassResults(false);
+        }
+      }
+    }
   };
 
-  // Làm mới danh sách học sinh của lớp đang mở sau khi thêm/xóa/chuyển lớp
+  // Tự động đảm bảo nạp điểm tích lũy cho lớp đang chọn khi danh sách học sinh hoàn tất nạp
+  useEffect(() => {
+    if (!selectedClass) return;
+    const cid = selectedClass.id;
+    if (classResultsMap[cid]) return; // Đã có trong cache
+
+    if (classStudents && classStudents.length > 0) {
+      const studentIds = classStudents.map(s => s.id);
+      const studentCodes = classStudents.map(s => s.studentCode).filter(Boolean) as string[];
+
+      if (studentIds.length > 0 || studentCodes.length > 0) {
+        let isCancelled = false;
+        setIsLoadingClassResults(true);
+        getResultsForClassStudents(studentIds, studentCodes).then(loadedResults => {
+          if (!isCancelled) {
+            setClassResultsMap(prev => ({ ...prev, [cid]: loadedResults }));
+            if (onResultsUpdated && loadedResults.length > 0) {
+              onResultsUpdated(loadedResults);
+            }
+          }
+        }).catch(err => {
+          console.error("Lỗi nạp điểm tích lũy lớp qua effect:", err);
+        }).finally(() => {
+          if (!isCancelled) setIsLoadingClassResults(false);
+        });
+
+        return () => {
+          isCancelled = true;
+        };
+      }
+    }
+  }, [selectedClass?.id, classStudents, classResultsMap, onResultsUpdated]);
+
+  // Làm mới danh sách học sinh & điểm tích lũy của lớp đang mở sau khi thêm/xóa/chuyển lớp
   const reloadSelectedClassStudents = async (targetClass?: ClassRoom | null) => {
     const target = targetClass || selectedClass;
     if (!target) return;
@@ -610,10 +685,23 @@ export default function ClassManager({
     try {
       const refreshed = await getStudentsByClass(target.id, target.name, target.academicYear);
       setClassStudentsMap(prev => ({ ...prev, [target.id]: refreshed }));
+
+      // Làm mới luôn điểm tích lũy của lớp
+      const studentIds = (refreshed || []).map(s => s.id);
+      const studentCodes = (refreshed || []).map(s => s.studentCode).filter(Boolean) as string[];
+      if (studentIds.length > 0 || studentCodes.length > 0) {
+        setIsLoadingClassResults(true);
+        const loadedResults = await getResultsForClassStudents(studentIds, studentCodes);
+        setClassResultsMap(prev => ({ ...prev, [target.id]: loadedResults }));
+        if (onResultsUpdated && loadedResults.length > 0) {
+          onResultsUpdated(loadedResults);
+        }
+      }
     } catch (e) {
-      console.error("Lỗi nạp lại học sinh lớp:", e);
+      console.error("Lỗi nạp lại học sinh & điểm lớp:", e);
     } finally {
       setIsLoadingClassStudents(false);
+      setIsLoadingClassResults(false);
     }
   };
 
@@ -1068,6 +1156,11 @@ export default function ClassManager({
                     <span className="px-2.5 py-0.5 bg-emerald-50 text-emerald-700 font-black rounded-lg text-[10px] flex items-center gap-1">
                       <Users size={11} /> {classStudents.length} học sinh
                     </span>
+                    {isLoadingClassResults && (
+                      <span className="px-2.5 py-0.5 bg-amber-50 text-amber-700 font-black rounded-lg text-[10px] flex items-center gap-1 animate-pulse border border-amber-200">
+                        <Loader2 size={11} className="animate-spin text-amber-600" /> Đang đồng bộ điểm...
+                      </span>
+                    )}
                   </div>
                   {selectedClass.description && (
                     <p className="text-xs text-slate-500 font-medium mt-1">

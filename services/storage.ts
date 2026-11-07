@@ -310,6 +310,55 @@ export const getResultsForStudent = async (studentId: string, studentCode?: stri
   }
 };
 
+export const getResultsForClassStudents = async (studentIds: string[], studentCodes?: string[]): Promise<Result[]> => {
+  const validIds = (studentIds || []).filter(id => id && id.trim());
+  const validCodes = (studentCodes || []).map(c => c?.trim().toUpperCase()).filter(c => c && c !== 'N/A');
+
+  if (validIds.length === 0 && validCodes.length === 0) return [];
+
+  if (isSupabasePrimary()) {
+    return await supabaseDb.getResultsForStudents(validIds, validCodes);
+  }
+
+  if (!db) return [];
+  try {
+    const qRef = collection(db, 'results');
+    const resultMap = new Map<string, Result>();
+
+    // Chunking 30 theo giới hạn 'in' của Firestore
+    for (let i = 0; i < validIds.length; i += 30) {
+      const chunk = validIds.slice(i, i + 30);
+      const q = query(qRef, where('studentId', 'in', chunk));
+      const snap = await getDocs(q);
+      trackFirestoreRead('results', snap.docs.length);
+      snap.docs.forEach(d => {
+        const row = d.data();
+        const r = (row.data as Result) || (row as Result);
+        resultMap.set(r.id, r);
+      });
+    }
+
+    if (validCodes.length > 0) {
+      for (let i = 0; i < validCodes.length; i += 30) {
+        const chunk = validCodes.slice(i, i + 30);
+        const q = query(qRef, where('studentCode', 'in', chunk));
+        const snap = await getDocs(q);
+        trackFirestoreRead('results', snap.docs.length);
+        snap.docs.forEach(d => {
+          const row = d.data();
+          const r = (row.data as Result) || (row as Result);
+          resultMap.set(r.id, r);
+        });
+      }
+    }
+
+    return Array.from(resultMap.values());
+  } catch (e) {
+    console.error("Lỗi getResultsForClassStudents:", e);
+    return [];
+  }
+};
+
 export const verifyResultExists = async (id: string): Promise<boolean> => {
   if (isSupabasePrimary()) {
     const res = await supabaseDb.getResultById(id);
