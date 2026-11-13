@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { X, Download, FileType, AlignLeft, Rows, FileCode, Sparkles, Loader2, ChevronUp, ChevronDown, Printer, Shuffle, Layers, RefreshCw, CheckSquare, Square, FileStack } from 'lucide-react';
+import { X, Download, FileType, AlignLeft, Rows, FileCode, Sparkles, Loader2, ChevronUp, ChevronDown, Printer, Shuffle, Layers, RefreshCw, CheckSquare, Square, FileStack, Copy } from 'lucide-react';
 import { Quiz, Question } from '../../types';
 import LatexText from '../LatexText';
 import { normalizeFullText, repairVietnameseText } from '../../services/vietnameseFixer';
@@ -10,6 +10,8 @@ interface QuizPreviewModalProps {
     quiz: Quiz;
     onClose: () => void;
     isAdmin?: boolean;
+    canCopy?: boolean;
+    onCopyQuiz?: (quiz: Quiz) => void;
 }
 
 const DEFAULT_EXAM_CODES_MAP: Record<number, string[]> = {
@@ -20,7 +22,7 @@ const DEFAULT_EXAM_CODES_MAP: Record<number, string[]> = {
     8: ['101', '102', '103', '104', '105', '106', '107', '108'],
 };
 
-export default function QuizPreviewModal({ quiz, onClose, isAdmin = true }: QuizPreviewModalProps) {
+export default function QuizPreviewModal({ quiz, onClose, isAdmin = true, canCopy = false, onCopyQuiz }: QuizPreviewModalProps) {
     const [layoutMode, setLayoutMode] = useState<'single' | 'auto'>('single');
     const [isExportingDocx, setIsExportingDocx] = useState(false);
 
@@ -840,6 +842,16 @@ export default function QuizPreviewModal({ quiz, onClose, isAdmin = true }: Quiz
 
                         {isAdmin && (
                             <>
+                                {canCopy && onCopyQuiz && (
+                                    <button
+                                        type="button"
+                                        onClick={() => onCopyQuiz(quiz)}
+                                        className="flex items-center gap-2 px-4 py-2.5 bg-teal-600 hover:bg-teal-500 text-white rounded-xl text-[11px] font-black uppercase transition-all shadow-xl active:scale-95 border border-teal-400/50 cursor-pointer"
+                                        title="Sao chép đề chia sẻ này thành bản độc lập trong kho của bạn để tự do chỉnh thời gian, sửa câu hỏi và giao cho lớp mình"
+                                    >
+                                        <Copy size={15}/> Sao chép về kho
+                                    </button>
+                                )}
                                 <button
                                     onClick={() => setIsMultiVariantMode(prev => !prev)}
                                     className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-[11px] font-black uppercase transition-all shadow-xl active:scale-95 border ${

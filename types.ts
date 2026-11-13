@@ -93,6 +93,8 @@ export interface Question {
   createdByName?: string;
   isShared?: boolean;
   bankQuestionId?: string; // ID của câu hỏi gốc trong Ngân hàng câu hỏi (để chống trùng lặp khi đồng bộ)
+  copiedFromQuizId?: string; // ID đề thi gốc nếu câu hỏi được sao chép từ đề chia sẻ
+  copiedFromQuestionId?: string; // ID câu hỏi gốc trong đề chia sẻ
   groupPassage?: string; // Lời dẫn chung / Ngữ cảnh dùng chung cho nhóm câu hỏi
 }
 
@@ -121,7 +123,9 @@ export interface Quiz {
   // Phân quyền tạo đề & chia sẻ giáo viên
   createdBy?: string; // ID của Giáo viên / Admin tạo đề
   createdByName?: string; // Họ tên Giáo viên tạo đề
-  isSharedWithTeachers?: boolean; // Cho phép các giáo viên khác xem và khai thác đề thi này
+  isSharedWithTeachers?: boolean; // Cho phép các giáo viên khác xem và lấy bản sao độc lập
+  copiedFromQuizId?: string; // ID đề gốc nếu đây là bản sao độc lập
+  copiedFromTitle?: string; // Tên đề gốc khi tạo bản sao
   // Thư mục cá nhân của Giáo viên
   folderId?: string; // ID thư mục cá nhân chứa đề thi
   folderName?: string; // Tên thư mục cá nhân chứa đề thi

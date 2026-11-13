@@ -276,7 +276,8 @@ export function mapQuizFromDb(row: any): Quiz {
     assignedClassIds: row.assigned_class_ids || row.assignedClassIds || [],
     assignedClasses: row.assigned_classes || row.assignedClasses || [],
     syncedToBank: row.synced_to_bank ?? row.syncedToBank ?? (row.data && (row.data.syncedToBank || row.data.synced_to_bank)) ?? undefined,
-    lastBankSyncedAt: row.last_bank_synced_at ?? row.lastBankSyncedAt ?? (row.data && (row.data.lastBankSyncedAt || row.data.last_bank_synced_at)) ?? undefined
+    lastBankSyncedAt: row.last_bank_synced_at ?? row.lastBankSyncedAt ?? (row.data && (row.data.lastBankSyncedAt || row.data.last_bank_synced_at)) ?? undefined,
+    copiedFromQuizId: row.copied_from_quiz_id || row.copiedFromQuizId || questionsList.find((item: any) => item?.copiedFromQuizId)?.copiedFromQuizId || undefined
   };
 }
 

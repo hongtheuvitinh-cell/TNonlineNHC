@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { User, Quiz, ClassRoom } from '../../types';
 import { 
   Search, UserPlus, Key, Edit3, Trash2, ShieldCheck, ShieldAlert, 
-  Mail, Phone, BookOpen, Layers, CheckCircle2, XCircle, RefreshCw, UserCheck, X
+  Mail, Phone, BookOpen, Layers, CheckCircle2, XCircle, RefreshCw, UserCheck, X, Eye
 } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -14,6 +14,7 @@ interface TeacherManagerProps {
   onSaveTeacher: (teacher: User) => Promise<void>;
   onDeleteTeacher: (id: string, name: string) => Promise<void>;
   onResetPassword: (teacher: User) => Promise<void>;
+  onViewTeacherResources?: (teacherId: string) => void;
   onRefresh: () => void;
   isLoading?: boolean;
 }
@@ -25,6 +26,7 @@ export default function TeacherManager({
   onSaveTeacher,
   onDeleteTeacher,
   onResetPassword,
+  onViewTeacherResources,
   onRefresh,
   isLoading = false
 }: TeacherManagerProps) {
@@ -295,6 +297,15 @@ export default function TeacherManager({
 
                     <td className="p-5 pr-8 text-right">
                       <div className="flex items-center justify-end gap-1.5">
+                        {onViewTeacherResources && (
+                          <button
+                            onClick={() => onViewTeacherResources(t.id)}
+                            className="px-2.5 py-2 bg-indigo-50 hover:bg-indigo-600 hover:text-white text-indigo-700 rounded-xl transition-all border border-indigo-200 flex items-center gap-1 text-[10px] font-black uppercase cursor-pointer"
+                            title={`Xem thư mục, đề thi và lớp học của ${t.fullName}`}
+                          >
+                            <Eye size={13}/> Xem kho đề
+                          </button>
+                        )}
                         <button
                           onClick={() => onResetPassword(t)}
                           className="p-2.5 bg-slate-100 hover:bg-amber-50 hover:text-amber-700 text-slate-600 rounded-xl transition-all border border-slate-200/80"

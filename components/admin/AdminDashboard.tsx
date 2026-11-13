@@ -16,7 +16,10 @@ import {
   assignQuizToClasses,
   updateQuizSchedule,
   formatToDatetimeLocal,
-  normalizeDateTimeForStorage
+  normalizeDateTimeForStorage,
+  buildIndependentQuizCopy,
+  mergeNewQuestionsWithoutOverwritingOriginals,
+  getStoredCopiedQuizOrigins
 } from '../../services/storage';
 import { generateQuizFromPrompt, parseQuestionsFromPDF, parseQuestionsFromText } from '../../services/gemini';
 import { normalizeFullText } from '../../services/vietnameseFixer';
@@ -94,12 +97,13 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
 
     try {
       if (tab === 'quizzes') {
+        const isSuper = currentUser?.role === 'superadmin';
         const [q, c, cls, t, fld] = await Promise.all([
           getQuizzesMetadata(undefined, undefined, forceRefresh), 
           getChapters(forceRefresh),
           getClasses(forceRefresh),
           getTeachers(forceRefresh),
-          getQuizFolders(currentUser?.id, forceRefresh)
+          getQuizFolders(isSuper ? undefined : currentUser?.id, forceRefresh)
         ]);
         setQuizzes(q);
         setChapters(c);
@@ -204,21 +208,31 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
       } else if (tab === 'bank') {
         const sub = bSubjectFilter !== 'all' ? bSubjectFilter : (isSuperAdmin ? undefined : currentUser?.subject);
         const gr = bGradeFilter !== 'all' ? bGradeFilter : undefined;
-        const [b, c] = await Promise.all([
+        const [b, c, t] = await Promise.all([
           getBankQuestions(forceRefresh, { subject: sub, grade: gr }),
-          getChapters(forceRefresh)
+          getChapters(forceRefresh),
+          currentUser?.role === 'superadmin' && teachers.length === 0 ? getTeachers(forceRefresh) : Promise.resolve(teachers)
         ]);
         setBankQuestions(b);
         setChapters(c);
+        if (t && t.length > 0) setTeachers(t);
         loadedTabsRef.current.add('bank');
       } else if (tab === 'chapters') {
-        const c = await getChapters(forceRefresh);
+        const [c, t] = await Promise.all([
+          getChapters(forceRefresh),
+          currentUser?.role === 'superadmin' && teachers.length === 0 ? getTeachers(forceRefresh) : Promise.resolve(teachers)
+        ]);
         setChapters(c);
+        if (t && t.length > 0) setTeachers(t);
         loadedTabsRef.current.add('chapters');
       } else if (tab === 'ai') {
         // Tiết kiệm băng thông: Không nạp toàn bộ câu hỏi từ bảng questions khi vào menu Soạn đề AI
-        const c = await getChapters(forceRefresh);
+        const [c, t] = await Promise.all([
+          getChapters(forceRefresh),
+          currentUser?.role === 'superadmin' && teachers.length === 0 ? getTeachers(forceRefresh) : Promise.resolve(teachers)
+        ]);
         setChapters(c);
+        if (t && t.length > 0) setTeachers(t);
         loadedTabsRef.current.add('ai');
       }
     } catch (e) {
@@ -226,7 +240,7 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
     } finally {
       setIsDataLoading(false);
     }
-  }, []);
+  }, [currentUser?.id, currentUser?.role]);
 
   useEffect(() => {
     // Chỉ nạp lại từ mạng nếu tab này chưa từng nạp dữ liệu
@@ -311,15 +325,20 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
 
   const isSuperAdmin = currentUser?.role === 'superadmin';
 
+  // SuperAdmin account view selector (Mặc định là tài khoản của Tổng Admin)
+  const [adminViewAccountId, setAdminViewAccountId] = useState<string>(() => (
+    isSuperAdmin && currentUser?.id ? currentUser.id : 'all'
+  ));
+
   // Filters
   const [qSearch, setQSearch] = useState('');
   const [qAcademicYearFilter, setQAcademicYearFilter] = useState<string>(getCurrentAcademicYear());
   const [qSubjectFilter, setQSubjectFilter] = useState<string>(() => {
     if (!isSuperAdmin && currentUser?.subject) return currentUser.subject;
-    return 'Vật lí';
+    return currentUser?.subject || 'Vật lí';
   });
   const [qGradeFilter, setQGradeFilter] = useState<Grade | 'all'>('12');
-  const [qAuthorFilter, setQAuthorFilter] = useState<string>(() => isSuperAdmin ? 'all' : 'mine');
+  const [qAuthorFilter, setQAuthorFilter] = useState<string>(() => isSuperAdmin ? (currentUser?.id || 'all') : 'mine');
   const [qChapterFilter, setQChapterFilter] = useState('all');
 
   // Mặc định chuẩn hóa theo phân quyền SuperAdmin vs Giáo viên
@@ -330,11 +349,14 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
     setRGradeFilter('12');
 
     if (isSuperAdmin) {
-      setQSubjectFilter('Vật lí');
-      setQAuthorFilter('all');
-      setBSubjectFilter('Vật lí');
+      const defaultId = currentUser?.id || 'all';
+      setAdminViewAccountId(defaultId);
+      setQSubjectFilter(currentUser?.subject || 'Vật lí');
+      setQAuthorFilter(defaultId);
+      setBSubjectFilter(currentUser?.subject || 'Vật lí');
       setBGradeFilter('12');
     } else if (currentUser) {
+      setAdminViewAccountId('all');
       setQAuthorFilter('mine');
       if (currentUser.subject) {
         setQSubjectFilter(currentUser.subject);
@@ -346,6 +368,46 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
       setBGradeFilter((currentUser.grade as Grade) || '12');
     }
   }, [currentUser?.id, currentUser?.subject, currentUser?.grade, isSuperAdmin]);
+
+  // Danh sách tài khoản GV cho SuperAdmin chọn (luôn đặt tài khoản của Tổng Admin lên đầu)
+  const adminAccountOptions = useMemo(() => {
+    if (!isSuperAdmin) return [];
+    const list: User[] = [];
+    const seen = new Set<string>();
+    if (currentUser?.id) {
+      const existingSelf = teachers.find(t => t.id === currentUser.id);
+      list.push(existingSelf || currentUser);
+      seen.add(currentUser.id);
+    }
+    teachers
+      .filter(t => t.id && !seen.has(t.id))
+      .sort((a, b) => (a.fullName || '').localeCompare(b.fullName || '', 'vi'))
+      .forEach(t => {
+        seen.add(t.id);
+        list.push(t);
+      });
+    return list;
+  }, [isSuperAdmin, currentUser, teachers]);
+
+  const handleSwitchAdminAccount = useCallback((accountId: string) => {
+    setAdminViewAccountId(accountId);
+    setQChapterFilter('all');
+    if (accountId === 'all') {
+      setQAuthorFilter('all');
+      setQSubjectFilter('all');
+      return;
+    }
+    setQAuthorFilter(accountId);
+    const targetAcc = accountId === currentUser?.id
+      ? currentUser
+      : teachers.find(t => t.id === accountId);
+    if (targetAcc?.subject) {
+      setQSubjectFilter(targetAcc.subject);
+      setBSubjectFilter(targetAcc.subject);
+    } else {
+      setQSubjectFilter('all');
+    }
+  }, [currentUser, teachers]);
   const [sSearch, setSSearch] = useState('');
   const [rSearch, setRSearch] = useState('');
   const [sGradeFilter, setSGradeFilter] = useState<Grade | 'all'>('12');
@@ -426,9 +488,30 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
     }
   }, [activeTab, isSuperAdmin]);
 
-  // Quản lý dữ liệu phân quyền theo giáo viên
+  // Tài khoản giáo viên đang được SuperAdmin chọn xem tài nguyên
+  const selectedAdminAccount = useMemo(() => {
+    if (!isSuperAdmin || !adminViewAccountId || adminViewAccountId === 'all') return undefined;
+    if (currentUser?.id === adminViewAccountId) {
+      return teachers.find(t => t.id === adminViewAccountId) || currentUser;
+    }
+    return teachers.find(t => t.id === adminViewAccountId);
+  }, [isSuperAdmin, adminViewAccountId, currentUser, teachers]);
+
+  const isScopedAdminView = Boolean(isSuperAdmin && adminViewAccountId && adminViewAccountId !== 'all');
+  const isViewingOwnAdminAccount = Boolean(isSuperAdmin && currentUser?.id && adminViewAccountId === currentUser.id);
+
+  // Quản lý dữ liệu phân quyền theo giáo viên (SuperAdmin xem theo tài khoản đang chọn, mặc định là TK Tổng Admin)
   const accessibleQuizzes = useMemo(() => {
-    if (isSuperAdmin) return quizzes;
+    if (isSuperAdmin) {
+      if (!isScopedAdminView) return quizzes;
+      // Nếu SuperAdmin đang ở tab Đề thi và chọn chế độ "Đề chia sẻ từ GV khác", vẫn cung cấp các đề được chia sẻ
+      if (activeTab === 'quizzes' && qAuthorFilter === 'shared') {
+        return quizzes.filter(q => q.createdBy !== adminViewAccountId && Boolean(q.isSharedWithTeachers));
+      }
+      return quizzes.filter(q =>
+        q.createdBy === adminViewAccountId || (isViewingOwnAdminAccount && !q.createdBy)
+      );
+    }
     const mySubj = currentUser?.subject;
     return quizzes.filter(q => {
       // Đề do mình tạo: luôn truy cập được
@@ -452,22 +535,38 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
       }
       return false;
     });
-  }, [quizzes, isSuperAdmin, currentUser?.id, currentUser?.subject, teachers]);
+  }, [quizzes, isSuperAdmin, isScopedAdminView, isViewingOwnAdminAccount, adminViewAccountId, activeTab, qAuthorFilter, currentUser?.id, currentUser?.subject, teachers]);
 
   const accessibleQuizIds = useMemo(() => new Set(accessibleQuizzes.map(q => q.id)), [accessibleQuizzes]);
 
-  // Quản lý phân quyền lớp học: Giáo viên chỉ thấy lớp do mình tạo hoặc lớp được chia sẻ (SuperAdmin thấy tất cả)
+  // Quản lý phân quyền lớp học: SuperAdmin lọc theo GV đang chọn; GV thường thấy lớp của mình hoặc lớp được chia sẻ
   const accessibleClasses = useMemo(() => {
-    if (isSuperAdmin) return classes;
+    if (isSuperAdmin) {
+      if (!isScopedAdminView) return classes;
+      return classes.filter(c =>
+        c.createdBy === adminViewAccountId || (isViewingOwnAdminAccount && !c.createdBy)
+      );
+    }
     return classes.filter(c => {
       if (c.createdBy && c.createdBy === currentUser?.id) return true;
       if (c.isSharedWithTeachers) return true;
       return false;
     });
-  }, [classes, isSuperAdmin, currentUser?.id]);
+  }, [classes, isSuperAdmin, isScopedAdminView, isViewingOwnAdminAccount, adminViewAccountId, currentUser?.id]);
 
   const accessibleClassIds = useMemo(() => new Set(accessibleClasses.map(c => c.id)), [accessibleClasses]);
   const accessibleClassNames = useMemo(() => new Set(accessibleClasses.map(c => c.name.trim().toLowerCase())), [accessibleClasses]);
+
+  // Thư mục đề thi thuộc tài khoản đang xem
+  const accessibleFolders = useMemo(() => {
+    if (!isSuperAdmin) {
+      return folders.filter(f => !f.createdBy || f.createdBy === currentUser?.id);
+    }
+    if (!isScopedAdminView) return folders;
+    return folders.filter(f =>
+      f.createdBy === adminViewAccountId || (isViewingOwnAdminAccount && !f.createdBy)
+    );
+  }, [folders, isSuperAdmin, isScopedAdminView, isViewingOwnAdminAccount, adminViewAccountId, currentUser?.id]);
 
   // Bản đồ tra cứu học sinh toàn hệ thống (để đối soát thông tin lớp học và người tạo)
   const studentMapById = useMemo(() => {
@@ -494,88 +593,80 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
     return map;
   }, [quizzes]);
 
-  // Quản lý phân quyền kết quả thi:
-  // - SuperAdmin: toàn quyền thấy mọi kết quả
-  // - Giáo viên: chỉ thấy kết quả của học sinh thuộc các lớp do mình quản lý/tạo, học sinh do mình tạo, hoặc bài làm đề thi do mình tạo (nếu học sinh chưa phân lớp)
+  // Quản lý phân quyền kết quả thi
   const accessibleResults = useMemo(() => {
-    if (isSuperAdmin) return results;
+    if (isSuperAdmin && !isScopedAdminView) return results;
+    const ownerId = isSuperAdmin ? adminViewAccountId : currentUser?.id;
     return results.filter(r => {
-      // 1. Phải thuộc danh sách đề thi giáo viên có quyền truy cập
-      if (!accessibleQuizIds.has(r.quizId)) return false;
+      // 1. Phải thuộc danh sách đề thi giáo viên có quyền truy cập (hoặc của tài khoản đang xem)
+      if (!accessibleQuizIds.has(r.quizId)) {
+        if (!isSuperAdmin) return false;
+      }
 
       // 2. Tìm thông tin học sinh qua ID hoặc Mã học sinh (MAHS)
       const student = (r.studentId ? studentMapById.get(r.studentId) : null) || 
                       (r.studentCode && r.studentCode !== 'N/A' ? studentMapByCode.get(r.studentCode.trim().toUpperCase()) : null);
 
       if (student) {
-        // Học sinh thuộc lớp của giáo viên này hoặc lớp được chia sẻ
         if (student.classId && accessibleClassIds.has(student.classId)) return true;
         if (student.className && accessibleClassNames.has(student.className.trim().toLowerCase())) return true;
-        // Học sinh do chính giáo viên này tạo/nhập danh sách
-        if (student.createdById && student.createdById === currentUser?.id) return true;
+        if (student.createdById && student.createdById === ownerId) return true;
 
-        // Nếu học sinh đã có lớp hoặc do GV khác tạo -> Tuyệt đối không hiển thị cho GV này
-        if (student.classId || student.className || (student.createdById && student.createdById !== currentUser?.id)) {
-          return false;
+        if (student.classId || student.className || (student.createdById && student.createdById !== ownerId)) {
+          return isSuperAdmin ? accessibleQuizIds.has(r.quizId) : false;
         }
 
-        // Học sinh chưa phân lớp: chỉ hiển thị nếu làm đề do GV này trực tiếp tạo
         const quiz = quizMapById.get(r.quizId);
-        return quiz?.createdBy === currentUser?.id;
+        return quiz?.createdBy === ownerId || (isViewingOwnAdminAccount && !quiz?.createdBy);
       }
 
-      // Thí sinh tự do / chưa gán hồ sơ: chỉ hiển thị nếu làm đề do chính giáo viên này tạo
       const quiz = quizMapById.get(r.quizId);
-      return quiz?.createdBy === currentUser?.id;
+      return quiz?.createdBy === ownerId || (isViewingOwnAdminAccount && !quiz?.createdBy);
     });
-  }, [results, isSuperAdmin, accessibleQuizIds, studentMapById, studentMapByCode, accessibleClassIds, accessibleClassNames, currentUser?.id, quizMapById]);
+  }, [results, isSuperAdmin, isScopedAdminView, isViewingOwnAdminAccount, adminViewAccountId, accessibleQuizIds, studentMapById, studentMapByCode, accessibleClassIds, accessibleClassNames, currentUser?.id, quizMapById]);
 
-  // Quản lý phân quyền học sinh: Giáo viên thấy học sinh thuộc các lớp do mình quản lý, học sinh do mình tạo/nhập, và học sinh chưa phân lớp để có thể chọn gán vào lớp
+  // Quản lý phân quyền học sinh
   const accessibleStudents = useMemo(() => {
-    if (isSuperAdmin) return students;
+    if (isSuperAdmin && !isScopedAdminView) return students;
+    const ownerId = isSuperAdmin ? adminViewAccountId : currentUser?.id;
     return students.filter(s => {
-      // 1. Học sinh thuộc lớp của giáo viên này (hoặc lớp được chia sẻ)
       if (s.classId && accessibleClassIds.has(s.classId)) return true;
       if (s.className && accessibleClassNames.has(s.className.trim().toLowerCase())) return true;
-      // 2. Học sinh do chính giáo viên này tạo / nhập CSV
-      if (s.createdById && s.createdById === currentUser?.id) return true;
-      // 3. Học sinh chưa phân lớp và chưa có GV quản lý riêng
-      if (!s.classId && !s.className && (!s.createdById || s.createdById === currentUser?.id)) return true;
+      if (s.createdById && s.createdById === ownerId) return true;
+      if (!s.classId && !s.className && (!s.createdById || s.createdById === ownerId)) {
+        return !isSuperAdmin || isViewingOwnAdminAccount;
+      }
       return false;
     });
-  }, [students, isSuperAdmin, accessibleClassIds, accessibleClassNames, currentUser?.id]);
+  }, [students, isSuperAdmin, isScopedAdminView, isViewingOwnAdminAccount, adminViewAccountId, accessibleClassIds, accessibleClassNames, currentUser?.id]);
 
-  // Quản lý chương trình học theo môn: Giáo viên cùng môn sẽ nhìn thấy và dùng chung, khác môn thì không thấy
+  // Quản lý chương trình học theo môn
   const accessibleChapters = useMemo(() => {
-    if (isSuperAdmin) return chapters;
-    const teacherSubject = currentUser?.subject?.trim();
-    if (!teacherSubject) return chapters; // Nếu giáo viên chưa khai báo môn, hiển thị các chương
+    if (isSuperAdmin && !isScopedAdminView) return chapters;
+    const ownerSubject = isSuperAdmin ? selectedAdminAccount?.subject?.trim() : currentUser?.subject?.trim();
+    const ownerId = isSuperAdmin ? adminViewAccountId : currentUser?.id;
+    if (!ownerSubject) return chapters;
     return chapters.filter(c => {
-      // 1. Cùng môn học -> Thấy và dùng chung
-      if (c.subject && isSameSubject(c.subject, teacherSubject)) return true;
-      // 2. Do chính giáo viên này tạo
-      if (c.createdBy && c.createdBy === currentUser?.id) return true;
-      // 3. Chương chưa gán môn
+      if (c.subject && isSameSubject(c.subject, ownerSubject)) return true;
+      if (c.createdBy && c.createdBy === ownerId) return true;
       if (!c.subject) return true;
       return false;
     });
-  }, [chapters, isSuperAdmin, currentUser?.subject, currentUser?.id]);
+  }, [chapters, isSuperAdmin, isScopedAdminView, selectedAdminAccount?.subject, adminViewAccountId, currentUser?.subject, currentUser?.id]);
 
-  // Quản lý ngân hàng câu hỏi theo môn: Giáo viên cùng môn sẽ nhìn thấy và dùng chung, khác môn thì không thấy
+  // Quản lý ngân hàng câu hỏi theo môn
   const accessibleBankQuestions = useMemo(() => {
-    if (isSuperAdmin) return bankQuestions;
-    const teacherSubject = currentUser?.subject?.trim();
-    if (!teacherSubject) return bankQuestions;
+    if (isSuperAdmin && !isScopedAdminView) return bankQuestions;
+    const ownerSubject = isSuperAdmin ? selectedAdminAccount?.subject?.trim() : currentUser?.subject?.trim();
+    const ownerId = isSuperAdmin ? adminViewAccountId : currentUser?.id;
+    if (!ownerSubject) return bankQuestions;
     return bankQuestions.filter(q => {
-      // 1. Cùng môn học -> Thấy và dùng chung
-      if (q.subject && isSameSubject(q.subject, teacherSubject)) return true;
-      // 2. Do chính giáo viên này tạo
-      if (q.createdBy && q.createdBy === currentUser?.id) return true;
-      // 3. Câu hỏi chưa gán môn
+      if (q.subject && isSameSubject(q.subject, ownerSubject)) return true;
+      if (q.createdBy && q.createdBy === ownerId) return true;
       if (!q.subject) return true;
       return false;
     });
-  }, [bankQuestions, isSuperAdmin, currentUser?.subject, currentUser?.id]);
+  }, [bankQuestions, isSuperAdmin, isScopedAdminView, selectedAdminAccount?.subject, adminViewAccountId, currentUser?.subject, currentUser?.id]);
 
   // Alert and Confirmation Modal State
   const [alertModal, setAlertModal] = useState<{
@@ -1328,6 +1419,151 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
     await loadTabData('quizzes', true);
   }, [loadTabData]);
 
+  // Sao chép đề thi được chia sẻ thành bản độc lập trong kho cá nhân của GV hiện tại
+  const handleCopySharedQuiz = useCallback(async (
+    sourceQuiz: Quiz,
+    options?: {
+      title?: string;
+      durationMinutes?: number;
+      type?: QuizType;
+      maxAttempts?: number;
+      folderId?: string;
+      folderName?: string;
+      openMode?: 'editor' | 'assign' | 'stay';
+    }
+  ): Promise<Quiz | null> => {
+    if (!currentUser) return null;
+    setIsSavingInProgress(true);
+    try {
+      const fullSource = (await getQuizById(sourceQuiz.id, true)) || sourceQuiz;
+      if (!fullSource.questions || fullSource.questions.length === 0) {
+        showAlert("Không có câu hỏi", "Đề chia sẻ này chưa có câu hỏi nào để sao chép.", "warning");
+        return null;
+      }
+
+      const copiedQuiz = buildIndependentQuizCopy(fullSource, currentUser, options);
+      await saveQuiz(copiedQuiz);
+
+      setQuizzes(prev => [copiedQuiz, ...prev.filter(q => q.id !== copiedQuiz.id)]);
+      if (isSuperAdmin) {
+        setAdminViewAccountId(currentUser.id);
+        setQAuthorFilter(currentUser.id);
+      } else {
+        setQAuthorFilter('mine');
+      }
+      setPreviewQuiz(null);
+
+      if (options?.openMode === 'editor') {
+        setEditingQuizId(copiedQuiz.id);
+        setQuizTitle(copiedQuiz.title);
+        setQuizGrade(copiedQuiz.grade);
+        setQuizAcademicYear(copiedQuiz.academicYear || getCurrentAcademicYear());
+        setQuizSubject(copiedQuiz.subject || mySubject || currentUser.subject || 'Vật lí');
+        setQuizType(copiedQuiz.type || 'test');
+        setQuizMaxAttempts(copiedQuiz.maxAttempts ?? 1);
+        setIsPublished(Boolean(copiedQuiz.isPublished));
+        setIsMonitored(Boolean(copiedQuiz.isMonitored));
+        setShowResultAnswers(copiedQuiz.showResultAnswers !== false);
+        setIsUnlisted(false);
+        setIsSharedWithTeachers(false);
+        setTargetType(copiedQuiz.targetType || 'classes');
+        setAssignedClassIds([]);
+        setDuration(copiedQuiz.durationMinutes || 45);
+        setOrderIndex(copiedQuiz.orderIndex || 1);
+        setCategory(copiedQuiz.category || '');
+        setQuizFolderId(copiedQuiz.folderId || '');
+        setQuizFolderName(copiedQuiz.folderName || '');
+        setStartTime('');
+        setEndTime('');
+        setQuestions(copiedQuiz.questions || []);
+        setIsEditingQuiz(true);
+        setActiveTab('quizzes');
+      } else if (options?.openMode !== 'assign') {
+        showAlert(
+          "Đã tạo bản sao độc lập",
+          `Đã lưu đề "${copiedQuiz.title}" vào kho Đề của tôi! Bạn có thể tự do chỉnh thời gian làm bài, thêm/xóa/sửa câu hỏi và giao cho các lớp của mình độc lập với file gốc.`,
+          "success"
+        );
+      }
+      return copiedQuiz;
+    } catch (err: any) {
+      console.error("Lỗi khi sao chép đề chia sẻ:", err);
+      showAlert("Lỗi sao chép đề", err?.message || "Không thể tạo bản sao đề thi.", "error");
+      return null;
+    } finally {
+      setIsSavingInProgress(false);
+    }
+  }, [currentUser, isSuperAdmin, mySubject, showAlert]);
+
+  // Cập nhật thêm câu hỏi mới từ đề gốc vào bản sao (KHÔNG cập nhật/ghi đè các câu trùng với file gốc)
+  const handleUpdateCopyFromOriginal = useCallback(async (copiedQuiz: Quiz): Promise<void> => {
+    if (!currentUser) return;
+    const storedOrigins = getStoredCopiedQuizOrigins();
+    const originId = copiedQuiz.copiedFromQuizId ||
+      storedOrigins[String(copiedQuiz.id)]?.sourceQuizId ||
+      copiedQuiz.questions?.find(q => q.copiedFromQuizId)?.copiedFromQuizId;
+
+    if (!originId) {
+      showAlert("Không xác định được đề gốc", "Không tìm thấy liên kết đề gốc của bản sao này.", "warning");
+      return;
+    }
+
+    setIsSavingInProgress(true);
+    try {
+      const [fullCopy, fullOriginal] = await Promise.all([
+        getQuizById(copiedQuiz.id, true),
+        getQuizById(originId, true)
+      ]);
+
+      if (!fullOriginal) {
+        showAlert("Không tìm thấy đề gốc", "Đề chia sẻ gốc có thể đã bị xóa bởi tác giả.", "warning");
+        return;
+      }
+
+      const baseCopy = fullCopy || copiedQuiz;
+      const { mergedQuestions, addedCount, skippedDuplicatesCount } = mergeNewQuestionsWithoutOverwritingOriginals(
+        baseCopy.questions || [],
+        fullOriginal.questions || [],
+        fullOriginal.id,
+        currentUser
+      );
+
+      if (addedCount === 0) {
+        showAlert(
+          "Không có câu mới cần cập nhật",
+          `Đã đối soát ${fullOriginal.questions?.length || 0} câu từ đề gốc. Toàn bộ ${skippedDuplicatesCount} câu trùng/đã chỉnh sửa được giữ nguyên độc lập theo bản sao của bạn.`,
+          "info"
+        );
+        return;
+      }
+
+      const updatedQuiz: Quiz = {
+        ...baseCopy,
+        questions: mergedQuestions,
+        questionCount: mergedQuestions.length,
+        copiedFromQuizId: fullOriginal.id,
+        copiedFromTitle: fullOriginal.title
+      };
+
+      await updateQuiz(updatedQuiz);
+      setQuizzes(prev => prev.map(q => q.id === updatedQuiz.id ? { ...q, ...updatedQuiz, questionCount: mergedQuestions.length } : q));
+      if (isEditingQuiz && editingQuizId === updatedQuiz.id) {
+        setQuestions(mergedQuestions);
+      }
+
+      showAlert(
+        "Cập nhật hoàn tất (Giữ nguyên câu trùng)",
+        `Đã bổ sung ${addedCount} câu hỏi mới từ đề gốc "${fullOriginal.title}". Đã bỏ qua ${skippedDuplicatesCount} câu trùng với file gốc để không ghi đè nội dung bạn đang dùng.`,
+        "success"
+      );
+    } catch (err: any) {
+      console.error("Lỗi cập nhật từ đề gốc:", err);
+      showAlert("Lỗi cập nhật", err?.message || "Không thể cập nhật từ đề gốc.", "error");
+    } finally {
+      setIsSavingInProgress(false);
+    }
+  }, [currentUser, editingQuizId, isEditingQuiz, showAlert]);
+
   const handleDeleteQuiz = (id: string) => {
     const targetQuiz = quizzes.find(q => q.id === id);
     const isMine = Boolean(currentUser?.id && targetQuiz?.createdBy === currentUser.id);
@@ -1933,6 +2169,29 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
               </div>
             )}
           </div>
+
+          {isSuperAdmin && (
+            <div className="hidden lg:block bg-amber-500/10 p-2.5 rounded-xl border border-amber-400/25 space-y-1.5">
+              <label className="text-[9px] font-black uppercase text-amber-300 flex items-center gap-1.5">
+                <UserCheck size={11} className="text-amber-400"/> Xem tài khoản GV:
+              </label>
+              <select
+                value={adminViewAccountId}
+                onChange={(e) => handleSwitchAdminAccount(e.target.value)}
+                className="w-full bg-slate-800 text-amber-100 text-[11px] font-bold rounded-lg px-2.5 py-1.5 border border-amber-400/30 outline-none focus:border-amber-400 transition-colors cursor-pointer"
+                title="Chọn tài khoản Giáo viên để chỉ hiển thị đề thi, thư mục và lớp của GV đó (Mặc định: Tổng Admin)"
+              >
+                {adminAccountOptions.map(acc => (
+                  <option key={acc.id} value={acc.id}>
+                    {acc.id === currentUser?.id
+                      ? `👑 TK của tôi (${acc.fullName})`
+                      : `👤 GV: ${acc.fullName}${acc.subject ? ` (${acc.subject})` : ''}`}
+                  </option>
+                ))}
+                <option value="all">🌐 Tất cả giáo viên (Toàn trường)</option>
+              </select>
+            </div>
+          )}
         </div>
       </aside>
 
@@ -1943,6 +2202,55 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
         className="flex-1 h-full overflow-y-auto custom-scrollbar bg-slate-50 flex flex-col justify-between outline-none focus:outline-none focus:ring-0"
       >
         <div className="p-4 lg:p-8 max-w-[1600px] mx-auto flex-1 w-full">
+          {isSuperAdmin && activeTab !== 'teachers' && activeTab !== 'database' && (
+            <div className="mb-5 bg-white border border-amber-200/90 rounded-2xl px-4 py-3 shadow-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
+                  isViewingOwnAdminAccount ? 'bg-blue-600 text-white' : (adminViewAccountId === 'all' ? 'bg-slate-800 text-white' : 'bg-amber-500 text-white')
+                }`}>
+                  <UserCheck size={17} />
+                </div>
+                <div className="min-w-0">
+                  <div className="text-[10px] font-black uppercase tracking-wider text-slate-400">
+                    Phạm vi tài nguyên đang hiển thị
+                  </div>
+                  <div className="text-xs font-black text-slate-800 truncate">
+                    {adminViewAccountId === 'all'
+                      ? '🌐 Tất cả giáo viên toàn trường'
+                      : isViewingOwnAdminAccount
+                        ? `👑 Tài khoản Tổng Admin: ${currentUser?.fullName || 'Admin'}`
+                        : `👤 Giáo viên: ${selectedAdminAccount?.fullName || 'Đang chọn'}${selectedAdminAccount?.subject ? ` — Môn ${selectedAdminAccount.subject}` : ''}`}
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 w-full sm:w-auto flex-wrap">
+                <select
+                  value={adminViewAccountId}
+                  onChange={(e) => handleSwitchAdminAccount(e.target.value)}
+                  className="flex-1 sm:flex-initial sm:min-w-[230px] bg-amber-50/70 border border-amber-300 text-amber-950 text-xs font-bold rounded-xl px-3 py-2 outline-none focus:border-amber-500 cursor-pointer"
+                >
+                  {adminAccountOptions.map(acc => (
+                    <option key={acc.id} value={acc.id}>
+                      {acc.id === currentUser?.id
+                        ? `👑 TK Tổng Admin (${acc.fullName})`
+                        : `👤 GV: ${acc.fullName}${acc.subject ? ` (${acc.subject})` : ''}`}
+                    </option>
+                  ))}
+                  <option value="all">🌐 Tất cả giáo viên (Toàn trường)</option>
+                </select>
+                {currentUser?.id && adminViewAccountId !== currentUser.id && (
+                  <button
+                    type="button"
+                    onClick={() => handleSwitchAdminAccount(currentUser.id)}
+                    className="px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-[10px] font-black uppercase transition-all shadow-xs cursor-pointer shrink-0"
+                  >
+                    Về TK của tôi
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
           {!dbConnected && (
             <div className="mb-8 bg-red-50 border-2 border-red-100 p-8 rounded-[3rem] shadow-sm flex flex-col md:flex-row items-center justify-between gap-6 animate-pulse">
                 <div className="flex items-center gap-5">
@@ -1977,7 +2285,7 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
                         </div>
                     </div>
                 )}
-                <QuizEditor
+                    <QuizEditor
                     currentUser={currentUser}
                     editingId={editingQuizId} title={quizTitle} setTitle={setQuizTitle}
                     grade={quizGrade} setGrade={setQuizGrade} quizType={quizType} setQuizType={setQuizType}
@@ -1986,7 +2294,7 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
                     subject={quizSubject} setSubject={setQuizSubject}
                     folderId={quizFolderId} setFolderId={setQuizFolderId}
                     folderName={quizFolderName} setFolderName={setQuizFolderName}
-                    folders={folders} onSaveFolder={handleSaveFolder}
+                    folders={accessibleFolders} onSaveFolder={handleSaveFolder}
                     isPublished={isPublished} setIsPublished={setIsPublished} isMonitored={isMonitored} setIsMonitored={setIsMonitored}
                     showResultAnswers={showResultAnswers} setShowResultAnswers={setShowResultAnswers}
                     isUnlisted={isUnlisted} setIsUnlisted={setIsUnlisted}
@@ -2065,9 +2373,11 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
                     <div className="py-20 text-center"><Loader2 className="animate-spin mx-auto text-blue-500" size={40}/><p className="mt-4 text-[10px] font-black uppercase text-slate-400">Đang tải Cloud...</p></div>
                 ) : (
                     <QuizList 
-                        quizzes={accessibleQuizzes} results={accessibleResults} chapters={accessibleChapters} classes={accessibleClasses}
+                        quizzes={accessibleQuizzes} allQuizzes={quizzes} results={accessibleResults} chapters={accessibleChapters} classes={accessibleClasses}
                         currentUser={currentUser} teachers={teachers}
                         folders={folders}
+                        adminViewAccountId={adminViewAccountId}
+                        onSelectAdminAccount={handleSwitchAdminAccount}
                         onSaveFolder={handleSaveFolder}
                         onDeleteFolder={handleDeleteFolder}
                         onMoveQuizToFolder={handleMoveQuizToFolder}
@@ -2076,11 +2386,19 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
                         onAssignClasses={handleAssignClasses}
                         onToggleShare={handleToggleQuizShare}
                         onUpdateSchedule={handleUpdateQuizSchedule}
+                        onCopySharedQuiz={handleCopySharedQuiz}
+                        onUpdateCopyFromOriginal={handleUpdateCopyFromOriginal}
                         qSearch={qSearch} setQSearch={setQSearch} qGradeFilter={qGradeFilter} setQGradeFilter={setQGradeFilter}
                         qChapterFilter={qChapterFilter} setQChapterFilter={setQChapterFilter}
                         qSubjectFilter={qSubjectFilter} setQSubjectFilter={setQSubjectFilter}
                         qAcademicYearFilter={qAcademicYearFilter} setQAcademicYearFilter={setQAcademicYearFilter}
-                        qAuthorFilter={qAuthorFilter} setQAuthorFilter={setQAuthorFilter}
+                        qAuthorFilter={qAuthorFilter} setQAuthorFilter={(val) => {
+                          if (isSuperAdmin && val !== 'shared' && val !== 'private') {
+                            handleSwitchAdminAccount(val);
+                          } else {
+                            setQAuthorFilter(val);
+                          }
+                        }}
                         onLoadSharedQuizzes={handleLoadSharedQuizzes}
                     />
                 )}
@@ -2133,11 +2451,17 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
                 }
               }}
               onRefresh={() => loadTabData('teachers', true)}
+              onViewTeacherResources={(teacherId) => {
+                handleSwitchAdminAccount(teacherId);
+                setActiveTab('quizzes');
+                setIsEditingQuiz(false);
+              }}
             />
           )}
 
           {activeTab === 'classes' && (
             <ClassManager 
+              key={`cls_${adminViewAccountId}`}
               classes={accessibleClasses}
               students={accessibleStudents}
               quizzes={accessibleQuizzes}
@@ -2228,6 +2552,7 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
                     <div className="py-20 text-center"><Loader2 className="animate-spin mx-auto text-blue-500" size={40}/><p className="mt-4 text-[10px] font-black uppercase text-slate-400">Đang tải...</p></div>
                 ) : (
                     <StudentManager 
+                        key={`stu_${adminViewAccountId}`}
                         students={accessibleStudents} results={accessibleResults} quizzes={accessibleQuizzes} classes={accessibleClasses}
                         teachers={teachers}
                         currentUser={currentUser}
@@ -2255,6 +2580,7 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
                     <div className="py-20 text-center"><Loader2 className="animate-spin mx-auto text-blue-500" size={40}/><p className="mt-4 text-[10px] font-black uppercase text-slate-400">Đang tải...</p></div>
                 ) : (
                     <ResultsBoard 
+                        key={`res_${adminViewAccountId}`}
                         results={accessibleResults} quizzes={accessibleQuizzes} users={accessibleStudents} chapters={accessibleChapters}
                         classes={accessibleClasses} teachers={teachers} currentUser={currentUser}
                         rGradeFilter={rGradeFilter} setRGradeFilter={setRGradeFilter}
@@ -2276,6 +2602,7 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
 
           {activeTab === 'monitor' && (
             <ExamMonitor 
+              key={`mon_${adminViewAccountId}`}
               currentUser={currentUser} 
               initialQuizzes={accessibleQuizzes} 
               initialClasses={accessibleClasses} 
@@ -2440,7 +2767,14 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
       {viewingStudent && <StudentDetailModal student={viewingStudent} results={accessibleResults} quizzes={accessibleQuizzes} onClose={() => setViewingStudent(null)} onViewResult={handleViewResultDetail} />}
       {historyData && <ResultHistoryModal isOpen={true} {...historyData} onClose={() => setHistoryData(null)} onViewDetail={handleViewResultDetail} onDeleteOne={(r) => deleteResult(r.id).then(() => loadTabData('results'))} />}
       {selectedResultDetail && <ResultDetailModal isOpen={true} result={selectedResultDetail.result} quiz={selectedResultDetail.quiz} onClose={() => setSelectedResultDetail(null)} />}
-      {previewQuiz && <QuizPreviewModal quiz={previewQuiz} onClose={() => setPreviewQuiz(null)} />}
+      {previewQuiz && (
+        <QuizPreviewModal
+          quiz={previewQuiz}
+          onClose={() => setPreviewQuiz(null)}
+          canCopy={Boolean(currentUser?.id && previewQuiz.createdBy && previewQuiz.createdBy !== currentUser.id)}
+          onCopyQuiz={(q) => handleCopySharedQuiz(q, { openMode: 'stay' })}
+        />
+      )}
       
       {isBankOpen && (
         <div className="fixed inset-0 bg-slate-900/40 z-[2000] flex items-stretch justify-end">

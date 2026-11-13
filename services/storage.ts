@@ -19,7 +19,7 @@ import {
 } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL, getStorage, deleteObject } from 'firebase/storage';
 import app, { db, storage } from './firebase';
-import { User, Quiz, Result, Chapter, QuizFolder, Question, ExamSession, PublishedResult, Grade, ClassRoom } from '../types';
+import { User, Quiz, QuizType, Result, Chapter, QuizFolder, Question, ExamSession, PublishedResult, Grade, ClassRoom } from '../types';
 import { v4 as uuidv4 } from 'uuid';
 import { isSameSubject, normalizeSubject, isSameGrade } from './subjectUtils';
 import { getCurrentAcademicYear, getQuizAcademicYear } from './academicUtils';
@@ -1066,34 +1066,184 @@ export const changePassword = async (userId: string, newPassword: string): Promi
 };
 
 // --- Quizzes ---
+const COPIED_QUIZ_ORIGINS_KEY = 'eduquiz_copied_quiz_origins';
+
+export const getStoredCopiedQuizOrigins = (): Record<string, { sourceQuizId: string; sourceTitle?: string }> => {
+  try {
+    const raw = localStorage.getItem(COPIED_QUIZ_ORIGINS_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+};
+
+export const saveCopiedQuizOrigin = (copiedQuizId: string, sourceQuizId: string, sourceTitle?: string) => {
+  try {
+    const map = getStoredCopiedQuizOrigins();
+    map[String(copiedQuizId)] = { sourceQuizId, sourceTitle };
+    localStorage.setItem(COPIED_QUIZ_ORIGINS_KEY, JSON.stringify(map));
+  } catch {}
+};
+
+export const buildIndependentQuizCopy = (
+  sourceQuiz: Quiz,
+  targetUser?: User,
+  options?: {
+    title?: string;
+    durationMinutes?: number;
+    type?: QuizType;
+    maxAttempts?: number;
+    folderId?: string;
+    folderName?: string;
+    isPublished?: boolean;
+  }
+): Quiz => {
+  const repairedSourceQuestions = autoRepairQuizQuestions(Array.isArray(sourceQuiz.questions) ? sourceQuiz.questions : []);
+  const copiedQuizId = uuidv4();
+  const nextType: QuizType = options?.type || sourceQuiz.type || 'test';
+  const nextMaxAttempts = options?.maxAttempts !== undefined
+    ? options.maxAttempts
+    : (nextType === 'practice' ? 0 : (sourceQuiz.maxAttempts !== undefined ? sourceQuiz.maxAttempts : 1));
+  const isSuperAdmin = targetUser?.role === 'superadmin';
+
+  const clonedQuestions: Question[] = repairedSourceQuestions.map((origQ) => ({
+    ...origQ,
+    id: uuidv4(),
+    bankQuestionId: origQ.bankQuestionId || origQ.id,
+    copiedFromQuizId: sourceQuiz.id,
+    copiedFromQuestionId: origQ.id,
+    createdBy: targetUser?.id || origQ.createdBy,
+    createdByName: targetUser?.fullName || origQ.createdByName
+  }));
+
+  const copiedQuiz: Quiz = {
+    ...sourceQuiz,
+    id: copiedQuizId,
+    title: options?.title?.trim() || `${sourceQuiz.title} (Bản sao)`,
+    type: nextType,
+    durationMinutes: options?.durationMinutes ?? sourceQuiz.durationMinutes ?? 45,
+    maxAttempts: nextMaxAttempts,
+    questions: clonedQuestions,
+    questionCount: clonedQuestions.length,
+    attemptCount: 0,
+    createdAt: new Date().toISOString(),
+    isPublished: options?.isPublished ?? true,
+    isUnlisted: false,
+    isSharedWithTeachers: false,
+    createdBy: targetUser?.id || '',
+    createdByName: targetUser?.fullName || 'Giáo viên',
+    folderId: options?.folderId || undefined,
+    folderName: options?.folderName || undefined,
+    startTime: '',
+    endTime: '',
+    academicYear: getCurrentAcademicYear(),
+    targetType: isSuperAdmin ? 'all' : 'classes',
+    assignedClassIds: [],
+    assignedClasses: [],
+    copiedFromQuizId: sourceQuiz.id,
+    copiedFromTitle: sourceQuiz.title,
+    syncedToBank: false
+  };
+
+  saveCopiedQuizOrigin(copiedQuizId, sourceQuiz.id, sourceQuiz.title);
+  return copiedQuiz;
+};
+
+export const mergeNewQuestionsWithoutOverwritingOriginals = (
+  currentQuestions: Question[],
+  sourceQuestions: Question[],
+  sourceQuizId: string,
+  targetUser?: User
+): { mergedQuestions: Question[]; addedCount: number; skippedDuplicatesCount: number } => {
+  const repairedCurrent = autoRepairQuizQuestions(Array.isArray(currentQuestions) ? currentQuestions : []);
+  const repairedSource = autoRepairQuizQuestions(Array.isArray(sourceQuestions) ? sourceQuestions : []);
+
+  const existingOrigIds = new Set<string>();
+  const existingFps = new Set<string>();
+  const existingCfps = new Set<string>();
+
+  repairedCurrent.forEach((q) => {
+    if (q.id) existingOrigIds.add(q.id);
+    if (q.copiedFromQuestionId) existingOrigIds.add(q.copiedFromQuestionId);
+    if (q.bankQuestionId) existingOrigIds.add(q.bankQuestionId);
+    const fp = getQuestionFingerprint(q);
+    if (fp) existingFps.add(fp);
+    const cfp = getCombinedQuestionFingerprint(q);
+    if (cfp) existingCfps.add(cfp);
+  });
+
+  const newQuestions: Question[] = [];
+  let skippedDuplicatesCount = 0;
+
+  repairedSource.forEach((srcQ) => {
+    const srcFp = getQuestionFingerprint(srcQ);
+    const srcCfp = getCombinedQuestionFingerprint(srcQ);
+    const isDuplicate =
+      (srcQ.id && existingOrigIds.has(srcQ.id)) ||
+      (srcQ.bankQuestionId && existingOrigIds.has(srcQ.bankQuestionId)) ||
+      Boolean(srcFp && existingFps.has(srcFp)) ||
+      Boolean(srcCfp && existingCfps.has(srcCfp));
+
+    if (isDuplicate) {
+      skippedDuplicatesCount++;
+      return;
+    }
+
+    const clonedQ: Question = {
+      ...srcQ,
+      id: uuidv4(),
+      bankQuestionId: srcQ.bankQuestionId || srcQ.id,
+      copiedFromQuizId: sourceQuizId,
+      copiedFromQuestionId: srcQ.id,
+      createdBy: targetUser?.id || srcQ.createdBy,
+      createdByName: targetUser?.fullName || srcQ.createdByName
+    };
+    newQuestions.push(clonedQ);
+    if (srcFp) existingFps.add(srcFp);
+    if (srcCfp) existingCfps.add(srcCfp);
+  });
+
+  return {
+    mergedQuestions: [...repairedCurrent, ...newQuestions],
+    addedCount: newQuestions.length,
+    skippedDuplicatesCount
+  };
+};
+
 export const applyFolderAssignments = (quizzesList: Quiz[]): Quiz[] => {
   if (!Array.isArray(quizzesList) || quizzesList.length === 0) return quizzesList || [];
   const assignments = getStoredFolderAssignments();
+  const copiedOrigins = getStoredCopiedQuizOrigins();
   return quizzesList.map(q => {
+    const origin = copiedOrigins[String(q.id)] || copiedOrigins[q.id];
+    const withOrigin = (!q.copiedFromQuizId && origin?.sourceQuizId)
+      ? { ...q, copiedFromQuizId: origin.sourceQuizId, copiedFromTitle: origin.sourceTitle || q.copiedFromTitle }
+      : q;
+
     // 1. Ưu tiên dữ liệu chính quy lưu trên Database đám mây (Supabase / Firestore)
-    if (q.folderId) {
-      saveStoredFolderAssignment(q.id, q.folderId, q.folderName);
-      return q;
+    if (withOrigin.folderId) {
+      saveStoredFolderAssignment(withOrigin.id, withOrigin.folderId, withOrigin.folderName);
+      return withOrigin;
     }
     // 2. Dùng bộ nhớ tạm cục bộ nếu DB chưa tải kịp
-    const qKey = String(q.id);
-    const assigned = assignments[qKey] || assignments[q.id];
+    const qKey = String(withOrigin.id);
+    const assigned = assignments[qKey] || assignments[withOrigin.id];
     if (assigned && assigned.folderId) {
       return {
-        ...q,
+        ...withOrigin,
         folderId: assigned.folderId,
-        folderName: assigned.folderName || q.folderName
+        folderName: assigned.folderName || withOrigin.folderName
       };
     }
     // Nếu trong assignments được đánh dấu rõ ràng là bỏ khỏi thư mục (unassigned)
     if (assigned && assigned.folderId === '') {
       return {
-        ...q,
+        ...withOrigin,
         folderId: undefined,
         folderName: undefined
       };
     }
-    return q;
+    return withOrigin;
   });
 };
 
@@ -2993,8 +3143,17 @@ export const syncQuizzesToBank = async (
       }
     }
 
-    // Sắp xếp ưu tiên các đề thi có chứa câu hỏi có lời dẫn chung (đã chuẩn hóa) và đề mới chỉnh sửa lên đầu
+    const checkIsCopiedQuiz = (quiz: Quiz): boolean => {
+      if (quiz.copiedFromQuizId) return true;
+      if (quiz.title && /\(bản sao\)/i.test(quiz.title)) return true;
+      return (quiz.questions || []).some(q => Boolean(q.copiedFromQuizId || q.copiedFromQuestionId));
+    };
+
+    // Sắp xếp ưu tiên đề gốc trước bản sao, tiếp theo ưu tiên đề có lời dẫn chung & đề mới chỉnh sửa lên đầu
     allQuizzes.sort((a, b) => {
+      const aIsCopy = checkIsCopiedQuiz(a) ? 1 : 0;
+      const bIsCopy = checkIsCopiedQuiz(b) ? 1 : 0;
+      if (aIsCopy !== bIsCopy) return aIsCopy - bIsCopy;
       const aHasPassage = (a.questions || []).some(q => !!cleanGroupPassageText(q.groupPassage || '')) ? 1 : 0;
       const bHasPassage = (b.questions || []).some(q => !!cleanGroupPassageText(q.groupPassage || '')) ? 1 : 0;
       if (bHasPassage !== aHasPassage) return bHasPassage - aHasPassage;
@@ -3050,6 +3209,7 @@ export const syncQuizzesToBank = async (
     allQuizzes.forEach(quiz => {
       const rawQuestions = autoRepairQuizQuestions(Array.isArray(quiz.questions) ? quiz.questions : []);
       if (rawQuestions.length === 0) return;
+      const isQuizCopy = checkIsCopiedQuiz(quiz);
 
       const enrichedQuestions: Question[] = rawQuestions.map(q => {
         const qSubject = q.subject || quiz.subject || '';
@@ -3076,6 +3236,10 @@ export const syncQuizzesToBank = async (
           }
           const matchedId = findMatchingBankIdFast(eq);
           if (!matchedId) return false;
+          // Nếu là bản sao & đã khớp câu hỏi gốc -> bỏ qua không cập nhật đè câu gốc
+          if (isQuizCopy || eq.copiedFromQuestionId || eq.copiedFromQuizId) {
+            return true;
+          }
           const bq = existingBankMapById.get(matchedId)!;
           return !checkNeedsBankUpdate(eq, bq);
         })
@@ -3099,8 +3263,14 @@ export const syncQuizzesToBank = async (
         const fp = getQuestionFingerprint(enrichedQ);
         const cfp = getCombinedQuestionFingerprint(enrichedQ);
         const targetDocId = findMatchingBankIdFast(enrichedQ);
+        const isCopiedDuplicate = isQuizCopy || Boolean(enrichedQ.copiedFromQuestionId || enrichedQ.copiedFromQuizId);
 
         if (targetDocId) {
+          // Khi cập nhật: không cập nhật các câu trùng với file gốc từ bản sao
+          if (isCopiedDuplicate) {
+            skippedCount++;
+            return;
+          }
           const currentBq = existingBankMapById.get(targetDocId)!;
           if (checkNeedsBankUpdate(enrichedQ, currentBq)) {
             const qPassage = cleanGroupPassageText(enrichedQ.groupPassage || '');

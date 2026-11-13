@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { Quiz, Result, Grade, Chapter, ClassRoom, User, QuizFolder } from '../../types';
+import { Quiz, Result, Grade, Chapter, ClassRoom, User, QuizFolder, QuizType } from '../../types';
 import { 
   Edit, Trash2, Eye, Users, Filter, FileText, ChevronDown, ChevronRight, ChevronLeft, Link as LinkIcon, 
   EyeOff, ShieldCheck, GraduationCap, Share2, User as UserIcon, Lock, BookOpen,
@@ -11,16 +11,19 @@ import {
 } from 'lucide-react';
 import { isSameSubject, STANDARD_SUBJECTS, normalizeSubject, getDisplaySubject } from '../../services/subjectUtils';
 import { getCurrentAcademicYear, getQuizAcademicYear, getAcademicYearOptions } from '../../services/academicUtils';
-import { updateQuizAcademicYear, updateQuizShareStatus, updateQuizSchedule, formatToDatetimeLocal, normalizeDateTimeForStorage } from '../../services/storage';
+import { updateQuizAcademicYear, updateQuizShareStatus, updateQuizSchedule, formatToDatetimeLocal, normalizeDateTimeForStorage, getStoredCopiedQuizOrigins } from '../../services/storage';
 
 interface QuizListProps {
     quizzes: Quiz[];
+    allQuizzes?: Quiz[];
     results: Result[];
     chapters: Chapter[];
     classes?: ClassRoom[];
     currentUser?: User;
     teachers?: User[];
     folders?: QuizFolder[];
+    adminViewAccountId?: string;
+    onSelectAdminAccount?: (accountId: string) => void;
     onSaveFolder?: (folder: QuizFolder) => Promise<void>;
     onDeleteFolder?: (folderId: string) => Promise<void>;
     onMoveQuizToFolder?: (quizId: string, folderId?: string, folderName?: string) => Promise<void>;
@@ -31,6 +34,19 @@ interface QuizListProps {
     onAssignClasses?: (quiz: Quiz, selectedClassIds: string[]) => Promise<void>;
     onToggleShare?: (quizId: string, newShareStatus: boolean) => void;
     onUpdateSchedule?: (quizId: string, startTime: string | null, endTime: string | null) => Promise<void>;
+    onCopySharedQuiz?: (
+        sourceQuiz: Quiz,
+        options?: {
+            title?: string;
+            durationMinutes?: number;
+            type?: QuizType;
+            maxAttempts?: number;
+            folderId?: string;
+            folderName?: string;
+            openMode?: 'editor' | 'assign' | 'stay';
+        }
+    ) => Promise<Quiz | null>;
+    onUpdateCopyFromOriginal?: (copiedQuiz: Quiz) => Promise<void>;
     qSearch: string;
     setQSearch: (val: string) => void;
     qGradeFilter: Grade | 'all';
@@ -189,6 +205,8 @@ interface QuizCardItemProps {
     quizShareOverride?: boolean;
     updatingShareQuizId: string | null;
     isSelected?: boolean;
+    copiedOriginQuizId?: string;
+    copiedOriginTitle?: string;
     onToggleSelect?: (id: string) => void;
     onMoveToFolder?: (quizId: string, folderId?: string, folderName?: string) => Promise<void>;
     onOpenMoveModal?: (quiz: Quiz) => void;
@@ -198,6 +216,8 @@ interface QuizCardItemProps {
     openAssignModal: (q: Quiz) => void;
     openScheduleModal: (q: Quiz) => void;
     openZaloModal?: (q: Quiz) => void;
+    onOpenCopyModal?: (q: Quiz) => void;
+    onUpdateFromOriginal?: (q: Quiz) => void;
     copyQuizLink: (id: string) => void;
     handleSetAcademicYear: (id: string, yr: string) => void;
     handleToggleShare: (id: string, newShare: boolean) => void;
@@ -217,6 +237,8 @@ const QuizCardItem = React.memo(function QuizCardItem({
     quizShareOverride,
     updatingShareQuizId,
     isSelected = false,
+    copiedOriginQuizId,
+    copiedOriginTitle,
     onToggleSelect,
     onMoveToFolder,
     onOpenMoveModal,
@@ -226,6 +248,8 @@ const QuizCardItem = React.memo(function QuizCardItem({
     openAssignModal,
     openScheduleModal,
     openZaloModal,
+    onOpenCopyModal,
+    onUpdateFromOriginal,
     copyQuizLink,
     handleSetAcademicYear,
     handleToggleShare
@@ -376,6 +400,15 @@ const QuizCardItem = React.memo(function QuizCardItem({
                     {q.isMonitored && (
                         <span className="p-1 bg-red-50 text-red-600 rounded-md border border-red-100" title="Có giám sát chống gian lận">
                             <ShieldCheck size={11}/>
+                        </span>
+                    )}
+
+                    {copiedOriginQuizId && (
+                        <span
+                            className="px-2 py-0.5 bg-teal-50 border border-teal-200 text-teal-800 rounded-lg text-[9px] font-black uppercase flex items-center gap-1"
+                            title={`Bản sao độc lập từ: ${copiedOriginTitle || 'đề chia sẻ gốc'}. Độc lập thời gian làm bài, thêm/xóa/sửa câu hỏi và không ghi đè câu trùng khi cập nhật.`}
+                        >
+                            <Copy size={9} /> BẢN SAO ĐỘC LẬP
                         </span>
                     )}
                 </div>
@@ -576,7 +609,7 @@ const QuizCardItem = React.memo(function QuizCardItem({
                                 <span>Link</span>
                             </button>
                         )}
-                        {(!isMine && !isSuperAdmin) && (
+                        {(!isMine) && (
                             <span className="px-2 py-1 bg-blue-50 border border-blue-200 text-blue-700 rounded-lg text-[9px] font-black flex items-center gap-1 shadow-2xs">
                                 <Share2 size={10} className="text-blue-600"/> Đề chia sẻ
                             </span>
@@ -584,49 +617,68 @@ const QuizCardItem = React.memo(function QuizCardItem({
                     </div>
                 </div>
 
-                {/* HÀNG 2: Các chức năng quản lý riêng biệt (Hẹn giờ, Sửa, Xóa) */}
-                {/* Được tách riêng 1 hàng độc lập để nút XÓA luôn hiển thị đầy đủ, không bao giờ bị che khuất */}
+                {/* HÀNG 2: Các chức năng quản lý riêng biệt */}
                 {canManage ? (
-                    <div className="flex items-center gap-1.5 w-full">
-                        <button 
-                            type="button"
-                            onClick={(e) => { e.stopPropagation(); openScheduleModal(q); }} 
-                            className="flex-1 py-1.5 px-2 bg-blue-50/80 border border-blue-200 text-blue-700 rounded-xl hover:bg-blue-600 hover:text-white shadow-2xs transition-all flex items-center justify-center gap-1 text-[10px] font-black cursor-pointer active:scale-95" 
-                            title="Hẹn giờ mở / đóng phòng thi"
-                        >
-                            <Clock size={11}/>
-                            <span>Hẹn giờ</span>
-                        </button>
-                        <button 
-                            type="button"
-                            onClick={(e) => { e.stopPropagation(); onEdit(q); }} 
-                            className="flex-1 py-1.5 px-2 bg-slate-800 text-white rounded-xl hover:bg-blue-600 shadow-2xs transition-all flex items-center justify-center gap-1 text-[10px] font-black cursor-pointer active:scale-95" 
-                            title="Sửa đề thi"
-                        >
-                            <Edit size={11}/>
-                            <span>Sửa</span>
-                        </button>
-                        <button 
-                            type="button"
-                            onClick={(e) => { e.stopPropagation(); onDelete(q.id); }} 
-                            className="py-1.5 px-2.5 bg-rose-50 border border-rose-200 text-rose-600 rounded-xl hover:bg-rose-600 hover:text-white shadow-2xs transition-all flex items-center justify-center gap-1 text-[10px] font-black cursor-pointer active:scale-95 shrink-0" 
-                            title="Xóa đề thi"
-                        >
-                            <Trash2 size={12}/>
-                            <span>Xóa</span>
-                        </button>
+                    <div className="space-y-1.5 w-full">
+                        <div className="flex items-center gap-1.5 w-full">
+                            <button 
+                                type="button"
+                                onClick={(e) => { e.stopPropagation(); openScheduleModal(q); }} 
+                                className="flex-1 py-1.5 px-2 bg-blue-50/80 border border-blue-200 text-blue-700 rounded-xl hover:bg-blue-600 hover:text-white shadow-2xs transition-all flex items-center justify-center gap-1 text-[10px] font-black cursor-pointer active:scale-95" 
+                                title="Hẹn giờ mở / đóng phòng thi"
+                            >
+                                <Clock size={11}/>
+                                <span>Hẹn giờ</span>
+                            </button>
+                            <button 
+                                type="button"
+                                onClick={(e) => { e.stopPropagation(); onEdit(q); }} 
+                                className="flex-1 py-1.5 px-2 bg-slate-800 text-white rounded-xl hover:bg-blue-600 shadow-2xs transition-all flex items-center justify-center gap-1 text-[10px] font-black cursor-pointer active:scale-95" 
+                                title="Sửa đề thi"
+                            >
+                                <Edit size={11}/>
+                                <span>Sửa</span>
+                            </button>
+                            <button 
+                                type="button"
+                                onClick={(e) => { e.stopPropagation(); onDelete(q.id); }} 
+                                className="py-1.5 px-2.5 bg-rose-50 border border-rose-200 text-rose-600 rounded-xl hover:bg-rose-600 hover:text-white shadow-2xs transition-all flex items-center justify-center gap-1 text-[10px] font-black cursor-pointer active:scale-95 shrink-0" 
+                                title="Xóa đề thi"
+                            >
+                                <Trash2 size={12}/>
+                                <span>Xóa</span>
+                            </button>
+                        </div>
+                        {copiedOriginQuizId && onUpdateFromOriginal && (
+                            <button
+                                type="button"
+                                onClick={(e) => { e.stopPropagation(); onUpdateFromOriginal(q); }}
+                                className="w-full py-1 px-2 bg-teal-50 hover:bg-teal-600 text-teal-800 hover:text-white border border-teal-200 rounded-xl text-[9px] font-black uppercase transition-all flex items-center justify-center gap-1 cursor-pointer"
+                                title="Lấy thêm câu hỏi mới từ đề gốc (KHÔNG cập nhật/ghi đè các câu trùng với file gốc)"
+                            >
+                                <RefreshCw size={10} /> Cập nhật câu mới (Giữ câu trùng)
+                            </button>
+                        )}
+                        {!isMine && isSuperAdmin && onOpenCopyModal && (
+                            <button
+                                type="button"
+                                onClick={(e) => { e.stopPropagation(); onOpenCopyModal(q); }}
+                                className="w-full py-1 px-2 bg-indigo-50 hover:bg-indigo-600 text-indigo-700 hover:text-white border border-indigo-200 rounded-xl text-[9px] font-black uppercase transition-all flex items-center justify-center gap-1 cursor-pointer"
+                                title="Tạo 1 bản sao độc lập vào kho đề cá nhân của bạn"
+                            >
+                                <Copy size={10} /> Sao chép về kho của tôi
+                            </button>
+                        )}
                     </div>
                 ) : (
-                    /* Đối với GV thường xem đề chia sẻ: không có quyền quản lý, thông báo phân quyền rõ ràng */
-                    <div className="px-2.5 py-1.5 bg-slate-50 border border-slate-200/90 rounded-xl text-[10px] font-bold text-slate-500 flex items-center gap-1.5 shadow-2xs">
-                        <Lock size={12} className="text-amber-600 shrink-0"/>
-                        <span className="truncate">Giao lớp: Phân quyền SuperAdmin</span>
+                    /* Đối với GV xem đề chia sẻ: Cho phép sao chép thành bản độc lập để tự do chỉnh sửa & giao lớp */
+                    <div className="px-2.5 py-1.5 bg-emerald-50/80 border border-emerald-200 rounded-xl text-[10px] font-bold text-emerald-800 flex items-center gap-1.5 shadow-2xs">
+                        <Copy size={12} className="text-emerald-600 shrink-0"/>
+                        <span className="truncate">Sao chép bản độc lập để sửa &amp; giao lớp</span>
                     </div>
                 )}
 
                 {/* HÀNG 3: Các nút chức năng chính */}
-                {/* Đề của tôi / SuperAdmin: Xem & In + Giao Lớp */}
-                {/* Đề chia sẻ đối với GV thường: Chỉ cho nút Xem đề và In đề, TẮT LUÔN chức năng giao đề cho lớp */}
                 {canManage ? (
                     <div className="grid grid-cols-2 gap-2 w-full">
                         <button 
@@ -651,18 +703,18 @@ const QuizCardItem = React.memo(function QuizCardItem({
                         <button 
                             type="button"
                             onClick={() => onPreview(q)} 
-                            className="py-2.5 px-2.5 rounded-xl text-[10px] font-black uppercase flex items-center justify-center gap-1.5 transition-all bg-blue-50 text-blue-700 hover:bg-blue-600 hover:text-white border border-blue-200 active:scale-95 shadow-xs cursor-pointer"
-                            title="Xem chi tiết nội dung đề thi & đáp án"
+                            className="py-2.5 px-2 rounded-xl text-[10px] font-black uppercase flex items-center justify-center gap-1.5 transition-all bg-slate-100 text-slate-700 hover:bg-slate-200 border border-slate-200 active:scale-95 shadow-xs cursor-pointer"
+                            title="Xem chi tiết, in đề hoặc xuất file Word (.docx / .doc)"
                         >
-                            <Eye size={13}/> Xem đề
+                            <Eye size={13}/> Xem & In
                         </button>
                         <button 
                             type="button"
-                            onClick={() => onPreview(q)} 
-                            className="py-2.5 px-2.5 rounded-xl text-[10px] font-black uppercase flex items-center justify-center gap-1.5 transition-all bg-emerald-50 text-emerald-700 hover:bg-emerald-600 hover:text-white border border-emerald-200 active:scale-95 shadow-xs cursor-pointer"
-                            title="In đề thi hoặc xuất file Microsoft Word (.docx / .doc) để in ấn"
+                            onClick={(e) => { e.stopPropagation(); onOpenCopyModal ? onOpenCopyModal(q) : onPreview(q); }} 
+                            className="py-2.5 px-2 rounded-xl text-[10px] font-black uppercase flex items-center justify-center gap-1.5 transition-all bg-blue-600 hover:bg-blue-700 text-white active:scale-95 shadow-xs cursor-pointer"
+                            title="Tạo 1 bản sao độc lập về kho của bạn để tự do chỉnh thời gian, thêm/xóa/sửa câu hỏi và giao cho lớp mình"
                         >
-                            <Printer size={13}/> In đề
+                            <Copy size={13}/> Tạo bản sao
                         </button>
                     </div>
                 )}
@@ -672,9 +724,11 @@ const QuizCardItem = React.memo(function QuizCardItem({
 });
 
 export default function QuizList({ 
-    quizzes, results, chapters, classes = [], currentUser, teachers = [],
-    folders = [], onSaveFolder, onDeleteFolder, onMoveQuizToFolder, onBatchMoveQuizzesToFolder,
+    quizzes, allQuizzes, results, chapters, classes = [], currentUser, teachers = [],
+    folders = [], adminViewAccountId, onSelectAdminAccount,
+    onSaveFolder, onDeleteFolder, onMoveQuizToFolder, onBatchMoveQuizzesToFolder,
     onEdit, onDelete, onPreview, onAssignClasses, onToggleShare, onUpdateSchedule,
+    onCopySharedQuiz, onUpdateCopyFromOriginal,
     qSearch, setQSearch, qGradeFilter, setQGradeFilter,
     qChapterFilter, setQChapterFilter,
     qSubjectFilter: propSubjectFilter,
@@ -690,10 +744,12 @@ export default function QuizList({
       currentUser?.username?.toLowerCase() === 'superadmin';
 
     const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
-    const [localAuthorFilter, setLocalAuthorFilter] = useState<string>(() => isSuperAdmin ? 'all' : 'mine');
+    const [localAuthorFilter, setLocalAuthorFilter] = useState<string>(() => isSuperAdmin ? (currentUser?.id || 'all') : 'mine');
     const authorFilter = propAuthorFilter !== undefined ? propAuthorFilter : localAuthorFilter;
     const setAuthorFilter = propSetAuthorFilter !== undefined ? propSetAuthorFilter : setLocalAuthorFilter;
     const [isLoadingShared, setIsLoadingShared] = useState(false);
+
+    const storedCopiedOrigins = useMemo(() => getStoredCopiedQuizOrigins(), [quizzes, allQuizzes]);
 
     // Personal Folders State with Session Memory
     const [selectedFolderId, setSelectedFolderIdState] = useState<string>(() => {
@@ -790,11 +846,35 @@ export default function QuizList({
         });
     }, [chapters, qGradeFilter, qSubjectFilter, isSuperAdmin, currentUser?.subject, quizzes]);
 
-    // Filter personal folders applicable to current teacher
+    const activeOwnerId = useMemo(() => {
+        if (!isSuperAdmin) return currentUser?.id || '';
+        if (adminViewAccountId && adminViewAccountId !== 'all') {
+            if (authorFilter && authorFilter !== 'all' && authorFilter !== 'shared' && authorFilter !== 'private') {
+                return authorFilter;
+            }
+            return adminViewAccountId;
+        }
+        if (authorFilter && authorFilter !== 'all' && authorFilter !== 'shared' && authorFilter !== 'private') {
+            return authorFilter;
+        }
+        return 'all';
+    }, [isSuperAdmin, adminViewAccountId, authorFilter, currentUser?.id]);
+
+    // Filter personal folders applicable to the active account (SuperAdmin sees selected account's folders)
     const myFolders = useMemo(() => {
-        if (isSuperAdmin) return folders;
+        if (isSuperAdmin) {
+            if (activeOwnerId === 'all') return folders;
+            const isViewingOwn = Boolean(currentUser?.id && activeOwnerId === currentUser.id);
+            return folders.filter(f => f.createdBy === activeOwnerId || (isViewingOwn && !f.createdBy));
+        }
         return folders.filter(f => !f.createdBy || f.createdBy === currentUser?.id);
-    }, [folders, isSuperAdmin, currentUser?.id]);
+    }, [folders, isSuperAdmin, activeOwnerId, currentUser?.id]);
+
+    // Folders belonging strictly to currentUser (used when copying shared quiz into own account)
+    const personalCopyFolders = useMemo(() => {
+        if (!currentUser?.id) return myFolders;
+        return folders.filter(f => f.createdBy === currentUser.id || (isSuperAdmin && !f.createdBy));
+    }, [folders, currentUser?.id, isSuperAdmin, myFolders]);
 
     const handleToggleShare = async (quizId: string, newShareStatus: boolean) => {
         setUpdatingShareQuizId(quizId);
@@ -856,6 +936,13 @@ export default function QuizList({
         try {
             const trimmedChapter = folderChapterInput.trim();
             const matchedChapter = relevantChapters.find(c => c.name === trimmedChapter);
+            const targetOwnerId = (isSuperAdmin && activeOwnerId && activeOwnerId !== 'all')
+                ? activeOwnerId
+                : (currentUser?.id || 'admin');
+            const targetOwnerUser = targetOwnerId === currentUser?.id
+                ? currentUser
+                : teachers.find(t => t.id === targetOwnerId);
+
             const folderData: QuizFolder = {
                 id: editingFolder ? editingFolder.id : `folder_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
                 name: folderNameInput.trim(),
@@ -863,9 +950,9 @@ export default function QuizList({
                 chapterId: matchedChapter ? matchedChapter.id : (editingFolder?.chapterId || undefined),
                 chapterName: trimmedChapter || undefined,
                 grade: qGradeFilter !== 'all' ? (qGradeFilter as Grade) : (editingFolder?.grade || '12'),
-                subject: qSubjectFilter !== 'all' ? qSubjectFilter : (batchMoveSubjectFilter !== 'all' ? batchMoveSubjectFilter : (currentUser?.subject || undefined)),
-                createdBy: editingFolder?.createdBy || currentUser?.id || 'admin',
-                createdByName: currentUser?.fullName || 'Giáo viên',
+                subject: qSubjectFilter !== 'all' ? qSubjectFilter : (batchMoveSubjectFilter !== 'all' ? batchMoveSubjectFilter : (targetOwnerUser?.subject || currentUser?.subject || undefined)),
+                createdBy: editingFolder?.createdBy || targetOwnerId,
+                createdByName: editingFolder?.createdByName || targetOwnerUser?.fullName || currentUser?.fullName || 'Giáo viên',
                 createdAt: editingFolder?.createdAt || new Date().toISOString()
             };
             const isNew = !editingFolder;
@@ -1008,12 +1095,27 @@ export default function QuizList({
         return Array.from(subsMap.values());
     }, [quizzes, chapters, teachers]);
 
-    // Lọc giáo viên thông minh theo môn học được chọn (cho SuperAdmin)
+    // Lọc giáo viên thông minh theo môn học được chọn (cho SuperAdmin), luôn giữ SuperAdmin ở đầu danh sách
     const filteredTeachers = useMemo(() => {
         if (!isSuperAdmin) return teachers;
-        if (qSubjectFilter === 'all') return teachers;
-        return teachers.filter(t => t.subject && isSameSubject(t.subject, qSubjectFilter));
-    }, [teachers, isSuperAdmin, qSubjectFilter]);
+        const base = qSubjectFilter === 'all'
+            ? teachers
+            : teachers.filter(t => (t.subject && isSameSubject(t.subject, qSubjectFilter)) || t.id === currentUser?.id);
+        const list: User[] = [];
+        const seen = new Set<string>();
+        if (currentUser?.id) {
+            const selfEntry = teachers.find(t => t.id === currentUser.id) || currentUser;
+            list.push(selfEntry);
+            seen.add(currentUser.id);
+        }
+        base.forEach(t => {
+            if (t.id && !seen.has(t.id)) {
+                seen.add(t.id);
+                list.push(t);
+            }
+        });
+        return list;
+    }, [teachers, isSuperAdmin, qSubjectFilter, currentUser]);
 
     // Tự động reset bộ lọc Chương khi chương đang chọn không còn nằm trong danh sách chương phù hợp
     useEffect(() => {
@@ -1025,15 +1127,22 @@ export default function QuizList({
         }
     }, [relevantChapters, qChapterFilter, setQChapterFilter]);
 
-    // Tự động reset bộ lọc Giáo viên khi giáo viên đang chọn không còn thuộc môn học mới
+    // Chỉ reset bộ lọc Giáo viên nếu tài khoản đó không còn tồn tại trong hệ thống (không bao giờ ghi đè 'shared'/'private'/TK Tổng Admin)
     useEffect(() => {
-        if (isSuperAdmin && authorFilter !== 'all') {
-            const isStillValid = filteredTeachers.some(t => t.id === authorFilter);
-            if (!isStillValid) {
-                setAuthorFilter('all');
+        if (
+            isSuperAdmin &&
+            teachers.length > 0 &&
+            authorFilter !== 'all' &&
+            authorFilter !== 'shared' &&
+            authorFilter !== 'private' &&
+            authorFilter !== currentUser?.id
+        ) {
+            const stillExists = teachers.some(t => t.id === authorFilter);
+            if (!stillExists) {
+                setAuthorFilter(currentUser?.id || 'all');
             }
         }
-    }, [filteredTeachers, authorFilter, isSuperAdmin]);
+    }, [teachers, authorFilter, isSuperAdmin, currentUser?.id, setAuthorFilter]);
 
     const baseFiltered = useMemo(() => {
         return quizzes.filter(q => {
@@ -1080,11 +1189,12 @@ export default function QuizList({
 
             if (isSuperAdmin) {
                 if (authorFilter === 'shared') {
-                    if (!isShared) return false;
+                    if (!isShared || q.createdBy === activeOwnerId) return false;
                 } else if (authorFilter === 'private') {
                     if (isShared) return false;
-                } else if (authorFilter !== 'all' && q.createdBy !== authorFilter) {
-                    return false;
+                } else if (authorFilter !== 'all') {
+                    const isViewingOwn = Boolean(currentUser?.id && authorFilter === currentUser.id);
+                    if (q.createdBy !== authorFilter && !(isViewingOwn && !q.createdBy)) return false;
                 }
             } else {
                 // Teacher (Admin)
@@ -1104,7 +1214,7 @@ export default function QuizList({
 
             return true;
         });
-    }, [quizzes, quizYearOverrides, quizShareOverrides, qAcademicYearFilter, qSubjectFilter, qGradeFilter, qChapterFilter, qSearch, isSuperAdmin, authorFilter, currentUser, teachers]);
+    }, [quizzes, quizYearOverrides, quizShareOverrides, qAcademicYearFilter, qSubjectFilter, qGradeFilter, qChapterFilter, qSearch, isSuperAdmin, authorFilter, activeOwnerId, currentUser, teachers]);
 
     // Thống kê số lượng đề theo từng Thư mục cá nhân
     const folderCounts = useMemo(() => {
@@ -1195,7 +1305,8 @@ export default function QuizList({
 
     const myQuizCount = useMemo(() => {
         if (!currentUser) return 0;
-        return quizzes.filter(q => {
+        const sourceList = allQuizzes || quizzes;
+        return sourceList.filter(q => {
             if (q.createdBy !== currentUser.id) return false;
             const effectiveYear = quizYearOverrides[q.id] || q.academicYear || getQuizAcademicYear(q);
             if (qAcademicYearFilter !== 'all' && effectiveYear !== qAcademicYearFilter) return false;
@@ -1205,12 +1316,14 @@ export default function QuizList({
             if (currentUser.subject && effectiveSubject && !isSameSubject(effectiveSubject, currentUser.subject)) return false;
             return true;
         }).length;
-    }, [quizzes, currentUser, qAcademicYearFilter, qGradeFilter, quizYearOverrides, teachers]);
+    }, [allQuizzes, quizzes, currentUser, qAcademicYearFilter, qGradeFilter, quizYearOverrides, teachers]);
 
     const sharedQuizCount = useMemo(() => {
         if (!currentUser) return 0;
-        return quizzes.filter(q => {
-            if (q.createdBy === currentUser.id) return false;
+        const sourceList = allQuizzes || quizzes;
+        const compareOwner = isSuperAdmin ? activeOwnerId : currentUser.id;
+        return sourceList.filter(q => {
+            if (compareOwner && compareOwner !== 'all' && q.createdBy === compareOwner) return false;
             const isShared = quizShareOverrides[q.id] !== undefined
                 ? quizShareOverrides[q.id]
                 : (q.isSharedWithTeachers !== undefined ? Boolean(q.isSharedWithTeachers) : !q.createdBy);
@@ -1220,10 +1333,11 @@ export default function QuizList({
             if (qGradeFilter !== 'all' && q.grade !== qGradeFilter) return false;
             const creator = teachers.find(t => t.id === q.createdBy);
             const effectiveSubject = q.subject || creator?.subject;
-            if (currentUser.subject && effectiveSubject && !isSameSubject(effectiveSubject, currentUser.subject)) return false;
+            if (!isSuperAdmin && currentUser.subject && effectiveSubject && !isSameSubject(effectiveSubject, currentUser.subject)) return false;
+            if (isSuperAdmin && qSubjectFilter !== 'all' && effectiveSubject && !isSameSubject(effectiveSubject, qSubjectFilter)) return false;
             return true;
         }).length;
-    }, [quizzes, currentUser, qAcademicYearFilter, qGradeFilter, quizYearOverrides, quizShareOverrides, teachers]);
+    }, [allQuizzes, quizzes, currentUser, isSuperAdmin, activeOwnerId, qAcademicYearFilter, qGradeFilter, qSubjectFilter, quizYearOverrides, quizShareOverrides, teachers]);
 
     const counts = useMemo(() => {
         let all = 0;
@@ -1297,6 +1411,34 @@ export default function QuizList({
     const [zaloCopied, setZaloCopied] = useState<boolean>(false);
     const [zaloLinkCopied, setZaloLinkCopied] = useState<boolean>(false);
 
+    // Copy Shared Quiz Modal State
+    const [copyModalQuiz, setCopyModalQuiz] = useState<Quiz | null>(null);
+    const [copyTitle, setCopyTitle] = useState<string>('');
+    const [copyDuration, setCopyDuration] = useState<number>(45);
+    const [copyType, setCopyType] = useState<QuizType>('test');
+    const [copyMaxAttempts, setCopyMaxAttempts] = useState<number>(1);
+    const [copyFolderId, setCopyFolderId] = useState<string>('');
+    const [isCopyingQuiz, setIsCopyingQuiz] = useState<boolean>(false);
+
+    const openCopyModal = useCallback((q: Quiz) => {
+        setCopyModalQuiz(q);
+        setCopyTitle(`${q.title} (Bản sao)`);
+        setCopyDuration(q.durationMinutes || 45);
+        setCopyType(q.type || 'test');
+        setCopyMaxAttempts(q.maxAttempts !== undefined ? q.maxAttempts : (q.type === 'test' ? 1 : 0));
+        setCopyFolderId('');
+    }, []);
+
+    const existingCopyOfModalQuiz = useMemo(() => {
+        if (!copyModalQuiz || !currentUser?.id) return null;
+        const pool = allQuizzes || quizzes;
+        return pool.find(item => {
+            if (item.createdBy !== currentUser.id) return false;
+            const origin = item.copiedFromQuizId || storedCopiedOrigins[String(item.id)]?.sourceQuizId;
+            return origin === copyModalQuiz.id;
+        }) || null;
+    }, [copyModalQuiz, currentUser?.id, allQuizzes, quizzes, storedCopiedOrigins]);
+
     const openZaloModal = useCallback((q: Quiz, specificClassIds?: string[]) => {
         setZaloModalQuiz(q);
         setZaloSelectedClassIds(specificClassIds || q.assignedClassIds || []);
@@ -1306,16 +1448,39 @@ export default function QuizList({
     }, []);
 
     const openAssignModal = useCallback((q: Quiz) => {
-        const isMine = Boolean(currentUser?.id && q.createdBy === currentUser.id);
+        const isMine = Boolean(currentUser?.id && (q.createdBy === currentUser.id || (isSuperAdmin && !q.createdBy)));
         if (!isSuperAdmin && !isMine) {
-            alert("Chức năng giao đề chia sẻ cho lớp chỉ dành riêng cho Quản trị viên (SuperAdmin). Bạn có thể xem và in đề.");
+            openCopyModal(q);
             return;
         }
         setAssigningQuiz(q);
         setSelectedClassIdsForAssign(q.assignedClassIds || []);
         setAssignGradeFilter('matching');
         setAssignSearchClass('');
-    }, [currentUser?.id, isSuperAdmin]);
+    }, [currentUser?.id, isSuperAdmin, openCopyModal]);
+
+    const handleExecuteCopy = async (openMode: 'stay' | 'editor' | 'assign') => {
+        if (!copyModalQuiz || !onCopySharedQuiz) return;
+        setIsCopyingQuiz(true);
+        try {
+            const targetFld = copyFolderId ? personalCopyFolders.find(f => f.id === copyFolderId) : undefined;
+            const created = await onCopySharedQuiz(copyModalQuiz, {
+                title: copyTitle.trim() || `${copyModalQuiz.title} (Bản sao)`,
+                durationMinutes: Math.max(1, Number(copyDuration) || 45),
+                type: copyType,
+                maxAttempts: copyType === 'practice' ? 0 : copyMaxAttempts,
+                folderId: targetFld?.id || undefined,
+                folderName: targetFld?.name || undefined,
+                openMode
+            });
+            setCopyModalQuiz(null);
+            if (openMode === 'assign' && created) {
+                openAssignModal(created);
+            }
+        } finally {
+            setIsCopyingQuiz(false);
+        }
+    };
 
     const [schedulingQuiz, setSchedulingQuiz] = useState<Quiz | null>(null);
     const [scheduleStartTime, setScheduleStartTime] = useState<string>('');
@@ -1488,24 +1653,49 @@ export default function QuizList({
                             ))}
                         </select>
 
-                        {/* Dropdown Giáo viên dành cho SuperAdmin */}
+                        {/* Dropdown Tài khoản GV & Chế độ xem Đề chia sẻ dành cho SuperAdmin */}
                         {isSuperAdmin && (
-                            <select 
-                                className="flex-1 lg:w-48 px-4 py-3 bg-amber-50/50 border border-amber-200 text-amber-900 rounded-xl text-[10px] font-black uppercase outline-none cursor-pointer"
-                                value={authorFilter}
-                                onChange={e => setAuthorFilter(e.target.value)}
-                            >
-                                <option value="all">👤 TẤT CẢ TÁC GIẢ</option>
-                                <option value="shared">🤝 TẤT CẢ ĐỀ ĐÃ CHIA SẺ GV</option>
-                                <option value="private">🔒 ĐỀ RIÊNG TƯ (CHƯA CHIA SẺ)</option>
-                                <optgroup label={`LỌC THEO GIÁO VIÊN (${filteredTeachers.length})`}>
-                                    {filteredTeachers.map(t => (
-                                        <option key={t.id} value={t.id}>
-                                            GV: {t.fullName} {t.subject ? `(${t.subject})` : ''}
+                            <div className="flex flex-wrap items-center gap-2">
+                                <select 
+                                    className="flex-1 lg:w-52 px-4 py-3 bg-amber-50/50 border border-amber-200 text-amber-900 rounded-xl text-[10px] font-black uppercase outline-none cursor-pointer"
+                                    value={authorFilter}
+                                    onChange={e => setAuthorFilter(e.target.value)}
+                                >
+                                    {currentUser?.id && (
+                                        <option value={currentUser.id}>
+                                            👑 TK của tôi ({currentUser.fullName})
                                         </option>
-                                    ))}
-                                </optgroup>
-                            </select>
+                                    )}
+                                    <option value="all">👤 TẤT CẢ TÁC GIẢ</option>
+                                    <option value="shared">🤝 ĐỀ GV KHÁC CHIA SẺ</option>
+                                    <option value="private">🔒 ĐỀ RIÊNG TƯ (CHƯA CHIA SẺ)</option>
+                                    <optgroup label={`GIÁO VIÊN KHÁC (${filteredTeachers.filter(t => t.id !== currentUser?.id).length})`}>
+                                        {filteredTeachers.filter(t => t.id !== currentUser?.id).map(t => (
+                                            <option key={t.id} value={t.id}>
+                                                GV: {t.fullName} {t.subject ? `(${t.subject})` : ''}
+                                            </option>
+                                        ))}
+                                    </optgroup>
+                                </select>
+                                {authorFilter === 'shared' ? (
+                                    <button
+                                        type="button"
+                                        onClick={() => setAuthorFilter(adminViewAccountId || currentUser?.id || 'all')}
+                                        className="px-3.5 py-2.5 bg-blue-600 text-white rounded-xl text-[10px] font-black uppercase shadow-xs hover:bg-blue-700 transition-all cursor-pointer"
+                                    >
+                                        ← Đề tài khoản đang chọn
+                                    </button>
+                                ) : (
+                                    <button
+                                        type="button"
+                                        onClick={handleOpenSharedQuizzes}
+                                        className="px-3.5 py-2.5 bg-indigo-50 border border-indigo-200 text-indigo-700 hover:bg-indigo-600 hover:text-white rounded-xl text-[10px] font-black uppercase shadow-xs transition-all flex items-center gap-1.5 cursor-pointer"
+                                        title="Xem đề chia sẻ từ các giáo viên khác để sao chép về kho của mình"
+                                    >
+                                        <Share2 size={13} /> Đề GV chia sẻ ({sharedQuizCount})
+                                    </button>
+                                )}
+                            </div>
                         )}
 
                         {/* Nút Xem Đề của tôi / Đề chia sẻ (Dành cho Giáo viên) */}
@@ -1524,14 +1714,14 @@ export default function QuizList({
                                 </button>
                                 <button
                                     type="button"
-                                    onClick={() => setAuthorFilter('shared')}
+                                    onClick={handleOpenSharedQuizzes}
                                     className={`px-3.5 py-2 rounded-xl text-[10px] font-black uppercase transition-all flex items-center gap-1.5 cursor-pointer ${
                                         authorFilter === 'shared'
                                             ? 'bg-indigo-600 text-white shadow-sm'
                                             : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
                                     }`}
                                 >
-                                    <Share2 size={13} /> Đề chia sẻ
+                                    <Share2 size={13} /> Đề chia sẻ ({sharedQuizCount})
                                 </button>
                             </div>
                         )}
@@ -1589,8 +1779,8 @@ export default function QuizList({
                 </div>
             </div>
 
-            {/* Khung Hiển Thị Thư Mục Khi Ở Chế Độ 'Tất Cả Thư Mục' */}
-            {selectedFolderId === 'all' && (
+            {/* Khung Hiển Thị Thư Mục Khi Ở Chế Độ 'Tất Cả Thư Mục' (Ẩn khi đang duyệt Đề chia sẻ để thấy ngay danh sách đề) */}
+            {selectedFolderId === 'all' && authorFilter !== 'shared' && (
                 <div className="p-4 bg-gradient-to-br from-amber-50/50 via-white to-orange-50/30 border border-amber-200/80 rounded-2xl shadow-xs space-y-3">
                     <div className="flex items-center justify-between gap-2 flex-wrap">
                         <div className="flex items-center gap-2">
@@ -1712,10 +1902,11 @@ export default function QuizList({
                 </div>
             )}
 
-            {/* Vùng Hiển Thị Đề Thi (Chỉ hiển thị khi mở một Thư mục cụ thể hoặc chọn 'Đề chưa phân') */}
-            {selectedFolderId !== 'all' && (
+            {/* Vùng Hiển Thị Đề Thi (Khi mở 1 Thư mục cụ thể, 'Đề chưa phân', hoặc đang xem 'Đề chia sẻ') */}
+            {(selectedFolderId !== 'all' || authorFilter === 'shared') && (
                 <>
                     {/* Banner Điều Hướng Khi Đang Trong Thư Mục Cụ Thể */}
+                    {selectedFolderId !== 'all' && (
                     <div className="p-4 bg-white border-2 border-amber-300 rounded-2xl shadow-xs flex items-center justify-between gap-4 flex-wrap">
                         <div className="flex items-center gap-3">
                             <button
@@ -1799,6 +1990,7 @@ export default function QuizList({
                             </div>
                         )}
                     </div>
+                    )}
 
                     {/* Quick Filter Pill Sub-bar */}
                     <div className="flex flex-wrap items-center gap-2 py-1">
@@ -1878,21 +2070,21 @@ export default function QuizList({
                         </button>
                     </div>
 
-            {/* Banner thông báo khi GV đang xem đề được chia sẻ */}
-            {!isSuperAdmin && authorFilter === 'shared' && (
+            {/* Banner thông báo khi đang xem đề được chia sẻ */}
+            {authorFilter === 'shared' && (
                 <div className="p-3.5 bg-indigo-50/90 border border-indigo-200 rounded-2xl flex items-center justify-between gap-3 text-xs text-indigo-900 shadow-xs">
                     <div className="flex items-center gap-2.5">
                         <Share2 size={16} className="text-indigo-600 shrink-0" />
                         <div>
-                            <span className="font-bold">Đề thi chia sẻ từ đồng nghiệp:</span> Đang hiển thị các đề do giáo viên khác trong tổ bộ môn <b>{currentUser?.subject || ''}</b> chia sẻ.
+                            <span className="font-bold">Đề thi chia sẻ từ đồng nghiệp:</span> Đang hiển thị các đề do giáo viên khác chia sẻ. Bạn có thể bấm <b>"Tạo bản sao"</b> để sao chép thành đề độc lập (tự chỉnh thời gian, thêm/xóa/sửa câu hỏi và giao cho lớp mình).
                         </div>
                     </div>
                     <button
                         type="button"
-                        onClick={() => setAuthorFilter('mine')}
-                        className="px-3.5 py-1.5 bg-white hover:bg-indigo-600 hover:text-white text-indigo-700 border border-indigo-300 rounded-xl text-[10px] font-black uppercase transition-all shadow-xs shrink-0"
+                        onClick={() => setAuthorFilter(isSuperAdmin ? (adminViewAccountId || currentUser?.id || 'all') : 'mine')}
+                        className="px-3.5 py-1.5 bg-white hover:bg-indigo-600 hover:text-white text-indigo-700 border border-indigo-300 rounded-xl text-[10px] font-black uppercase transition-all shadow-xs shrink-0 cursor-pointer"
                     >
-                        Quay lại đề của tôi
+                        {isSuperAdmin ? 'Quay lại tài khoản đang chọn' : 'Quay lại đề của tôi'}
                     </button>
                 </div>
             )}
@@ -1900,12 +2092,15 @@ export default function QuizList({
             {/* Quizzes Grid - Giao diện Card Đề Ngang (Horizontal Landscape) */}
             <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
                 {visibleQuizzes.map(q => {
-                    const isMine = Boolean(currentUser?.id && q.createdBy === currentUser.id);
+                    const isMine = Boolean(currentUser?.id && (q.createdBy === currentUser.id || (isSuperAdmin && !q.createdBy)));
                     const canManage = isSuperAdmin || isMine;
                     const creator = teachersMap[q.createdBy || ''];
                     const creatorSubj = creator?.subject;
                     const resCount = resultCountsMap[q.id] || 0;
                     const isSelected = selectedQuizIds.includes(q.id);
+                    const originMeta = storedCopiedOrigins[String(q.id)];
+                    const copiedOriginQuizId = q.copiedFromQuizId || originMeta?.sourceQuizId || q.questions?.find(item => item.copiedFromQuizId)?.copiedFromQuizId;
+                    const copiedOriginTitle = q.copiedFromTitle || originMeta?.sourceTitle;
 
                     return (
                         <QuizCardItem
@@ -1918,6 +2113,8 @@ export default function QuizList({
                             classes={classes}
                             folders={myFolders}
                             isSelected={isSelected}
+                            copiedOriginQuizId={copiedOriginQuizId}
+                            copiedOriginTitle={copiedOriginTitle}
                             onToggleSelect={handleToggleSelectQuiz}
                             onMoveToFolder={onMoveQuizToFolder}
                             onOpenMoveModal={handleOpenBatchMoveModal}
@@ -1932,6 +2129,8 @@ export default function QuizList({
                             openAssignModal={openAssignModal}
                             openScheduleModal={openScheduleModal}
                             openZaloModal={openZaloModal}
+                            onOpenCopyModal={openCopyModal}
+                            onUpdateFromOriginal={onUpdateCopyFromOriginal}
                             copyQuizLink={copyQuizLink}
                             handleSetAcademicYear={handleSetAcademicYear}
                             handleToggleShare={handleToggleShare}
@@ -2012,10 +2211,16 @@ export default function QuizList({
                                     {authorFilter !== 'all' && (
                                         <button
                                             type="button"
-                                            onClick={() => setAuthorFilter('all')}
+                                            onClick={() => setAuthorFilter(isSuperAdmin ? 'all' : 'mine')}
                                             className="px-2.5 py-1 bg-white border border-amber-300 text-amber-900 rounded-lg font-bold hover:bg-amber-100 flex items-center gap-1 cursor-pointer"
                                         >
-                                            👤 {authorFilter === 'mine' ? 'Chỉ đề của tôi' : 'Đề chia sẻ'} ✕
+                                            👤 {authorFilter === 'mine'
+                                                ? 'Chỉ đề của tôi'
+                                                : authorFilter === 'shared'
+                                                    ? 'Đề chia sẻ'
+                                                    : authorFilter === 'private'
+                                                        ? 'Đề riêng tư'
+                                                        : (teachersMap[authorFilter]?.fullName || (authorFilter === currentUser?.id ? currentUser?.fullName : 'Tài khoản đang chọn'))} ✕
                                         </button>
                                     )}
                                 </div>
@@ -2056,10 +2261,10 @@ export default function QuizList({
                         {authorFilter === 'shared' ? (
                             <button
                                 type="button"
-                                onClick={() => setAuthorFilter('mine')}
+                                onClick={() => setAuthorFilter(isSuperAdmin ? (adminViewAccountId || currentUser?.id || 'all') : 'mine')}
                                 className="mt-4 px-4 py-2 bg-blue-600 text-white rounded-xl text-[10px] font-black uppercase shadow-sm hover:bg-slate-900 transition-all cursor-pointer"
                             >
-                                Quay lại Đề của tôi
+                                {isSuperAdmin ? 'Quay lại tài khoản đang chọn' : 'Quay lại Đề của tôi'}
                             </button>
                         ) : (
                             sharedQuizCount > 0 && (
@@ -3032,6 +3237,180 @@ export default function QuizList({
                 </div>
             )}
 
+            {/* Modal Tạo Bản Sao Độc Lập Từ Đề Chia Sẻ */}
+            {copyModalQuiz && (
+                <div className="fixed inset-0 z-[6050] bg-slate-950/75 backdrop-blur-xs flex items-center justify-center p-3 md:p-6 animate-fade-in">
+                    <div className="bg-white rounded-3xl max-w-xl w-full max-h-[92vh] flex flex-col shadow-2xl overflow-hidden border border-slate-200 animate-in fade-in zoom-in-95 duration-200">
+                        <div className="p-5 bg-gradient-to-r from-blue-600 to-indigo-700 text-white flex items-center justify-between shrink-0">
+                            <div className="flex items-center gap-3">
+                                <div className="w-11 h-11 rounded-2xl bg-white/20 flex items-center justify-center shrink-0">
+                                    <Copy size={22} />
+                                </div>
+                                <div>
+                                    <h3 className="text-base font-black uppercase tracking-tight leading-tight">
+                                        SAO CHÉP THÀNH ĐỀ ĐỘC LẬP
+                                    </h3>
+                                    <p className="text-[11px] text-blue-100 font-semibold mt-0.5">
+                                        Tạo bản riêng trong kho của bạn để tùy chỉnh &amp; giao lớp
+                                    </p>
+                                </div>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={() => setCopyModalQuiz(null)}
+                                className="p-2 bg-white/10 hover:bg-white/25 rounded-xl text-white transition-colors cursor-pointer"
+                            >
+                                <X size={18} />
+                            </button>
+                        </div>
+
+                        <div className="p-6 overflow-y-auto space-y-4 custom-scrollbar">
+                            <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-2xl space-y-1">
+                                <div className="text-[10px] font-black uppercase text-slate-400">Đề gốc được chia sẻ</div>
+                                <div className="text-xs font-black text-slate-800">{copyModalQuiz.title}</div>
+                                <div className="text-[11px] text-slate-500 font-semibold">
+                                    Tác giả: {copyModalQuiz.createdByName || 'Đồng nghiệp'} • {copyModalQuiz.questionCount || copyModalQuiz.questions?.length || 0} câu • Khối {copyModalQuiz.grade}
+                                </div>
+                            </div>
+
+                            {existingCopyOfModalQuiz && onUpdateCopyFromOriginal && (
+                                <div className="p-3.5 bg-teal-50 border border-teal-200 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                                    <div className="text-xs text-teal-900">
+                                        <span className="font-black block">Bạn đã có bản sao: "{existingCopyOfModalQuiz.title}"</span>
+                                        <span className="text-[11px] text-teal-700">Chỉ thêm câu mới từ file gốc (bỏ qua không ghi đè các câu trùng).</span>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        disabled={isCopyingQuiz}
+                                        onClick={async () => {
+                                            setIsCopyingQuiz(true);
+                                            try {
+                                                await onUpdateCopyFromOriginal(existingCopyOfModalQuiz);
+                                                setCopyModalQuiz(null);
+                                            } finally {
+                                                setIsCopyingQuiz(false);
+                                            }
+                                        }}
+                                        className="px-3 py-2 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-[10px] font-black uppercase transition-all shrink-0 flex items-center gap-1.5 cursor-pointer"
+                                    >
+                                        <RefreshCw size={12} /> Cập nhật bản sao cũ
+                                    </button>
+                                </div>
+                            )}
+
+                            <div className="space-y-1.5">
+                                <label className="text-[10px] font-black uppercase text-slate-700">Tên đề bản sao của bạn</label>
+                                <input
+                                    type="text"
+                                    value={copyTitle}
+                                    onChange={(e) => setCopyTitle(e.target.value)}
+                                    placeholder="Nhập tên đề thi..."
+                                    className="w-full px-3.5 py-2.5 bg-slate-50 border-2 border-slate-200 rounded-xl text-xs font-bold text-slate-800 outline-none focus:border-blue-500 focus:bg-white"
+                                />
+                            </div>
+
+                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                                <div className="space-y-1.5">
+                                    <label className="text-[10px] font-black uppercase text-slate-700">Thời gian làm (phút)</label>
+                                    <input
+                                        type="number"
+                                        min={1}
+                                        max={300}
+                                        value={copyDuration}
+                                        onChange={(e) => setCopyDuration(Number(e.target.value) || 45)}
+                                        className="w-full px-3 py-2.5 bg-slate-50 border-2 border-slate-200 rounded-xl text-xs font-bold text-slate-800 outline-none focus:border-blue-500 focus:bg-white"
+                                    />
+                                </div>
+                                <div className="space-y-1.5">
+                                    <label className="text-[10px] font-black uppercase text-slate-700">Chế độ thi</label>
+                                    <select
+                                        value={copyType}
+                                        onChange={(e) => setCopyType(e.target.value as QuizType)}
+                                        className="w-full px-3 py-2.5 bg-slate-50 border-2 border-slate-200 rounded-xl text-xs font-bold text-slate-800 outline-none focus:border-blue-500 focus:bg-white cursor-pointer"
+                                    >
+                                        <option value="test">Kiểm tra (Tính điểm)</option>
+                                        <option value="practice">Luyện tập (Xem giải ngay)</option>
+                                    </select>
+                                </div>
+                                <div className="space-y-1.5">
+                                    <label className="text-[10px] font-black uppercase text-slate-700">Số lần làm bài</label>
+                                    <select
+                                        value={copyType === 'practice' ? 0 : copyMaxAttempts}
+                                        disabled={copyType === 'practice'}
+                                        onChange={(e) => setCopyMaxAttempts(Number(e.target.value))}
+                                        className="w-full px-3 py-2.5 bg-slate-50 border-2 border-slate-200 rounded-xl text-xs font-bold text-slate-800 outline-none focus:border-blue-500 focus:bg-white cursor-pointer disabled:opacity-50"
+                                    >
+                                        <option value={1}>1 lần (Đóng băng)</option>
+                                        <option value={2}>Tối đa 2 lần</option>
+                                        <option value={3}>Tối đa 3 lần</option>
+                                        <option value={0}>Không giới hạn</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <div className="space-y-1.5">
+                                <label className="text-[10px] font-black uppercase text-slate-700">Lưu vào thư mục của tôi</label>
+                                <select
+                                    value={copyFolderId}
+                                    onChange={(e) => setCopyFolderId(e.target.value)}
+                                    className="w-full px-3.5 py-2.5 bg-slate-50 border-2 border-slate-200 rounded-xl text-xs font-bold text-slate-800 outline-none focus:border-blue-500 focus:bg-white cursor-pointer"
+                                >
+                                    <option value="">📁 Chưa phân thư mục</option>
+                                    {personalCopyFolders.map(fld => (
+                                        <option key={fld.id} value={fld.id}>
+                                            📁 {fld.name} {fld.chapterName ? `(${fld.chapterName})` : ''}
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+
+                            <div className="p-3.5 bg-blue-50/80 border border-blue-200 rounded-2xl text-[11px] text-blue-900 leading-relaxed flex items-start gap-2.5">
+                                <Info size={16} className="text-blue-600 shrink-0 mt-0.5" />
+                                <div>
+                                    <b>Độc lập hoàn toàn với file gốc:</b> Sau khi tạo bản sao, bạn có thể tự do chỉnh thời gian làm bài, thêm/xóa/sửa câu hỏi và giao cho các lớp của mình. Khi cập nhật hay đồng bộ ngân hàng, các câu hỏi trùng với file gốc sẽ <b>không bị ghi đè</b>.
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="p-4 bg-slate-50 border-t border-slate-200 flex flex-wrap items-center justify-end gap-2 shrink-0">
+                            <button
+                                type="button"
+                                disabled={isCopyingQuiz}
+                                onClick={() => setCopyModalQuiz(null)}
+                                className="px-4 py-2.5 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-xl text-xs font-black uppercase transition-all cursor-pointer"
+                            >
+                                Hủy
+                            </button>
+                            <button
+                                type="button"
+                                disabled={isCopyingQuiz || !onCopySharedQuiz}
+                                onClick={() => handleExecuteCopy('stay')}
+                                className="px-4 py-2.5 bg-slate-800 hover:bg-black text-white rounded-xl text-xs font-black uppercase transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                            >
+                                {isCopyingQuiz ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
+                                Lưu về Đề của tôi
+                            </button>
+                            <button
+                                type="button"
+                                disabled={isCopyingQuiz || !onCopySharedQuiz}
+                                onClick={() => handleExecuteCopy('editor')}
+                                className="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-black uppercase transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                            >
+                                <Edit size={14} /> Lưu &amp; Sửa câu hỏi
+                            </button>
+                            <button
+                                type="button"
+                                disabled={isCopyingQuiz || !onCopySharedQuiz}
+                                onClick={() => handleExecuteCopy('assign')}
+                                className="px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-black uppercase shadow-md transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                            >
+                                <GraduationCap size={14} /> Lưu &amp; Giao lớp ngay
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {/* Toast Thông báo Chia sẻ */}
             {shareNotification && (
                 <div className="fixed bottom-6 right-6 z-[6000] bg-slate-900 text-white px-5 py-3.5 rounded-2xl shadow-2xl border border-slate-700 flex items-center gap-3.5 animate-in fade-in slide-in-from-bottom-4 duration-200">
@@ -3044,7 +3423,7 @@ export default function QuizList({
                         </div>
                         <div className="text-[11px] text-slate-300 mt-0.5">
                             {shareNotification.isShared 
-                                ? 'Các giáo viên khác cùng bộ môn đã có thể xem và giao đề cho các lớp.' 
+                                ? 'Các giáo viên khác cùng bộ môn đã có thể xem và tạo bản sao độc lập cho lớp mình.' 
                                 : 'Đề thi hiện chỉ hiển thị cho bạn và Ban giám hiệu (Super Admin).'}
                         </div>
                     </div>
